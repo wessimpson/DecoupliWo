@@ -1,0 +1,8 @@
+gymnasium[atari]>=1.0,<2.0
+AutoROM[accept-rom-license]>=0.4.0
+numpy>=1.26,<2
+stable-baselines3>=2.3.0
+moviepy>=1.0.3
+ocatari>=0.4.7
+tensorboard>=2.13
+torch>=2.1
