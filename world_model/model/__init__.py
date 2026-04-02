@@ -3,8 +3,7 @@
 Inspired by Matrix-Game-style causal + flow matching, without Wan/VAE/CLIP scale.
 """
 
-from world_model.atari_vae import AtariFrameVAE
+from world_model.model.atari_vae import AtariVAEEncoder
 from world_model.causal_latent_dit import CausalLatentFlowModel
-from world_model.wan_vae_encoder import FrozenWanLatentEncoder
 
-__all__ = ["AtariFrameVAE", "CausalLatentFlowModel", "FrozenWanLatentEncoder"]
+__all__ = ["AtariVAEEncoder", "CausalLatentFlowModel"]
