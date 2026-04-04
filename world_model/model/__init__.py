@@ -3,7 +3,7 @@
 Inspired by Matrix-Game-style causal + flow matching, without Wan/VAE/CLIP scale.
 """
 
-from world_model.model.atari_vae import AtariVAEEncoder
-from world_model.causal_latent_dit import CausalLatentFlowModel
+from world_model.model.net.vae import WanVAE
+from world_model.model.net.diffuser import Diffuser
 
-__all__ = ["AtariVAEEncoder", "CausalLatentFlowModel"]
+__all__ = ["WanVAE", "Diffuser"]

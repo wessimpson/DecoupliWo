@@ -4,109 +4,164 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from diffusers import DDIMScheduler, UNet2DConditionModel
+import torch.nn.functional as F
 
-from world_model.model.net.vae import WanVAE
+from world_model.model.net import WanVAE, Diffuser
 
-# Mirror the sample structure but use our own VAE (WanVAE) and latent channel math.
-BUFFER_SIZE = 8  # number of conditioning frames
-
-
-def get_model(
-	action_embedding_dim: int,
-	wan_vae_dir: str | Path,
-	latent_channels: int = 16,
-	skip_image_conditioning: bool = False,
-) -> tuple[UNet2DConditionModel, WanVAE, nn.Embedding, DDIMScheduler]:
+class WorldModel(nn.Module):
 	"""
-	Returns:
-	- unet: diffusion U-Net that operates in latent space
-	- vae: our WanVAE wrapper (decoder used; encoder used externally in helpers)
-	- action_embedding: Embedding(num_actions+1, 768) for action conditioning
-	- noise_scheduler: DDIMScheduler configured for v_prediction
+	World Model that combines a VAE and a Diffuser.
+	Input video 
+		-> VAE
+		-> Diffuser
+			-> UNet
+			-> Action embedding
+			-> Noise scheduler
+		-> Output video
 	"""
-	# Action embedding like sample (dim=768 to match UNet conditioning width)
-	action_embedding = nn.Embedding(num_embeddings=action_embedding_dim + 1, embedding_dim=768)
-	nn.init.normal_(action_embedding.weight, mean=0.0, std=0.02)
+	def __init__(
+		self,
+		action_embedding_dim: int,
+		wan_vae_dir: str | Path,
+		latent_channels: int,
+		buffer_size: int,
+		cross_attention_dim: int,
+		num_train_timesteps: int,
+		prediction_type: str,
+		model_size: str = "small",
+		gradient_checkpointing: bool = False,
+	) -> None:
+		super().__init__()
+		self.buffer_size = buffer_size
 
-	# Scheduler (v_prediction like sample)
-	noise_scheduler = DDIMScheduler(num_train_timesteps=1000)
-	noise_scheduler.register_to_config(prediction_type="v_prediction")
+		self.diffuser = Diffuser(
+			num_actions=action_embedding_dim,
+			latent_channels=latent_channels,
+			buffer_size=buffer_size,
+			cross_attention_dim=cross_attention_dim,
+			num_train_timesteps=num_train_timesteps,
+			prediction_type=prediction_type,
+			model_size=model_size,  # choose width/depth preset
+		)
+		if gradient_checkpointing:
+			self.diffuser.unet.enable_gradient_checkpointing()
+		self.num_train_timesteps = num_train_timesteps
 
-	# Base UNet (create minimal UNet; users can replace with pretrained if desired)
-	unet = UNet2DConditionModel(
-		sample_size=None,  # flex spatial
-		in_channels=latent_channels * (BUFFER_SIZE + 1),  # fold frames into channels
-		out_channels=latent_channels,  # predict noise for last frame channels
-		down_block_types=("DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"),
-		up_block_types=("UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"),
-		block_out_channels=(320, 640, 1280, 1280),
-		layers_per_block=2,
-		cross_attention_dim=768,  # to match action embedding
-		num_class_embeds=None,
-	)
-	# Ensure conv_in channels are correct if we skip/enable image conditioning
-	if not skip_image_conditioning:
-		new_in_channels = latent_channels * (BUFFER_SIZE + 1)
-		if unet.config.in_channels != new_in_channels:
-			unet.conv_in = nn.Conv2d(new_in_channels, 320, kernel_size=3, stride=1, padding=1)
-			nn.init.xavier_uniform_(unet.conv_in.weight)
-			nn.init.zeros_(unet.conv_in.bias)
-			unet.config["in_channels"] = new_in_channels
+		wan_vae_dir = Path(wan_vae_dir)
+		self.vae = WanVAE(pretrained_path=str(wan_vae_dir / "Wan2.1_VAE.pth"))
+		self.vae.eval()
+		self.vae.requires_grad_(False)
 
-	# Our own VAE (WanVAE)
-	wan_vae_dir = Path(wan_vae_dir)
-	vae = WanVAE(pretrained_path=str(wan_vae_dir / "Wan2.1_VAE.pth"))
-	vae.eval()
-	vae.requires_grad_(False)
+	def enable_gradient_checkpointing(self) -> None:
+		self.diffuser.unet.enable_gradient_checkpointing()
 
-	return unet, vae, action_embedding, noise_scheduler
-
-
-def _count_params(module: nn.Module) -> tuple[int, int]:
-	total = sum(p.numel() for p in module.parameters())
-	trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
-	return total, trainable
+	def trainable_parameters(self):
+		return self.diffuser.parameters()
 
 
+	def encode_video(self, videos: torch.Tensor, device: torch.device) -> torch.Tensor:
+		"""
+		Encode frames with WanVAE.
+		input: [B, 3, BUF, H, W]
+		output: [B, 16, T, h', w']
+		"""
+		video_bcthw = videos.permute(0, 2, 1, 3, 4).contiguous()
+		return self.vae.single_encode(video_bcthw.to(device, non_blocking=True), device=device)
+
+	def encode_frame(self, frame: torch.Tensor, device: torch.device) -> torch.Tensor:
+		"""
+		Encode a single frame with WanVAE.
+		input: [B, 3, H, W]
+		output: [B, 16, h', w']
+		"""
+		video = frame.unsqueeze(2)  # [B,3,1,H,W]
+		with torch.no_grad():
+			z = self.vae.single_encode(video.to(device, non_blocking=True), device=device)  # [B,16,1,h',w']
+		return z.squeeze(2).contiguous()
+
+	def decode_frame(self, latents: torch.Tensor, device: torch.device) -> torch.Tensor:
+		"""
+		Decode a batch of latent frames to images.
+		latents: [B, 16, h', w']
+		returns: [B, 3, 256, 256]
+		"""
+		video = latents.unsqueeze(2) # [B, 16, 1, h', w']
+		with torch.no_grad():
+			video = self.vae.single_decode(video, device=device)  # [B,3,1,256,256]
+			return video.squeeze(2).contiguous()
+
+	def diffusion_forward(self, z_ctx: torch.Tensor, z_tgt: torch.Tensor, last_action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+		"""
+		Single-step diffusion training forward pass.
+		Inputs:
+			z_ctx: [B, T, 16, h', w']
+			z_tgt:    [B, 16, h', w']
+			last_action: [B]
+		Returns:
+			model_pred: [B, 16, h', w']
+			noise:      [B, 16, h', w']
+		"""
+		device = z_tgt.device
+		B = z_tgt.shape[0]
+		num_train_timesteps = self.num_train_timesteps
+		timesteps = torch.randint(0, num_train_timesteps, (B,), device=device).long()
+		noise = torch.randn_like(z_tgt, dtype=self.diffuser.unet.dtype)
+		noisy_last = self.diffuser.noise_scheduler.add_noise(z_tgt, noise, timesteps)
+		# Fold temporal frames into channels using actual context length
+		B, Tbuf, C, latent_h, latent_w = z_ctx.shape
+		concatenated = torch.cat([z_ctx, noisy_last.unsqueeze(1)], dim=1)  # [B, Tbuf+1, C, h', w']
+		latents_in = concatenated.view(B, (Tbuf + 1) * C, latent_h, latent_w).contiguous()
+		enc_states = self.diffuser.action_embedding(last_action.to(device, non_blocking=True)).unsqueeze(1)
+		latent_scaled = self.diffuser.noise_scheduler.scale_model_input(latents_in, timesteps)
+		model_pred =  self.diffuser.unet(latent_scaled, timesteps, encoder_hidden_states=enc_states, return_dict=False)[0]
+ 		
+		return model_pred, noise
+
+
+
+"""
+This is a test script to check if the model is working correctly.
+"""
 def main() -> None:
+	NUM_TRAIN_TIMESTEPS = 1000
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	print(f"Device: {device}")
-	if torch.cuda.is_available():
-		print(f"CUDA: {torch.version.cuda}, GPU: {torch.cuda.get_device_name(0)}")
-		torch.cuda.empty_cache()
-		torch.cuda.reset_peak_memory_stats()
-
-	unet, vae, action_embedding, noise_scheduler = get_model(
+	# Build a small model for a quick IO test
+	world_model = WorldModel(
 		action_embedding_dim=18,
 		wan_vae_dir=Path("world_model") / "checkpoints" / "vae",
 		latent_channels=16,
-		skip_image_conditioning=False,
-	)
-	unet = unet.to(device)
-	vae = vae.to(device)
-	action_embedding = action_embedding.to(device)
+		buffer_size=16,
+		cross_attention_dim=768,
+		num_train_timesteps=1000,
+		prediction_type="v_prediction",
+	).to(device)
 
-	unet_total, unet_trainable = _count_params(unet)
-	vae_total, vae_trainable = _count_params(vae)
-	act_total, act_trainable = _count_params(action_embedding)
-	print(f"UNet params: total={unet_total:,}, trainable={unet_trainable:,}")
-	print(f"WanVAE params: total={vae_total:,}, trainable={vae_trainable:,}")
-	print(f"Action embedding params: total={act_total:,}, trainable={act_trainable:,}")
-	print(f"Scheduler prediction type: {noise_scheduler.config.prediction_type}")
+	# Create dummy inputs
+	B, BUF, H, W = 2, 16, 256, 256
+	context = torch.rand(B, BUF, 3, H, W) * 2 - 1  # [-1,1], CPU
+	target = torch.rand(B, 3, H, W) * 2 - 1        # [-1,1], CPU
+	last_action = torch.zeros(B, dtype=torch.long)  # dummy action ids
 
-	if torch.cuda.is_available():
-		allocated = torch.cuda.memory_allocated() / (1024**3)
-		reserved = torch.cuda.memory_reserved() / (1024**3)
-		peak = torch.cuda.max_memory_allocated() / (1024**3)
-		print(f"GPU memory allocated: {allocated:.3f} GB")
-		print(f"GPU memory reserved:  {reserved:.3f} GB")
-		print(f"GPU memory peak:      {peak:.3f} GB")
-	else:
-		print("CUDA not available; GPU memory stats are unavailable.")
+	# Encode via VAE; function handles layout normalization internally
+	with torch.no_grad():
+		z_ctx_btchw = world_model.encode_video(context, device=device)  # [B,16,T,h',w']
+		z_ctx = z_ctx_btchw.permute(0, 2, 1, 3, 4).contiguous()  # [B,T,16,h',w']
+		z_tgt = world_model.encode_frame(target, device=device)       # [B,16,h',w']
+
+	# Diffusion forward (single step noise prediction) via model.forward
+	with torch.no_grad():
+		model_pred, noise = world_model.diffusion_forward(z_ctx, z_tgt, last_action)
+
+	# Decode a target latent back to image to complete IO loop
+	with torch.no_grad():
+		recon_video = world_model.vae.single_decode(z_tgt.unsqueeze(2), device=device)  # [B,3,1,256,256]
+	print("Shapes:",
+		  f"original={tuple(target.shape)}",
+	      f"z_ctx={tuple(z_ctx.shape)}",
+	      f"z_tgt={tuple(z_tgt.shape)}",
+	      f"pred={tuple(model_pred.shape)}",
+	      f"recon={tuple(recon_video.shape)}")
 
 
 if __name__ == "__main__":
 	main()
-
-

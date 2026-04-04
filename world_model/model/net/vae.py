@@ -385,3 +385,59 @@ class WanVAE(nn.Module):
 		hidden_state = hidden_state.to(device)
 		video = self.model.decode(hidden_state, self.scale)
 		return video.clamp_(-1, 1)
+
+
+
+"""light test utilities"""
+if __name__ == "__main__":
+	import numpy as np
+	import matplotlib.pyplot as plt
+	from pathlib import Path
+	import torch
+	# Fixed configuration
+	transitions_dir = Path("data") / "transitions" / "space_invaders"
+	wan_vae_dir = Path("world_model") / "checkpoints" / "vae"
+	num_frames = 8
+	image_size = (210, 160)
+	pool_size = 4
+	z_dim = 16
+	shard_paths = sorted(transitions_dir.glob("shard_*.npz"))
+	shard_path = shard_paths[0]
+
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	vae = WanVAE(pretrained_path=str(wan_vae_dir / "Wan2.1_VAE.pth"), z_dim=z_dim).to(device)
+
+	# Load one frame and prepare [1,3,T,H,W] in [-1,1]
+	with np.load(shard_path, mmap_mode="r") as data:
+		if "obs" not in data:
+			raise KeyError(f'"obs" key not found in {shard_path}')
+		obs = data["obs"]
+		frame = obs[:num_frames] # [T, H, W, 3]
+		frame = torch.from_numpy(frame).permute(0, 3, 1, 2).contiguous() # [T, 3, H, W]
+		frame = frame.float() / 127.5 - 1.0
+		frame = torch.nn.functional.interpolate(frame, size=image_size, mode="bilinear", align_corners=False) # [T, 3, H, W]
+		video = frame.permute(1, 0, 2, 3).contiguous().unsqueeze(0) # [1,3,T,H,W]
+	with torch.no_grad():
+		dtype = next(vae.model.parameters()).dtype
+		video = video.to(device=device, dtype=dtype) # this needs to be [B,C,T,H,W] in [-1,1]
+		latent = vae.single_encode(video, device=device)  # [1, z_dim, T, h', w']
+		recon = vae.single_decode(latent, device=device)  # [1, 3, T, H, W] in [-1, 1]
+		recon_img = recon[0, :, 0].detach().cpu().float()  # [3, T, H, W]
+		orig_img = video[0, :, 0].detach().cpu().float()   # [3, T, H, W]
+		to_disp = lambda t: ((t + 1.0) * 0.5).clamp(0, 1).permute(1, 2, 0).numpy()
+		orig_disp = to_disp(orig_img)
+		recon_disp = to_disp(recon_img)
+		print(f"video shape: {tuple(video.shape)}")
+		print(f"latent shape: {tuple(latent.shape)}")
+		print(f"recon shape: {tuple(recon.shape)}")
+
+	# Show original vs reconstructed (left/right), no saving
+	fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+	axes[0].imshow(orig_disp)
+	axes[0].set_title("Original")
+	axes[0].axis("off")
+	axes[1].imshow(recon_disp)
+	axes[1].set_title("Reconstructed")
+	axes[1].axis("off")
+	plt.tight_layout()
+	plt.show()

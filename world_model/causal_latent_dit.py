@@ -1,4 +1,5 @@
-"""Causal temporal transformer + flow matching on per-frame latents (Matrix-Game-style idea, minimal)."""
+# TODO: add causal attention mask to the transformer layers
+"""Causal temporal transformer + flow matching on per-frame latents."""
 
 from __future__ import annotations
 

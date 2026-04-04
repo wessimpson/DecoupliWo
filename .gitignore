@@ -12,3 +12,10 @@ world_model/checkpoint/vae/*.pth
 world_model/checkpoint/vae/*.pt
 world_model/checkpoint/dit/*.pt
 .DS_Store
+
+# experiment results
+runs/
+
+# sample repos
+Micro-World/
+Matrix-Game-2/
