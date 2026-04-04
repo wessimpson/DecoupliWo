@@ -11,6 +11,7 @@ from tqdm.auto import tqdm
 from torch.amp import autocast, GradScaler
 
 from functools import partial
+from datetime import datetime
 from world_model.dataset import RolloutVideoDataset, preprocess
 from world_model.model.world_model import WorldModel
 
@@ -133,7 +134,10 @@ def main() -> None:
 		return 0.5 * (1.0 + _m.cos(_m.pi * progress))
 
 	scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-	writer = SummaryWriter(log_dir=args.log_dir)
+	# Build a unique run directory inside args.log_dir for TensorBoard
+	run_name = f"{args.env}_{args.model_size}_bs{args.batch_size}_seq{args.seq_len}_resize{args.resize[0]}x{args.resize[1]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+	run_dir = Path(args.log_dir) / run_name
+	writer = SummaryWriter(log_dir=str(run_dir))
 	ckpt_root = Path(args.checkpoint_dir)
 	ckpt_root.mkdir(parents=True, exist_ok=True)
 	accum_steps = max(1, int(args.grad_accum_steps))
@@ -213,7 +217,7 @@ def main() -> None:
 	save_checkpoint(global_step)
 	writer.close()
 	pbar.close()
-	print("Training finished. TensorBoard logs at:", args.log_dir)
+	print("Training finished. TensorBoard logs at:", str(run_dir))
 	print("Checkpoints saved to:", ckpt_root)
 
 
