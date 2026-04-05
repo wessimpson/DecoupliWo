@@ -366,7 +366,7 @@ class WanVAE(nn.Module):
 		self.scale = [self.mean, 1.0 / self.std]
 		self.model = VideoVAE_(z_dim=z_dim).eval().requires_grad_(False)
 		if pretrained_path is not None:
-			self.model.load_state_dict(torch.load(pretrained_path, map_location="cpu"), assign=True)
+			self.model.load_state_dict(torch.load(pretrained_path, map_location="cpu", weights_only=True), assign=True)
 		self.upsampling_factor = 8
 
 	def to(self, *args, **kwargs):

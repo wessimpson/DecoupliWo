@@ -19,7 +19,7 @@ from world_model.model.world_model import WorldModel
 BUFFER_SIZE = 8
 LATENT_CHANNELS = 16
 CROSS_ATTENTION_DIM = 768
-PREDICTION_TYPE = "v_prediction"
+PREDICTION_TYPE = "epsilon"
 
 
 def parse_args() -> argparse.Namespace:

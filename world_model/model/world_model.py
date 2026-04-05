@@ -152,6 +152,7 @@ class WorldModel(nn.Module):
 		out_dir.mkdir(parents=True, exist_ok=True)
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
 		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
+		torch.save(self.diffuser.noise_level_embedding.state_dict(), out_dir / "noise_level_embedding.pt")
 		sched_dir = out_dir / "noise_scheduler"
 		sched_dir.mkdir(parents=True, exist_ok=True)
 		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))
@@ -172,7 +173,7 @@ def main() -> None:
 		buffer_size=16,
 		cross_attention_dim=768,
 		num_train_timesteps=1000,
-		prediction_type="v_prediction",
+		prediction_type="epsilon",
 	).to(device)
 
 	# Create dummy inputs

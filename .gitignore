@@ -7,7 +7,7 @@ checkpoints/
 tb_logs/
 transitions/
 videos/
-data/
+data/transitions/
 world_model/checkpoint/vae/*.pth
 world_model/checkpoint/vae/*.pt
 world_model/checkpoint/dit/*.pt
