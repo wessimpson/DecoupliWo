@@ -30,9 +30,14 @@ class WorldModel(nn.Module):
 		prediction_type: str,
 		model_size: str = "small",
 		gradient_checkpointing: bool = False,
+		context_noise_max: float = 0.7,
+		context_noise_buckets: int = 10,
 	) -> None:
 		super().__init__()
 		self.buffer_size = buffer_size
+		# GameNGen-style context noise configuration
+		self.context_noise_max = context_noise_max
+		self.context_noise_buckets = context_noise_buckets
 
 		self.diffuser = Diffuser(
 			num_actions=action_embedding_dim,
@@ -90,30 +95,52 @@ class WorldModel(nn.Module):
 			video = self.vae.single_decode(video, device=device)  # [B,3,1,256,256]
 			return video.squeeze(2).contiguous()
 
-	def diffusion_forward(self, z_ctx: torch.Tensor, z_tgt: torch.Tensor, last_action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+	def diffusion_forward(
+		self,
+		z_ctx: torch.Tensor,  # [B,T,16,h',w']
+		z_tgt: torch.Tensor,  # [B,16,h',w']
+		context_actions: torch.Tensor,  # [B,T] int64
+	) -> tuple[torch.Tensor, torch.Tensor]:
 		"""
 		Single-step diffusion training forward pass.
 		Inputs:
 			z_ctx: [B, T, 16, h', w']
 			z_tgt:    [B, 16, h', w']
-			last_action: [B]
+			context_actions: [B,T]
 		Returns:
 			model_pred: [B, 16, h', w']
 			noise:      [B, 16, h', w']
 		"""
 		device = z_tgt.device
 		B = z_tgt.shape[0]
+		# 1) Diffusion noise on target latent
 		num_train_timesteps = self.num_train_timesteps
 		timesteps = torch.randint(0, num_train_timesteps, (B,), device=device).long()
 		noise = torch.randn_like(z_tgt, dtype=self.diffuser.unet.dtype)
 		noisy_last = self.diffuser.noise_scheduler.add_noise(z_tgt, noise, timesteps)
-		# Fold temporal frames into channels using actual context length
+		
+		# 2) Context noise augmentation on history latents
 		B, Tbuf, C, latent_h, latent_w = z_ctx.shape
-		concatenated = torch.cat([z_ctx, noisy_last.unsqueeze(1)], dim=1)  # [B, Tbuf+1, C, h', w']
+		# Sample per-sample alpha ~ Uniform(0, self.context_noise_max); keep alpha as shape [B]
+		alpha = torch.rand((B,), device=z_ctx.device, dtype=z_ctx.dtype) * float(self.context_noise_max)
+		alpha_broadcast = alpha.view(B, 1, 1, 1, 1)
+		ctx_eps = torch.randn_like(z_ctx, dtype=z_ctx.dtype)
+		z_ctx_noisy = z_ctx + alpha_broadcast * ctx_eps
+
+		# 3) Build model input by folding time into channels
+		concatenated = torch.cat([z_ctx_noisy, noisy_last.unsqueeze(1)], dim=1)  # [B, Tbuf+1, C, h', w']
 		latents_in = concatenated.view(B, (Tbuf + 1) * C, latent_h, latent_w).contiguous()
-		enc_states = self.diffuser.action_embedding(last_action.to(device, non_blocking=True)).unsqueeze(1)
 		latent_scaled = self.diffuser.noise_scheduler.scale_model_input(latents_in, timesteps)
-		model_pred =  self.diffuser.unet(latent_scaled, timesteps, encoder_hidden_states=enc_states, return_dict=False)[0]
+		
+		# 4) Build conditioning from action sequence + context-noise bucket
+		den = max(self.context_noise_max, 1e-8)
+		bucket_idx = (alpha / den * self.context_noise_buckets).clamp(0, self.context_noise_buckets - 1).long()
+		# context_actions: [B,T] -> [B,T,dim]
+		act_ids = context_actions.to(device, non_blocking=True).long()
+		act_cond = self.diffuser.action_embedding(act_ids)  # [B,T,dim]
+		noise_token = self.diffuser.noise_level_embedding(bucket_idx).unsqueeze(1)  # [B,1,dim]
+		enc_states = torch.cat([noise_token, act_cond], dim=1)  # [B,T+1,dim]
+		model_pred = self.diffuser.unet(latent_scaled, timesteps, encoder_hidden_states=enc_states, return_dict=False)[0]
  		
 		return model_pred, noise
 

@@ -30,9 +30,9 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--num_actions", type=int, default=18)
 	p.add_argument("--seq_len", type=int, default=BUFFER_SIZE + 1, help="BUFFER_SIZE context + 1 target")
 	p.add_argument("--resize", type=int, nargs=2, metavar=("H", "W"), default=(210, 160), help="Resize frames to (H W)")
-	p.add_argument("--batch_size", type=int, default=16)
+	p.add_argument("--batch_size", type=int, default=8)
 	p.add_argument("--num_train_epochs", type=int, default=10, help="Optional number of epochs to train instead of fixed steps")
-	p.add_argument("--max_train_steps", type=int, default=20000, help="Optional cap on total optimizer update steps")
+	p.add_argument("--max_train_steps", type=int, default=10000, help="Optional cap on total optimizer update steps")
 	p.add_argument("--lr", type=float, default=2e-4)
 	p.add_argument("--lr_warmup_steps", type=int, default=0, help="Warmup steps for LR scheduler")
 	p.add_argument("--log_dir", type=str, default="runs/world_model")
@@ -40,8 +40,11 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--num_train_timesteps", type=int, default=1000, help="Diffusion training horizon (noise scheduler).")
 	p.add_argument("--model_size", type=str, choices=["small", "base", "large"], default="base", help="UNet size preset")
 	p.add_argument("--gradient_checkpointing", action="store_true", help="Enable UNet gradient checkpointing to save VRAM")
+	p.add_argument("--context_drop_prob", type=float, default=0.1, help="Probability to drop context conditioning (classifier-free style)")
+	p.add_argument("--context_noise_max", type=float, default=0.7, help="Max alpha for context noise augmentation")
+	p.add_argument("--context_noise_buckets", type=int, default=10, help="Number of buckets for context noise embedding")
 	p.add_argument("--checkpoint_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit"))
-	p.add_argument("--save_every", type=int, default=10000)
+	p.add_argument("--save_every", type=int, default=1000)
 	p.add_argument(
 		"--num_workers",
 		type=int,
@@ -101,6 +104,8 @@ def main() -> None:
 		prediction_type=PREDICTION_TYPE,
 		model_size=str(args.model_size),
 		gradient_checkpointing=bool(args.gradient_checkpointing),
+		context_noise_max=float(args.context_noise_max),
+		context_noise_buckets=int(args.context_noise_buckets),
 	)
 	world_model = world_model.to(device)
 
@@ -165,7 +170,7 @@ def main() -> None:
 			consumed_batches += 1
 			context = batch["context_frames"]  # [B, BUF, 3, 256, 256], CPU
 			target_frame = batch["target_frame"]  # [B, 3, 256, 256], CPU
-			last_action = batch["last_action"]  # [B], CPU
+			context_actions = batch["context_actions"]  # [B, BUF], CPU
 			b, tbuf, c, h, w = context.shape
 			
 			# Encode context frames
@@ -176,9 +181,15 @@ def main() -> None:
 			with torch.no_grad():
 				z_tgt = world_model.encode_frame(target_frame, device=device)       # [B,16,h',w']
 
+			# Classifier-free style context drop: replace context latents with zeros with prob p per sample
+			if args.context_drop_prob and args.context_drop_prob > 0.0:
+				with torch.no_grad():
+					drop = (torch.rand((b, 1, 1, 1, 1), device=z_ctx.device) < float(args.context_drop_prob)).float()
+					z_ctx = z_ctx * (1.0 - drop)
+
 			# Diffusion forward in latent space
 			with autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-				model_pred, noise = world_model.diffusion_forward(z_ctx, z_tgt, last_action)
+				model_pred, noise = world_model.diffusion_forward(z_ctx, z_tgt, context_actions.to(device if device.type=="cuda" else torch.device("cpu")))
 
 			if (consumed_batches % accum_steps) == 0:
 				optimizer.zero_grad(set_to_none=True)

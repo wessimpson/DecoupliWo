@@ -20,6 +20,7 @@ class Diffuser(nn.Module):
 		prediction_type: Literal["epsilon", "sample", "v_prediction"],
 		temporal_downsample: int = 4,
 		model_size: Literal["small", "base", "large"] = "small",
+		noise_buckets: int = 10,
 	) -> None:
 		super().__init__()
 
@@ -58,6 +59,12 @@ class Diffuser(nn.Module):
 			embedding_dim=cross_attention_dim,
 		)
 		nn.init.normal_(self.action_embedding.weight, mean=0.0, std=0.02)
+		# noise-level (context noise) embedding buckets
+		self.noise_level_embedding = nn.Embedding(
+			num_embeddings=int(noise_buckets),
+			embedding_dim=cross_attention_dim,
+		)
+		nn.init.normal_(self.noise_level_embedding.weight, mean=0.0, std=0.02)
 
 		self.noise_scheduler = DDIMScheduler(num_train_timesteps=num_train_timesteps)
 		self.noise_scheduler.register_to_config(prediction_type=prediction_type)

@@ -53,7 +53,7 @@ def preprocess(
 	return {
 		"context_frames": frames[:buffer_size],  # [BUF,3,256,256]
 		"target_frame": frames[buffer_size],     # [3,256,256]
-		"last_action": torch.tensor(int(actions[buffer_size - 1]), dtype=torch.long),
+		"context_actions": torch.from_numpy(actions[:buffer_size]).to(dtype=torch.long),  # [BUF]
 	}
 
 

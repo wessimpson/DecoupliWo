@@ -1,115 +1,162 @@
 from __future__ import annotations
 
-import argparse
-from functools import partial
 from pathlib import Path
+from collections import deque
+from typing import Optional, Dict
 
 import numpy as np
 import torch
-from PIL import Image
-from diffusers.image_processor import VaeImageProcessor
-from diffusers.utils.torch_utils import randn_tensor
-from torch.amp import autocast
+import matplotlib.pyplot as plt
+from matplotlib import animation
 
-from world_model.dataset import RolloutClipDataset, preprocess
 from world_model.model.world_model import WorldModel
 
 
-BUFFER_SIZE = 8
-NUM_ACTIONS = 18
-LATENT_CHANNELS = 16
-CROSS_ATTENTION_DIM = 768
-NUM_TRAIN_TIMESTEPS = 1000
-PREDICTION_TYPE = "v_prediction"
+def load_world_model(ckpt_dir: Path, num_actions: int, buffer_size: int, model_size: str, num_train_timesteps: int, context_noise_max: float = 0.7, context_noise_buckets: int = 10) -> WorldModel:
+	ckpt_dir = Path(ckpt_dir)
+	wm = WorldModel(
+		action_embedding_dim=num_actions,
+		wan_vae_dir=Path("world_model") / "checkpoints" / "vae",
+		latent_channels=16,
+		buffer_size=buffer_size,
+		cross_attention_dim=768,
+		num_train_timesteps=num_train_timesteps,
+		prediction_type="v_prediction",
+		model_size=model_size,
+		gradient_checkpointing=False,
+		context_noise_max=context_noise_max,
+		context_noise_buckets=context_noise_buckets,
+	)
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	wm = wm.to(device)
+	# Load diffuser weights (unet.pt, action_embedding.pt)
+	unet_path = ckpt_dir / "unet.pt"
+	act_path = ckpt_dir / "action_embedding.pt"
+	if unet_path.exists():
+		wm.diffuser.unet.load_state_dict(torch.load(unet_path, map_location=device))
+	if act_path.exists():
+		wm.diffuser.action_embedding.load_state_dict(torch.load(act_path, map_location=device))
+	return wm
 
 
-def tensor_to_image(x: torch.Tensor) -> Image.Image:
-	x = ((x.clamp(-1, 1) + 1.0) * 0.5).cpu().permute(1, 2, 0).numpy()
-	x = (x * 255.0).round().astype(np.uint8)
-	return Image.fromarray(x)
+def decode_to_image(world_model: WorldModel, z_frame: torch.Tensor, device: torch.device) -> np.ndarray:
+	with torch.no_grad():
+		img = world_model.decode_frame(z_frame.unsqueeze(0), device=device)[0]  # [3,H,W]
+		img = ((img.clamp(-1, 1) + 1.0) * 0.5).cpu().permute(1, 2, 0).numpy()  # [H,W,3] in [0,1]
+	return img
+
+
+def run_autoregressive(
+	ckpt_dir: str,
+	num_actions: int = 18,
+	buffer_size: int = 6,
+	model_size: str = "base",
+	num_train_timesteps: int = 1000,
+	initial_context: Optional[np.ndarray] = None,
+	image_size: tuple[int, int] = (210, 160),
+	context_noise_max: float = 0.7,
+	context_noise_buckets: int = 10,
+) -> None:
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	world_model = load_world_model(Path(ckpt_dir), num_actions, buffer_size, model_size, num_train_timesteps, context_noise_max, context_noise_buckets)
+	world_model.eval()
+
+	# Initialize context frames: use black frames if none provided
+	h, w = image_size
+	if initial_context is None:
+		init = np.zeros((buffer_size, 3, h, w), dtype=np.float32)  # [-1,1] domain
+	else:
+		init = initial_context.astype(np.float32)  # assume [T,3,H,W] in [-1,1]
+		if init.shape[0] < buffer_size:
+			pad = np.zeros((buffer_size - init.shape[0], 3, h, w), dtype=np.float32)
+			init = np.concatenate([pad, init], axis=0)
+	context = deque([torch.from_numpy(f) for f in init], maxlen=buffer_size)
+	actions_hist = deque([0 for _ in range(buffer_size)], maxlen=buffer_size)
+
+	# UI with matplotlib
+	fig, ax = plt.subplots(figsize=(4, 4))
+	ax.axis("off")
+	img_disp = ax.imshow(np.zeros((h, w, 3), dtype=np.float32), interpolation="nearest")
+
+	# Action keyboard mapping (customize as needed)
+	key_to_action: Dict[str, int] = {
+		"up": 2,
+		"down": 5,
+		"left": 4,
+		"right": 3,
+		" ": 0,  # noop on space
+		"z": 1,  # fire
+		"x": 6,  # fire+right (example)
+		"c": 7,  # fire+left (example)
+	}
+	current_action = {"a": 0}
+
+	def on_key(event):
+		key = event.key
+		if key in key_to_action:
+			current_action["a"] = key_to_action[key]
+		else:
+			current_action["a"] = 0
+
+	fig.canvas.mpl_connect("key_press_event", on_key)
+
+	def gen_next_frame():
+		# Prepare context batch [1, BUF, 3, H, W] in [-1,1]
+		ctx = torch.stack(list(context), dim=0)  # [BUF,3,H,W]
+		ctx = ctx.unsqueeze(0)  # [1,BUF,3,H,W]
+		acts = torch.tensor(list(actions_hist), dtype=torch.long).unsqueeze(0)  # [1,BUF]
+		with torch.no_grad():
+			# Encode context to latents
+			z_ctx_btchw = world_model.encode_video(ctx, device=device)  # [1,16,BUF,h',w']
+			z_ctx = z_ctx_btchw.permute(0, 2, 1, 3, 4).contiguous().squeeze(0)  # [BUF,16,h',w']
+		# Target latent initialization
+		z_tgt = torch.zeros_like(z_ctx[-1], device=device)  # [16,h',w']
+		# One-step denoising-style prediction for demo
+		with torch.no_grad():
+			pred_noise, _ = world_model.diffusion_forward(z_ctx.unsqueeze(0), z_tgt.unsqueeze(0), acts.to(device))
+		z_next = pred_noise  # [1,16,h',w']
+		frame_np = decode_to_image(world_model, z_next.squeeze(0), device)
+		# Update context with decoded frame
+		frame_t = torch.from_numpy((frame_np * 2.0 - 1.0).astype(np.float32)).permute(2, 0, 1)  # [3,H,W]
+		context.append(frame_t)
+		actions_hist.append(current_action["a"])
+		return frame_np
+
+	def update(_):
+		frame = gen_next_frame()
+		img_disp.set_data(frame)
+		return (img_disp,)
+
+	anim = animation.FuncAnimation(fig, update, interval=50, blit=True)
+	plt.tight_layout()
+	plt.show()
 
 
 def main() -> None:
-	parser = argparse.ArgumentParser(description="World model inference (diffusion-style) using WanVAE.")
-	parser.add_argument("--env", type=str, default="space_invaders")
-	parser.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
-	parser.add_argument("--preprocessed_root", type=str, default=str(Path("world_model") / "preprocessed"))
-	parser.add_argument("--wan_vae_dir", type=str, default=str(Path("world_model") / "checkpoints" / "vae"))
-	parser.add_argument("--seq_len", type=int, default=BUFFER_SIZE)
-	parser.add_argument("--image_size", type=int, default=256)
-	parser.add_argument("--steps", type=int, default=16)
-	parser.add_argument("--denoise_steps", type=int, default=30)
-	parser.add_argument("--out", type=str, default="wm_rollout.gif")
-	args = parser.parse_args()
-
-	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	ds = RolloutClipDataset(
-		Path(args.preprocessed_root) / args.env / f"{args.image_size}px",
-		seq_len=args.seq_len + 1,
-		stride=1,
-		num_actions=NUM_ACTIONS,
+	import argparse
+	p = argparse.ArgumentParser(description="Autoregressive inference with keyboard-controlled actions.")
+	p.add_argument("--ckpt_dir", type=str, required=True, help="Path to checkpoint dir containing unet.pt, action_embedding.pt")
+	p.add_argument("--env", type=str, default="space_invaders")
+	p.add_argument("--num_actions", type=int, default=18)
+	p.add_argument("--buffer_size", type=int, default=6)
+	p.add_argument("--model_size", type=str, choices=["small", "base", "large"], default="base")
+	p.add_argument("--num_train_timesteps", type=int, default=1000)
+	p.add_argument("--height", type=int, default=210)
+	p.add_argument("--width", type=int, default=160)
+	p.add_argument("--context_noise_max", type=float, default=0.7)
+	p.add_argument("--context_noise_buckets", type=int, default=10)
+	args = p.parse_args()
+	run_autoregressive(
+		ckpt_dir=args.ckpt_dir,
+		num_actions=args.num_actions,
+		buffer_size=args.buffer_size,
+		model_size=args.model_size,
+		num_train_timesteps=args.num_train_timesteps,
+		initial_context=None,
+		image_size=(args.height, args.width),
+		context_noise_max=args.context_noise_max,
+		context_noise_buckets=args.context_noise_buckets,
 	)
-	ds = ds.with_transform(partial(preprocess, buffer_size=BUFFER_SIZE))
-	sample = ds[0]
-	obs_btchw = sample["context_frames"].unsqueeze(0).to(device)  # [1, T, 3, H, W] in [-1,1]
-	actions_t = sample["last_action"].view(1).to(device)
-
-	world_model = WorldModel(
-		action_embedding_dim=NUM_ACTIONS,
-		wan_vae_dir=args.wan_vae_dir,
-		latent_channels=LATENT_CHANNELS,
-		buffer_size=BUFFER_SIZE,
-		cross_attention_dim=CROSS_ATTENTION_DIM,
-		num_train_timesteps=NUM_TRAIN_TIMESTEPS,
-		prediction_type=PREDICTION_TYPE,
-	)
-	world_model = world_model.to(device)
-	image_processor = VaeImageProcessor(vae_scale_factor=8)
-	world_model.eval()
-
-	def encode_context(images_btchw: torch.Tensor) -> torch.Tensor:
-		b, t, c, h, w = images_btchw.shape
-		assert t == BUFFER_SIZE
-		imgs = torch.nn.functional.interpolate(images_btchw.view(b * t, c, h, w), size=(256, 256), mode="bilinear", align_corners=False)
-		videos = imgs.unsqueeze(2)  # [B*T, 3, 1, H, W]
-		z = world_model.encode_video(videos, device=device)  # [B*T, 16, 1, h', w']
-		if z.dim() == 5:
-			z = z.squeeze(2)
-		latent = z.view(b, t, 16, z.shape[-2], z.shape[-1])
-		return latent
-
-	with torch.no_grad(), autocast(device_type="cuda", dtype=torch.float32):
-		context_latents = encode_context(obs_btchw[:, :BUFFER_SIZE])  # [1,B,16,h',w']
-		batch_size = 1
-		latent_h, latent_w = context_latents.shape[-2], context_latents.shape[-1]
-		num_channels_latents = 16
-		images = []
-		a_t = actions_t.view(1).to(device)
-		enc_states = world_model.encode_actions(a_t)  # [1,1,768]
-		for _ in range(args.steps):
-			target = randn_tensor((batch_size, num_channels_latents, latent_h, latent_w), generator=None, device=device, dtype=world_model.model_dtype())
-			world_model.diffuser.noise_scheduler.set_timesteps(args.denoise_steps, device=device)
-			timesteps = world_model.diffuser.noise_scheduler.timesteps
-			latents = torch.cat([context_latents, target.unsqueeze(1)], dim=1).view(batch_size, -1, latent_h, latent_w)
-			for t in timesteps:
-				latent_in = world_model.scale_model_input(latents, t)
-				noise_pred = world_model.predict_noise(latent_in, t, encoder_hidden_states=enc_states)
-				reshaped = latents.view(batch_size, BUFFER_SIZE + 1, num_channels_latents, latent_h, latent_w)
-				last = reshaped[:, -1]
-				denoised_last = world_model.diffuser.noise_scheduler.step(noise_pred, t, last, return_dict=False)[0]
-				reshaped[:, -1] = denoised_last
-				latents = reshaped.view(batch_size, -1, latent_h, latent_w)
-			last_latent = latents.view(batch_size, BUFFER_SIZE + 1, num_channels_latents, latent_h, latent_w)[:, -1].unsqueeze(2)
-			img = world_model.vae.single_decode(last_latent, device=device)[:, :, 0]  # [B,3,H,W]
-			images.append(tensor_to_image(img[0]))
-			# slide window
-			context_latents = torch.cat([context_latents[:, 1:], last_latent.squeeze(2).unsqueeze(1)], dim=1)
-
-	if images:
-		images[0].save(args.out, save_all=True, append_images=images[1:], duration=100, loop=0)
-		print("Saved:", args.out)
-	else:
-		print("No images generated.")
 
 
 if __name__ == "__main__":
