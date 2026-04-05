@@ -144,6 +144,18 @@ class WorldModel(nn.Module):
  		
 		return model_pred, noise
 
+	def save_diffuser(self, out_dir: Path) -> None:
+		"""
+		Save diffuser components (UNet, action embedding, noise scheduler config) to out_dir.
+		"""
+		out_dir = Path(out_dir)
+		out_dir.mkdir(parents=True, exist_ok=True)
+		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
+		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
+		sched_dir = out_dir / "noise_scheduler"
+		sched_dir.mkdir(parents=True, exist_ok=True)
+		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))
+
 
 
 """
