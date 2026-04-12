@@ -1,5 +1,4 @@
-from .vae import WanVAE
 from .diffuser import Diffuser
+from .vae import VAE
 
-__all__ = ["WanVAE", "Diffuser"]
-
+__all__ = ["Diffuser", "VAE"]

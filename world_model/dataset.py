@@ -1,4 +1,4 @@
-"""Metadata-indexed rollout dataset with optional sample transforms."""
+"""Metadata-indexed rollout dataset for chunk-based temporal world model."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Callable
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
 
@@ -28,43 +28,46 @@ class ShardMeta:
 SampleTransform = Callable[[dict[str, np.ndarray]], dict[str, torch.Tensor] | dict[str, np.ndarray]]
 
 
-IMG_TRANSFORMS = transforms.Compose(
-	[
-		transforms.ToTensor(),
-		transforms.Lambda(lambda x: x * 2.0 - 1.0),
-	]
-)
+def _resize_hw_divisible_by_8(resize_to: tuple[int, int]) -> tuple[int, int]:
+	h, w = int(resize_to[0]), int(resize_to[1])
+	return max(8, (h // 8) * 8), max(8, (w // 8) * 8)
+
+
+IMG_TRANSFORMS = transforms.Compose([
+	transforms.ToTensor(),
+	transforms.Lambda(lambda x: x * 2.0 - 1.0),
+])
 
 
 def preprocess(
 	examples: dict[str, np.ndarray],
-	buffer_size: int,
-	resize_to: tuple[int, int] | None = (256, 256),
+	history_len: int,
+	chunk_len: int,
+	resize_to: tuple[int, int] | None = (208, 160),
 ) -> dict[str, torch.Tensor]:
+	"""Convert raw sample → {history_frames, target_frames, history_actions, future_actions}.
+
+	Seq is sliced as: [0:K] = history, [K:K+N] = target chunk.
+	history_actions[j] = action at history_frames[j]; future_actions[i] aligns with target chunk.
 	"""
-	Convert a raw sample to model-ready tensors:
-	- Normalize to [-1,1]
-	- Resize to `resize_to` if provided
-	Returns context and target tensors shaped for training.
-	"""
+	if resize_to is not None:
+		resize_to = _resize_hw_divisible_by_8(resize_to)
 	tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
-	frames = torch.stack([tx(frame) for frame in examples["obs"]], dim=0)  # [T,3,H,W]
+
+	frames = torch.stack([tx(f) for f in examples["obs"]], dim=0)  # [K+N, 3, H, W]
 	actions = examples["action"].astype(np.int64)
+
+	K, N = history_len, chunk_len
 	return {
-		"context_frames": frames[:buffer_size],  # [BUF,3,256,256]
-		"target_frame": frames[buffer_size],     # [3,256,256]
-		"context_actions": torch.from_numpy(actions[:buffer_size]).to(dtype=torch.long),  # [BUF]
+		"history_frames": frames[:K],                                  # [K, 3, H, W]
+		"target_frames": frames[K : K + N],                            # [N, 3, H, W]
+		"history_actions": torch.from_numpy(actions[:K]).long(),       # [K]
+		"future_actions": torch.from_numpy(actions[K : K + N]).long(),  # [N]
 	}
 
 
 class RolloutVideoDataset(Dataset):
-	"""
-	Metadata-only indexed dataset over rollout shards.
-
-	At init time it records only shard metadata and cumulative row offsets.
-	Actual shard contents are opened lazily per worker and only the requested
-	window is decoded in ``__getitem__``.
-	"""
+	"""Lazy, mmap-backed windowed dataset over rollout shards."""
 
 	def __init__(
 		self,
@@ -81,50 +84,43 @@ class RolloutVideoDataset(Dataset):
 		self.num_actions = None if num_actions is None else int(num_actions)
 		self.transform = transform
 
-		# Expect per-shard directories: shard_XXXXX with obs.npy/action.npy
-		paths = sorted(p for p in self.data_dir.glob("shard_*") if (p / "obs.npy").exists() and (p / "action.npy").exists())
-		if not paths:
-			raise FileNotFoundError(f"No shard_* with obs.npy/action.npy under {self.data_dir}")
+		paths = sorted(
+			p for p in self.data_dir.glob("shard_*")
+			if (p / "obs.npy").exists() and (p / "action.npy").exists()
+		)
+		assert paths, f"No shard_* with obs.npy/action.npy under {self.data_dir}"
 
 		self._shards: list[ShardMeta] = []
 		self._cumulative_windows: list[int] = []
-		self._worker_cache: dict[str, np.lib.npyio.NpzFile] = {}
+		self._worker_cache: dict[str, dict[str, np.memmap]] = {}
 		self.n_actions = 0
 		total_windows = 0
 
 		for path in paths:
-			obs_path = path / "obs.npy"
-			act_path = path / "action.npy"
-			n_actions_path = path / "n_actions.npy"
-			obs = np.load(obs_path, mmap_mode="r")
+			obs = np.load(path / "obs.npy", mmap_mode="r")
 			num_rows = int(obs.shape[0])
+
+			n_actions_path = path / "n_actions.npy"
 			if n_actions_path.exists():
 				n_actions = int(np.load(n_actions_path))
 			elif self.num_actions is not None:
 				n_actions = self.num_actions
 			else:
-				raise KeyError(f"{path} must contain 'n_actions.npy' or dataset must be given fixed num_actions")
-
-			if self.num_actions is not None and n_actions != self.num_actions:
-				raise ValueError(f"{path} has n_actions={n_actions}, expected {self.num_actions}")
+				raise KeyError(f"{path}: need n_actions.npy or fixed num_actions")
 
 			num_windows = max(0, (num_rows - self.seq_len) // self.stride + 1)
 			total_windows += num_windows
-			meta = ShardMeta(
-				path=path,
-				num_rows=num_rows,
-				num_windows=num_windows,
-				cumulative_windows=total_windows,
-				n_actions=n_actions,
+			self._shards.append(ShardMeta(
+				path=path, num_rows=num_rows, num_windows=num_windows,
+				cumulative_windows=total_windows, n_actions=n_actions,
 				game_name=self.data_dir.name,
-			)
-			self._shards.append(meta)
+			))
 			self._cumulative_windows.append(total_windows)
 			self.n_actions = max(self.n_actions, n_actions)
 
 		self._total_windows = total_windows
 
-	def with_transform(self, transform: SampleTransform) -> "RolloutVideoDataset":
+	def with_transform(self, transform: SampleTransform) -> RolloutVideoDataset:
 		cloned = copy(self)
 		cloned.transform = transform
 		cloned._worker_cache = {}
@@ -134,50 +130,64 @@ class RolloutVideoDataset(Dataset):
 		return self._total_windows
 
 	def _resolve_index(self, idx: int) -> tuple[ShardMeta, int]:
-		if idx < 0 or idx >= self._total_windows:
-			raise IndexError(idx)
-		shard_idx = bisect_right(self._cumulative_windows, idx)
-		meta = self._shards[shard_idx]
-		prev_cumulative = 0 if shard_idx == 0 else self._cumulative_windows[shard_idx - 1]
-		local_window_idx = idx - prev_cumulative
-		row_start = local_window_idx * self.stride
-		return meta, row_start
+		assert 0 <= idx < self._total_windows
+		si = bisect_right(self._cumulative_windows, idx)
+		meta = self._shards[si]
+		prev = 0 if si == 0 else self._cumulative_windows[si - 1]
+		return meta, (idx - prev) * self.stride
 
-	def _get_shard_handle(self, meta: ShardMeta) -> dict[str, np.memmap]:
-		cache_key = str(meta.path)
-		handle = self._worker_cache.get(cache_key)
-		if handle is None:
-			handle = {
+	def _get_shard(self, meta: ShardMeta) -> dict[str, np.memmap]:
+		key = str(meta.path)
+		if key not in self._worker_cache:
+			self._worker_cache[key] = {
 				"obs": np.load(meta.path / "obs.npy", mmap_mode="r"),
 				"action": np.load(meta.path / "action.npy", mmap_mode="r"),
 			}
-			self._worker_cache[cache_key] = handle
-		return handle
+		return self._worker_cache[key]
 
 	def __getitem__(self, idx: int):
-		meta, row_start = self._resolve_index(idx)
-		shard = self._get_shard_handle(meta)
+		meta, row = self._resolve_index(idx)
+		shard = self._get_shard(meta)
 		sample = {
-			"obs": shard["obs"][row_start : row_start + self.seq_len],
-			"action": shard["action"][row_start : row_start + self.seq_len],
+			"obs": shard["obs"][row : row + self.seq_len],
+			"action": shard["action"][row : row + self.seq_len],
 		}
-		if self.transform is not None:
-			return self.transform(sample)
-		return sample
+		return self.transform(sample) if self.transform is not None else sample
 
 
-RolloutClipDataset = RolloutVideoDataset
+
+"""test"""
+def _find_test_env_dir() -> Path:
+	root = Path(__file__).resolve().parent.parent / "data" / "transitions" / "test"
+	assert root.is_dir(), f"expected {root}"
+	for env in sorted(root.iterdir()):
+		if env.is_dir() and any(env.glob("shard_*/obs.npy")):
+			return env
+	raise AssertionError(f"no env with shards under {root}")
 
 
 def main() -> None:
-	data_root = Path("data") / "transitions" / "space_invaders"
-	ds = RolloutVideoDataset(data_root, seq_len=9, stride=1, num_actions=18)
-	ds = ds.with_transform(partial(preprocess, buffer_size=8, resize_to=(210, 160)))
-	print(f"shards={len(ds._shards)} windows={len(ds)} n_actions={ds.n_actions}")
-	sample = ds[0]
-	print("context_frames:", tuple(sample["context_frames"].shape))
-	print("target_frame:", tuple(sample["target_frame"].shape))
-	print("last_action:", int(sample["last_action"]))
+	"""Smoke test: dataset + DataLoader batch shapes."""
+	K, N = 4, 4
+	H, W = 208, 160
+	env_dir = _find_test_env_dir()
+	tx = partial(preprocess, history_len=K, chunk_len=N, resize_to=(H, W))
+	ds = RolloutVideoDataset(env_dir, seq_len=K + N, stride=1, num_actions=18).with_transform(tx)
+	assert len(ds) > 0, "dataset empty"
+
+	row0 = ds[0]
+	for k in ("history_frames", "target_frames", "history_actions", "future_actions"):
+		assert k in row0, k
+
+	dl = DataLoader(ds, batch_size=2, shuffle=False, num_workers=0)
+	batch = next(iter(dl))
+	B = batch["history_frames"].shape[0]
+	assert batch["history_frames"].shape == (B, K, 3, H, W)
+	assert batch["target_frames"].shape == (B, N, 3, H, W)
+	assert batch["history_actions"].shape == (B, K)
+	assert batch["future_actions"].shape == (B, N)
+	assert batch["history_actions"].dtype == torch.long
+	print(f"OK  env={env_dir.name}  len={len(ds)}  batch={B}")
 
 
 if __name__ == "__main__":

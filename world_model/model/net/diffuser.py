@@ -1,70 +1,88 @@
+"""Temporal denoiser core: SD1.5 spatial backbone + pretrained AnimateDiff motion modules.
+
+Conditions on full per-frame actions [B, F] aligned with latents [B, F, C, H, W]
+(history + future when WorldModel concatenates along F).
+"""
+
 from __future__ import annotations
 
-from typing import Literal
-import math
+from typing import Literal, Optional
 
+import torch
 import torch.nn as nn
-from diffusers import DDIMScheduler, UNet2DConditionModel
+from diffusers import DDIMScheduler, MotionAdapter, UNet2DConditionModel
+from diffusers.models.unets.unet_motion_model import UNetMotionModel
+
+MOTION_ADAPTER_ID = "guoyww/animatediff-motion-adapter-v1-5-2"
 
 
 class Diffuser(nn.Module):
-	"""Class bundle for diffusion components used by the world model."""
+	"""Temporal denoiser: SD1.5 spatial + AnimateDiff temporal + action cross-attn."""
 
 	def __init__(
 		self,
 		num_actions: int,
 		latent_channels: int,
-		buffer_size: int,
 		cross_attention_dim: int,
-		num_train_timesteps: int,
-		prediction_type: Literal["epsilon", "sample", "v_prediction"],
-		temporal_downsample: int = 4,
-		model_size: Literal["small", "base", "large"] = "small",
-		noise_buckets: int = 10,
+		prediction_type: Literal["epsilon", "sample", "v_prediction"] = "epsilon",
+		pretrained_model_name_or_path: Optional[str] = None,
+		motion_adapter_id: str = MOTION_ADAPTER_ID,
 	) -> None:
 		super().__init__()
-
-		self.num_actions = num_actions
 		self.latent_channels = latent_channels
-		self.buffer_size = buffer_size
 		self.cross_attention_dim = cross_attention_dim
 
-		effective_context = max(1, math.ceil(buffer_size / max(1, int(temporal_downsample))))
-		in_channels = latent_channels * (effective_context + 1)
-
-		# Model size presets
-		if model_size == "small":
-			block_out_channels = (128, 256, 512, 512)
-			layers_per_block = 1
-		elif model_size == "large":
-			block_out_channels = (320, 640, 1280, 1280)
-			layers_per_block = 2
-		else:  # "base"
-			block_out_channels = (192, 384, 768, 768)
-			layers_per_block = 2
-
-		self.unet = UNet2DConditionModel(
-			sample_size=None,
-			in_channels=in_channels,
-			out_channels=latent_channels,
-			down_block_types=("DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"),
-			up_block_types=("UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"),
-			block_out_channels=block_out_channels,
-			layers_per_block=layers_per_block,
-			cross_attention_dim=cross_attention_dim,
-			num_class_embeds=None,
+		unet2d = UNet2DConditionModel.from_pretrained(
+			pretrained_model_name_or_path, subfolder="unet", low_cpu_mem_usage=False,
 		)
-		self.action_embedding = nn.Embedding(
-			num_embeddings=num_actions + 1,
-			embedding_dim=cross_attention_dim,
+		assert latent_channels == unet2d.config.in_channels, (
+			f"VAE latent_channels={latent_channels} != UNet in_channels={unet2d.config.in_channels}"
 		)
-		nn.init.normal_(self.action_embedding.weight, mean=0.0, std=0.02)
-		# noise-level (context noise) embedding buckets
-		self.noise_level_embedding = nn.Embedding(
-			num_embeddings=int(noise_buckets),
-			embedding_dim=cross_attention_dim,
-		)
-		nn.init.normal_(self.noise_level_embedding.weight, mean=0.0, std=0.02)
+		adapter = MotionAdapter.from_pretrained(motion_adapter_id)
+		self.unet: UNetMotionModel = UNetMotionModel.from_unet2d(unet2d, motion_adapter=adapter)
 
-		self.noise_scheduler = DDIMScheduler(num_train_timesteps=num_train_timesteps)
+		self.action_embedding = nn.Embedding(num_actions, cross_attention_dim)
+		self.mlp = nn.Sequential(
+			nn.SiLU(),
+			nn.Linear(cross_attention_dim, cross_attention_dim),
+		)
+		nn.init.normal_(self.action_embedding.weight, std=0.02)
+
+		self.noise_scheduler = DDIMScheduler.from_pretrained(
+			pretrained_model_name_or_path, subfolder="scheduler",
+		)
 		self.noise_scheduler.register_to_config(prediction_type=prediction_type)
+
+	def embed_actions(self, actions: torch.Tensor) -> torch.Tensor:
+		"""[B, F] → [B, F, D] cross-attention context."""
+		return self.mlp(self.action_embedding(actions))
+
+	def forward(
+		self,
+		noisy_latents: torch.Tensor,
+		timesteps: torch.Tensor,
+		actions: torch.Tensor,
+	) -> torch.Tensor:
+		"""Denoise latent frames with temporal attention.
+
+		Args:
+			noisy_latents: [B, F, C, H, W]
+			timesteps:     [B]
+			actions:       [B, F]  per-frame action ids (past + future aligned with F)
+
+		Returns:
+			[B, F, C, H, W]  model output (epsilon / v / sample per scheduler config)
+		"""
+		B, F, C, H, W = noisy_latents.shape
+		assert C == self.latent_channels, f"Expected C={self.latent_channels}, got {C}"
+
+		enc = self.embed_actions(actions)  # [B, F, D]
+		enc = enc.repeat_interleave(F, dim=0)  # [B*F, F, D]
+
+		x = noisy_latents.permute(0, 2, 1, 3, 4).contiguous()  # [B, C, F, H, W]
+
+		out = self.unet(
+			x, timesteps, encoder_hidden_states=enc, return_dict=False,
+		)[0]  # [B, C, F, H, W]
+
+		return out.permute(0, 2, 1, 3, 4).contiguous()  # [B, F, C, H, W]
