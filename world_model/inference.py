@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections import deque
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -17,33 +17,79 @@ def _load_sd(path: Path, device: torch.device) -> dict:
 	return torch.load(path, map_location=device, weights_only=True)
 
 
+def _read_trainer_args(ckpt_dir: Path) -> dict[str, Any]:
+	p = ckpt_dir / "trainer_state.pt"
+	if not p.is_file():
+		return {}
+	blob = torch.load(p, map_location="cpu", weights_only=False)
+	return dict(blob.get("args") or {})
+
+
+def _coalesce(meta: dict[str, Any], key: str, override: Any, fallback: Any) -> Any:
+	if override is not None:
+		return override
+	if key in meta and meta[key] is not None:
+		return meta[key]
+	return fallback
+
+
 def load_world_model(
 	ckpt_dir: Path,
 	num_actions: int,
 	history_len: int,
 	chunk_len: int,
-	vae_pretrained: str | Path | None = None,
+	vae_checkpoint: str | Path | None = None,
 	pretrained_model_name_or_path: str = "stable-diffusion-v1-5/stable-diffusion-v1-5",
+	trainable_parts: Optional[str] = None,
+	unet_top_n_blocks: Optional[int] = None,
+	lora_rank: Optional[int] = None,
+	lora_alpha: Optional[float] = None,
+	lora_include_motion: Optional[bool] = None,
 ) -> WorldModel:
+	"""Load weights from ``ckpt_dir`` (same layout as :meth:`WorldModel.save_diffuser`).
+
+	If ``trainer_state.pt`` exists (written by ``train_world_model``), finetuning options
+	(``trainable_parts``, LoRA, ``unet_top_n_blocks``) default from saved args so the
+	module graph matches ``unet.pt``. Pass explicit kwargs to override.
+	"""
 	ckpt_dir = Path(ckpt_dir)
-	local_vae = Path("world_model") / "checkpoints" / "vae"
-	if vae_pretrained is None:
-		vae_pretrained = str(local_vae) if (local_vae / "config.json").exists() else "stabilityai/sd-vae-ft-mse"
+	meta = _read_trainer_args(ckpt_dir)
+
+	vae_eff = _coalesce(meta, "vae_checkpoint", vae_checkpoint, None)
+	tp = _coalesce(meta, "trainable_parts", trainable_parts, "full")
+	ut = _coalesce(meta, "unet_top_n_blocks", unet_top_n_blocks, 2)
+	lr = _coalesce(meta, "lora_rank", lora_rank, 8)
+	la = _coalesce(meta, "lora_alpha", lora_alpha, 8.0)
+	lm = _coalesce(meta, "lora_include_motion", lora_include_motion, False)
 
 	wm = WorldModel(
 		num_actions=num_actions,
-		vae_pretrained=vae_pretrained,
 		cross_attention_dim=768,
+		vae_checkpoint=vae_eff,
 		prediction_type="epsilon",
 		history_len=history_len,
 		chunk_len=chunk_len,
 		pretrained_model_name_or_path=pretrained_model_name_or_path,
+		trainable_parts=tp,
+		unet_top_n_blocks=int(ut),
+		lora_rank=int(lr),
+		lora_alpha=float(la),
+		lora_include_motion=bool(lm),
 	)
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	wm = wm.to(device)
 
-	if (ckpt_dir / "unet.pt").exists():
-		wm.diffuser.unet.load_state_dict(_load_sd(ckpt_dir / "unet.pt", device))
+	unet_path = ckpt_dir / "unet.pt"
+	if not unet_path.is_file():
+		raise FileNotFoundError(f"Missing UNet weights: {unet_path}")
+	try:
+		wm.diffuser.unet.load_state_dict(_load_sd(unet_path, device), strict=True)
+	except RuntimeError as e:
+		raise RuntimeError(
+			f"UNet load failed (trainable_parts={tp!r}, lora_rank={lr}). "
+			f"If this checkpoint used a different finetuning mode, pass matching "
+			f"trainable_parts / lora_* to load_world_model, or ensure trainer_state.pt is beside unet.pt."
+		) from e
 	emb_path = ckpt_dir / "action_embedding.pt"
 	if not emb_path.exists():
 		emb_path = ckpt_dir / "future_action_embedding.pt"
@@ -65,7 +111,8 @@ def run_autoregressive(
 	chunk_len: int = 4,
 	num_inference_steps: int = 30,
 	image_size: tuple[int, int] = (210, 160),
-	vae_pretrained: Optional[str] = None,
+	vae_checkpoint: Optional[str] = None,
+	trainable_parts: Optional[str] = None,
 ) -> None:
 	import matplotlib.pyplot as plt
 	import matplotlib.gridspec as gridspec
@@ -73,12 +120,13 @@ def run_autoregressive(
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	wm = load_world_model(
 		Path(ckpt_dir), num_actions, history_len, chunk_len,
-		vae_pretrained=vae_pretrained,
+		vae_checkpoint=vae_checkpoint,
+		trainable_parts=trainable_parts,
 	)
 	wm.eval()
 
 	h, w = image_size
-	transitions_root = Path("data") / "transitions" / str(env)
+	transitions_root = Path("data") / "transitions" / "train" / str(env)
 	shards = sorted(p for p in transitions_root.glob("shard_*") if (p / "obs.npy").exists())
 	assert shards, f"No shards under {transitions_root}"
 	obs = np.load(shards[0] / "obs.npy", mmap_mode="r")
@@ -104,7 +152,7 @@ def run_autoregressive(
 
 	key_to_action: Dict[str, int] = {
 		"up": 2, "down": 5, "left": 4, "right": 3,
-		" ": 0, "z": 1, "x": 6, "c": 7,
+		" ": 0, " z": 1, "x": 6, "c": 7,
 	}
 	step_idx = {"t": 0}
 
@@ -150,25 +198,37 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit" / "step_0100000"))
-	p.add_argument("--vae_pretrained", type=str, default="")
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit" / "step_0050000"))
+	p.add_argument(
+		"--vae_checkpoint",
+		type=str,
+		default="world_model/checkpoints/vae/vae.pt",
+		help="Path to vae.pt (empty = default world_model/checkpoints/vae/vae.pt)",
+	)
 	p.add_argument("--env", type=str, default="space_invaders")
-	p.add_argument("--num_inference_steps", type=int, default=30)
+	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--num_actions", type=int, default=18)
-	p.add_argument("--history_len", type=int, default=4)
-	p.add_argument("--chunk_len", type=int, default=4)
-	p.add_argument("--height", type=int, default=210)
+	p.add_argument("--history_len", type=int, default=8)
+	p.add_argument("--chunk_len", type=int, default=3)
+	p.add_argument("--height", type=int, default=208)
 	p.add_argument("--width", type=int, default=160)
+	p.add_argument(
+		"--trainable_parts",
+		type=str,
+		default=None,
+		help="Override finetuning layout; omit to use trainer_state.pt next to ckpt_dir (if saved by train_world_model).",
+	)
 	args = p.parse_args()
 	run_autoregressive(
 		ckpt_dir=args.ckpt_dir,
 		env=args.env,
-		vae_pretrained=args.vae_pretrained.strip() or None,
+		vae_checkpoint=args.vae_checkpoint.strip() or None,
 		num_actions=args.num_actions,
 		num_inference_steps=args.num_inference_steps,
 		history_len=args.history_len,
 		chunk_len=args.chunk_len,
 		image_size=(args.height, args.width),
+		trainable_parts=args.trainable_parts,
 	)
 
 

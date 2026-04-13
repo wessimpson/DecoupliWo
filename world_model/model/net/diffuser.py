@@ -52,6 +52,27 @@ class Diffuser(nn.Module):
 			pretrained_model_name_or_path, subfolder="scheduler",
 		)
 		self.noise_scheduler.register_to_config(prediction_type=prediction_type)
+		self._attn_lora_injected = False
+
+	def configure_trainable(
+		self,
+		policy: str,
+		*,
+		unet_top_n_blocks: int = 2,
+		lora_rank: int = 8,
+		lora_alpha: float = 8.0,
+		lora_include_motion: bool = False,
+	) -> None:
+		from world_model.model.net.trainable_parts import apply_diffuser_train_policy
+
+		apply_diffuser_train_policy(
+			self,
+			policy,
+			unet_top_n_blocks=unet_top_n_blocks,
+			lora_rank=lora_rank,
+			lora_alpha=lora_alpha,
+			lora_include_motion=lora_include_motion,
+		)
 
 	def embed_actions(self, actions: torch.Tensor) -> torch.Tensor:
 		"""[B, F] → [B, F, D] cross-attention context."""

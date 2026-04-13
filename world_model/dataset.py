@@ -66,6 +66,41 @@ def preprocess(
 	}
 
 
+def preprocess_contiguous_rollout(
+	examples: dict[str, np.ndarray],
+	history_len: int,
+	chunk_len: int,
+	num_chunks: int,
+	resize_to: tuple[int, int] | None = (208, 160),
+) -> dict[str, torch.Tensor]:
+	"""Same timeline as ``preprocess``, but keep ``num_chunks`` consecutive target chunks for AR eval.
+
+	Requires ``len(obs) >= history_len + num_chunks * chunk_len``.
+	Returns gt_chunks [H, N, 3, H, W] and future_action_chunks [H, N].
+	"""
+	K, N, Hn = history_len, chunk_len, int(num_chunks)
+	need = K + Hn * N
+	if examples["obs"].shape[0] < need or examples["action"].shape[0] < need:
+		raise ValueError(f"need {need} rows, got obs={examples['obs'].shape[0]}")
+
+	if resize_to is not None:
+		resize_to = _resize_hw_divisible_by_8(resize_to)
+	tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
+
+	frames = torch.stack([tx(f) for f in examples["obs"][:need]], dim=0)  # [K+Hn*N, 3, H, W]
+	actions = examples["action"][:need].astype(np.int64)
+
+	tail = frames[K:]  # [Hn*N, 3, H, W]
+	gt_chunks = tail.reshape(Hn, N, *tail.shape[1:])  # [Hn, N, 3, H, W]
+	fut_list = [torch.from_numpy(actions[K + h * N : K + (h + 1) * N]).long() for h in range(Hn)]
+	return {
+		"history_frames": frames[:K],
+		"history_actions": torch.from_numpy(actions[:K]).long(),
+		"gt_chunks": gt_chunks,
+		"future_action_chunks": torch.stack(fut_list, dim=0),  # [Hn, N]
+	}
+
+
 class RolloutVideoDataset(Dataset):
 	"""Lazy, mmap-backed windowed dataset over rollout shards."""
 
@@ -153,6 +188,26 @@ class RolloutVideoDataset(Dataset):
 			"action": shard["action"][row : row + self.seq_len],
 		}
 		return self.transform(sample) if self.transform is not None else sample
+
+	def try_contiguous_rollout(
+		self,
+		idx: int,
+		history_len: int,
+		chunk_len: int,
+		num_chunks: int,
+		resize_to: tuple[int, int] | None,
+	) -> dict[str, torch.Tensor] | None:
+		"""Load ``history_len + num_chunks * chunk_len`` rows from the shard of window ``idx``, or None if OOB."""
+		meta, row = self._resolve_index(idx)
+		need = history_len + int(num_chunks) * int(chunk_len)
+		if row + need > meta.num_rows:
+			return None
+		shard = self._get_shard(meta)
+		sample = {
+			"obs": shard["obs"][row : row + need],
+			"action": shard["action"][row : row + need],
+		}
+		return preprocess_contiguous_rollout(sample, history_len, chunk_len, num_chunks, resize_to)
 
 
 

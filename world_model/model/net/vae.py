@@ -1,37 +1,26 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import torch
 import torch.nn as nn
 from diffusers import AutoencoderKL
 
-
-DEFAULT_CHECKPOINT = Path("world_model") / "checkpoints" / "vae"
-DEFAULT_PRETRAINED = "stabilityai/sd-vae-ft-mse"
+PRETRAINED_REMOTE_ID = "stabilityai/sd-vae-ft-mse"
+DEFAULT_VAE_PT = Path("world_model") / "checkpoints" / "vae" / "vae.pt"
 
 
 class VAE(nn.Module):
-	"""Frozen SD VAE used as frame tokenizer (default: stabilityai/sd-vae-ft-mse)."""
+	"""Frozen SD VAE: hub architecture + weights from a single ``vae.pt`` file."""
 
-	def __init__(
-		self,
-		checkpoint: Optional[Union[str, Path]] = DEFAULT_CHECKPOINT,
-		pretrained: Optional[str] = DEFAULT_PRETRAINED,
-	) -> None:
+	def __init__(self, checkpoint: Union[str, Path]) -> None:
 		super().__init__()
-		ckpt = Path(checkpoint) if checkpoint else None
-		ckpt_file = ckpt / "vae.pt" if ckpt else None
-		if ckpt_file and ckpt_file.exists():
-			pid = pretrained or DEFAULT_PRETRAINED
-			self.autoencoder = AutoencoderKL.from_pretrained(pid)
-			self.autoencoder.load_state_dict(torch.load(ckpt_file, map_location="cpu", weights_only=True))
-			print(f"[VAE] loaded checkpoint: {ckpt_file}")
-		else:
-			pid = pretrained or DEFAULT_PRETRAINED
-			self.autoencoder = AutoencoderKL.from_pretrained(pid)
-			print(f"[VAE] loaded pretrained: {pid}")
+		pt = Path(checkpoint)
+		assert pt.is_file(), f"VAE checkpoint must be an existing .pt file: {pt}"
+		self.autoencoder = AutoencoderKL.from_pretrained(PRETRAINED_REMOTE_ID)
+		self.autoencoder.load_state_dict(torch.load(pt, map_location="cpu", weights_only=True))
+		print(f"[VAE] {PRETRAINED_REMOTE_ID} + {pt}")
 
 	@property
 	def latent_channels(self) -> int:
@@ -71,9 +60,6 @@ class VAE(nn.Module):
 		B, T = latents.shape[:2]
 		px = self.decode_latents(latents.reshape(B * T, *latents.shape[2:]))
 		return px.reshape(B, T, *px.shape[1:])
-
-
-
 
 
 """test"""
@@ -125,7 +111,7 @@ def main() -> None:
 
 	# ── model ──
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	vae = VAE()
+	vae = VAE(checkpoint=DEFAULT_VAE_PT)
 	vae.freeze()
 	vae.to(device)
 

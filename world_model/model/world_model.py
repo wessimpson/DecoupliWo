@@ -14,25 +14,32 @@ import torch
 import torch.nn as nn
 
 from world_model.model.net import Diffuser, VAE
+from world_model.model.net.vae import DEFAULT_VAE_PT
 
 
 class WorldModel(nn.Module):
 	def __init__(
 		self,
 		num_actions: int,
-		vae_pretrained: str | Path,
 		cross_attention_dim: int,
+		vae_checkpoint: str | Path | None = None,
 		prediction_type: str = "epsilon",
 		history_len: int = 4,
 		chunk_len: int = 4,
 		gradient_checkpointing: bool = False,
 		pretrained_model_name_or_path: str | None = None,
+		trainable_parts: str = "full",
+		unet_top_n_blocks: int = 2,
+		lora_rank: int = 8,
+		lora_alpha: float = 8.0,
+		lora_include_motion: bool = False,
 	) -> None:
 		super().__init__()
 		self.history_len = history_len
 		self.chunk_len = chunk_len
 
-		self.vae = VAE(pretrained=str(vae_pretrained))
+		pt = Path(DEFAULT_VAE_PT if vae_checkpoint is None else vae_checkpoint)
+		self.vae = VAE(checkpoint=pt)
 		self.vae.freeze()
 		self.latent_channels = self.vae.latent_channels
 
@@ -43,13 +50,22 @@ class WorldModel(nn.Module):
 			prediction_type=prediction_type,
 			pretrained_model_name_or_path=pretrained_model_name_or_path,
 		)
+		self.diffuser.configure_trainable(
+			trainable_parts,
+			unet_top_n_blocks=unet_top_n_blocks,
+			lora_rank=lora_rank,
+			lora_alpha=lora_alpha,
+			lora_include_motion=lora_include_motion,
+		)
 		if gradient_checkpointing:
 			self.diffuser.unet.enable_gradient_checkpointing()
 
 		self.num_train_timesteps = int(self.diffuser.noise_scheduler.config.num_train_timesteps)
 
 	def trainable_parameters(self):
-		return self.diffuser.parameters()
+		for p in self.diffuser.parameters():
+			if p.requires_grad:
+				yield p
 
 	def enable_gradient_checkpointing(self) -> None:
 		self.diffuser.unet.enable_gradient_checkpointing()
@@ -156,9 +172,14 @@ class WorldModel(nn.Module):
 		latents = latents * sched.init_noise_sigma
 
 		sched.set_timesteps(num_inference_steps)
-		for t in sched.timesteps:
+		# diffusers keeps timesteps on CPU by default; UNet + latents are on `device`.
+		ts = sched.timesteps
+		if isinstance(ts, torch.Tensor):
+			ts = ts.to(device=device)
+		for t in ts:
 			x = torch.cat([z_hist, latents], dim=1)  # [B, K+N, C, h, w]
-			out = self.diffuser(x, t.unsqueeze(0).expand(B), all_actions)
+			t_batch = t.unsqueeze(0).expand(B).contiguous()
+			out = self.diffuser(x, t_batch, all_actions)
 			pred = out[:, K:]  # [B, N, C, h, w]
 			latents = sched.step(
 				pred.reshape(B * N, C, h, w),
@@ -176,6 +197,7 @@ class WorldModel(nn.Module):
 	# ── Save / load ──────────────────────────────────────────────
 
 	def save_diffuser(self, out_dir: Path) -> None:
+		"""Persist full UNet weights (including LoRA tensors if injected), action head, and DDIM config."""
 		out_dir = Path(out_dir)
 		out_dir.mkdir(parents=True, exist_ok=True)
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
@@ -231,8 +253,8 @@ if __name__ == "__main__":
 	print("loading WorldModel ...")
 	wm = WorldModel(
 		num_actions=18,
-		vae_pretrained="stabilityai/sd-vae-ft-mse",
 		cross_attention_dim=768,
+		vae_checkpoint=DEFAULT_VAE_PT,
 		prediction_type="epsilon",
 		history_len=K,
 		chunk_len=N,
