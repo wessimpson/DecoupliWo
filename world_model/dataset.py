@@ -1,4 +1,4 @@
-"""Metadata-indexed rollout dataset for chunk-based temporal world model."""
+"""Metadata-indexed rollout dataset for next-frame temporal world model."""
 
 from __future__ import annotations
 
@@ -42,44 +42,44 @@ IMG_TRANSFORMS = transforms.Compose([
 def preprocess(
 	examples: dict[str, np.ndarray],
 	history_len: int,
-	chunk_len: int,
 	resize_to: tuple[int, int] | None = (208, 160),
 ) -> dict[str, torch.Tensor]:
-	"""Convert raw sample → {history_frames, target_frames, history_actions, future_actions}.
+	"""Convert raw sample → {history_frames, target_frame, history_actions}.
 
-	Seq is sliced as: [0:K] = history, [K:K+N] = target chunk.
-	history_actions[j] = action at history_frames[j]; future_actions[i] aligns with target chunk.
+	Seq: ``obs[i]`` with ``action[i]`` then env step → ``obs[i+1]`` (see ``collect_transitions``).
+	History is ``obs[0:K]``; target is ``obs[K]``, produced by ``action[K-1]`` (last history action).
+	``history_actions[j]`` is ``action[j]`` paired with ``history_frames[j]``.
 	"""
 	if resize_to is not None:
 		resize_to = _resize_hw_divisible_by_8(resize_to)
 	tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
 
-	frames = torch.stack([tx(f) for f in examples["obs"]], dim=0)  # [K+N, 3, H, W]
+	frames = torch.stack([tx(f) for f in examples["obs"]], dim=0)  # [K+1, 3, H, W]
 	actions = examples["action"].astype(np.int64)
 
-	K, N = history_len, chunk_len
+	K = history_len
 	return {
-		"history_frames": frames[:K],                                  # [K, 3, H, W]
-		"target_frames": frames[K : K + N],                            # [N, 3, H, W]
-		"history_actions": torch.from_numpy(actions[:K]).long(),       # [K]
-		"future_actions": torch.from_numpy(actions[K : K + N]).long(),  # [N]
+		"history_frames": frames[:K],                            # [K, 3, H, W]
+		"target_frame": frames[K],                               # [3, H, W]
+		"history_actions": torch.from_numpy(actions[:K]).long(),  # [K]
 	}
 
 
-def preprocess_contiguous_rollout(
+def preprocess_contiguous_ar(
 	examples: dict[str, np.ndarray],
 	history_len: int,
-	chunk_len: int,
-	num_chunks: int,
+	num_future_frames: int,
 	resize_to: tuple[int, int] | None = (208, 160),
 ) -> dict[str, torch.Tensor]:
-	"""Same timeline as ``preprocess``, but keep ``num_chunks`` consecutive target chunks for AR eval.
+	"""Same timeline as ``preprocess``, plus ``num_future_frames`` ground-truth steps for AR eval.
 
-	Requires ``len(obs) >= history_len + num_chunks * chunk_len``.
-	Returns gt_chunks [H, N, 3, H, W] and future_action_chunks [H, N].
+	Requires ``len(obs) >= history_len + num_future_frames``.
+	Returns ``gt_future_frames`` [H, 3, H, W] and ``future_action_frames`` [H] where
+	``future_action_frames[s] = action[K+s]`` (``obs[K+s] → obs[K+s+1]``). First AR step
+	uses ``history_actions[:, -1]`` (= ``action[K-1]``) to predict ``obs[K]``.
 	"""
-	K, N, Hn = history_len, chunk_len, int(num_chunks)
-	need = K + Hn * N
+	K, Hn = history_len, int(num_future_frames)
+	need = K + Hn
 	if examples["obs"].shape[0] < need or examples["action"].shape[0] < need:
 		raise ValueError(f"need {need} rows, got obs={examples['obs'].shape[0]}")
 
@@ -87,17 +87,14 @@ def preprocess_contiguous_rollout(
 		resize_to = _resize_hw_divisible_by_8(resize_to)
 	tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
 
-	frames = torch.stack([tx(f) for f in examples["obs"][:need]], dim=0)  # [K+Hn*N, 3, H, W]
+	frames = torch.stack([tx(f) for f in examples["obs"][:need]], dim=0)  # [K+Hn, 3, H, W]
 	actions = examples["action"][:need].astype(np.int64)
 
-	tail = frames[K:]  # [Hn*N, 3, H, W]
-	gt_chunks = tail.reshape(Hn, N, *tail.shape[1:])  # [Hn, N, 3, H, W]
-	fut_list = [torch.from_numpy(actions[K + h * N : K + (h + 1) * N]).long() for h in range(Hn)]
 	return {
 		"history_frames": frames[:K],
 		"history_actions": torch.from_numpy(actions[:K]).long(),
-		"gt_chunks": gt_chunks,
-		"future_action_chunks": torch.stack(fut_list, dim=0),  # [Hn, N]
+		"gt_future_frames": frames[K:],  # [Hn, 3, H, W]
+		"future_action_frames": torch.from_numpy(actions[K:]).long(),  # [Hn]
 	}
 
 
@@ -189,17 +186,16 @@ class RolloutVideoDataset(Dataset):
 		}
 		return self.transform(sample) if self.transform is not None else sample
 
-	def try_contiguous_rollout(
+	def try_contiguous_ar(
 		self,
 		idx: int,
 		history_len: int,
-		chunk_len: int,
-		num_chunks: int,
+		num_future_frames: int,
 		resize_to: tuple[int, int] | None,
 	) -> dict[str, torch.Tensor] | None:
-		"""Load ``history_len + num_chunks * chunk_len`` rows from the shard of window ``idx``, or None if OOB."""
+		"""Load ``history_len + num_future_frames`` rows from the shard of window ``idx``, or None if OOB."""
 		meta, row = self._resolve_index(idx)
-		need = history_len + int(num_chunks) * int(chunk_len)
+		need = history_len + int(num_future_frames)
 		if row + need > meta.num_rows:
 			return None
 		shard = self._get_shard(meta)
@@ -207,7 +203,7 @@ class RolloutVideoDataset(Dataset):
 			"obs": shard["obs"][row : row + need],
 			"action": shard["action"][row : row + need],
 		}
-		return preprocess_contiguous_rollout(sample, history_len, chunk_len, num_chunks, resize_to)
+		return preprocess_contiguous_ar(sample, history_len, num_future_frames, resize_to)
 
 
 
@@ -223,24 +219,23 @@ def _find_test_env_dir() -> Path:
 
 def main() -> None:
 	"""Smoke test: dataset + DataLoader batch shapes."""
-	K, N = 4, 4
+	K = 8
 	H, W = 208, 160
 	env_dir = _find_test_env_dir()
-	tx = partial(preprocess, history_len=K, chunk_len=N, resize_to=(H, W))
-	ds = RolloutVideoDataset(env_dir, seq_len=K + N, stride=1, num_actions=18).with_transform(tx)
+	tx = partial(preprocess, history_len=K, resize_to=(H, W))
+	ds = RolloutVideoDataset(env_dir, seq_len=K + 1, stride=1, num_actions=18).with_transform(tx)
 	assert len(ds) > 0, "dataset empty"
 
 	row0 = ds[0]
-	for k in ("history_frames", "target_frames", "history_actions", "future_actions"):
+	for k in ("history_frames", "target_frame", "history_actions"):
 		assert k in row0, k
 
 	dl = DataLoader(ds, batch_size=2, shuffle=False, num_workers=0)
 	batch = next(iter(dl))
 	B = batch["history_frames"].shape[0]
 	assert batch["history_frames"].shape == (B, K, 3, H, W)
-	assert batch["target_frames"].shape == (B, N, 3, H, W)
+	assert batch["target_frame"].shape == (B, 3, H, W)
 	assert batch["history_actions"].shape == (B, K)
-	assert batch["future_actions"].shape == (B, N)
 	assert batch["history_actions"].dtype == torch.long
 	print(f"OK  env={env_dir.name}  len={len(ds)}  batch={B}")
 

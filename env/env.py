@@ -8,6 +8,10 @@ from ocatari.core import OCAtari
 from env.wrappers import HoldActionBetweenDecisions
 
 # Map short names to ALE env IDs
+
+#air_raid, space_invaders
+#air_raid, assault
+#assault, space_invaders
 GAME_TO_ENV_ID: dict[str, str] = {
 	"space_invaders": "ALE/SpaceInvaders-v5",
 	"air_raid": "ALE/AirRaid-v5",

@@ -1,15 +1,19 @@
-"""Interactive chunk-based autoregressive inference with keyboard control."""
+"""Replay inference: dataset actions only, Space advances one timestep.
+
+Top: model prediction. Bottom: ground-truth next frame from the same rollout.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 from collections import deque
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+from torchvision import transforms
 
+from world_model.dataset import IMG_TRANSFORMS, _resize_hw_divisible_by_8
 from world_model.model.world_model import WorldModel
 
 
@@ -37,44 +41,24 @@ def load_world_model(
 	ckpt_dir: Path,
 	num_actions: int,
 	history_len: int,
-	chunk_len: int,
 	vae_checkpoint: str | Path | None = None,
-	pretrained_model_name_or_path: str = "stable-diffusion-v1-5/stable-diffusion-v1-5",
-	trainable_parts: Optional[str] = None,
-	unet_top_n_blocks: Optional[int] = None,
-	lora_rank: Optional[int] = None,
-	lora_alpha: Optional[float] = None,
-	lora_include_motion: Optional[bool] = None,
+	pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
 ) -> WorldModel:
 	"""Load weights from ``ckpt_dir`` (same layout as :meth:`WorldModel.save_diffuser`).
 
-	If ``trainer_state.pt`` exists (written by ``train_world_model``), finetuning options
-	(``trainable_parts``, LoRA, ``unet_top_n_blocks``) default from saved args so the
-	module graph matches ``unet.pt``. Pass explicit kwargs to override.
+	If ``trainer_state.pt`` exists, ``vae_checkpoint`` defaults from saved args when omitted.
 	"""
 	ckpt_dir = Path(ckpt_dir)
 	meta = _read_trainer_args(ckpt_dir)
 
 	vae_eff = _coalesce(meta, "vae_checkpoint", vae_checkpoint, None)
-	tp = _coalesce(meta, "trainable_parts", trainable_parts, "full")
-	ut = _coalesce(meta, "unet_top_n_blocks", unet_top_n_blocks, 2)
-	lr = _coalesce(meta, "lora_rank", lora_rank, 8)
-	la = _coalesce(meta, "lora_alpha", lora_alpha, 8.0)
-	lm = _coalesce(meta, "lora_include_motion", lora_include_motion, False)
-
 	wm = WorldModel(
 		num_actions=num_actions,
 		cross_attention_dim=768,
 		vae_checkpoint=vae_eff,
 		prediction_type="epsilon",
 		history_len=history_len,
-		chunk_len=chunk_len,
 		pretrained_model_name_or_path=pretrained_model_name_or_path,
-		trainable_parts=tp,
-		unet_top_n_blocks=int(ut),
-		lora_rank=int(lr),
-		lora_alpha=float(la),
-		lora_include_motion=bool(lm),
 	)
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	wm = wm.to(device)
@@ -86,109 +70,125 @@ def load_world_model(
 		wm.diffuser.unet.load_state_dict(_load_sd(unet_path, device), strict=True)
 	except RuntimeError as e:
 		raise RuntimeError(
-			f"UNet load failed (trainable_parts={tp!r}, lora_rank={lr}). "
-			f"If this checkpoint used a different finetuning mode, pass matching "
-			f"trainable_parts / lora_* to load_world_model, or ensure trainer_state.pt is beside unet.pt."
+			f"UNet load failed from {unet_path}. "
+			f"Ensure unet.pt matches this architecture (full SD1.4 UNet2D + widened conv_in)."
 		) from e
 	emb_path = ckpt_dir / "action_embedding.pt"
 	if not emb_path.exists():
 		emb_path = ckpt_dir / "future_action_embedding.pt"
 	if emb_path.exists():
 		wm.diffuser.action_embedding.load_state_dict(_load_sd(emb_path, device))
-	mlp_path = ckpt_dir / "action_mlp.pt"
-	if not mlp_path.exists():
-		mlp_path = ckpt_dir / "future_action_mlp.pt"
-	if mlp_path.exists():
-		wm.diffuser.mlp.load_state_dict(_load_sd(mlp_path, device))
+	ctx_path = ckpt_dir / "action_context.pt"
+	if ctx_path.exists():
+		wm.diffuser.action_context.load_state_dict(_load_sd(ctx_path, device))
+	else:
+		legacy = ckpt_dir / "action_mlp.pt"
+		if not legacy.exists():
+			legacy = ckpt_dir / "future_action_mlp.pt"
+		if legacy.exists():
+			raise RuntimeError(
+				f"Checkpoint has legacy {legacy.name} (MLP action head); this build expects action_context.pt "
+				f"(lightweight attention). Retrain or migrate weights."
+			)
 	return wm
+
+
+def _tensor_to_imshow01(t: torch.Tensor) -> np.ndarray:
+	"""[3,H,W] in [-1,1] → [H,W,3] float32 [0,1]."""
+	return ((t.clamp(-1, 1) + 1) * 0.5).cpu().permute(1, 2, 0).numpy().astype(np.float32)
 
 
 def run_autoregressive(
 	ckpt_dir: str,
 	env: str = "space_invaders",
 	num_actions: int = 18,
-	history_len: int = 4,
-	chunk_len: int = 4,
+	history_len: int = 8,
 	num_inference_steps: int = 30,
-	image_size: tuple[int, int] = (210, 160),
+	image_size: tuple[int, int] = (208, 160),
 	vae_checkpoint: Optional[str] = None,
-	trainable_parts: Optional[str] = None,
 ) -> None:
-	import matplotlib.pyplot as plt
 	import matplotlib.gridspec as gridspec
+	import matplotlib.pyplot as plt
 
+	K = history_len
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	wm = load_world_model(
-		Path(ckpt_dir), num_actions, history_len, chunk_len,
+		Path(ckpt_dir), num_actions, K,
 		vae_checkpoint=vae_checkpoint,
-		trainable_parts=trainable_parts,
 	)
 	wm.eval()
 
-	h, w = image_size
+	h, w = _resize_hw_divisible_by_8((int(image_size[0]), int(image_size[1])))
+	tx = transforms.Compose([
+		IMG_TRANSFORMS,
+		transforms.Resize((h, w), antialias=True),
+	])
+
 	transitions_root = Path("data") / "transitions" / "train" / str(env)
 	shards = sorted(p for p in transitions_root.glob("shard_*") if (p / "obs.npy").exists())
 	assert shards, f"No shards under {transitions_root}"
 	obs = np.load(shards[0] / "obs.npy", mmap_mode="r")
 	acts = np.load(shards[0] / "action.npy", mmap_mode="r")
-	assert obs.shape[0] >= history_len
+	n = int(obs.shape[0])
+	assert n >= K + 1, f"Need at least K+1={K+1} frames, got {n}"
 
-	frames_np = np.array(obs[:history_len], copy=True)
-	frames = torch.from_numpy(frames_np).float().permute(0, 3, 1, 2) / 127.5 - 1.0  # [K,3,H,W]
-	if (frames.shape[-2], frames.shape[-1]) != (h, w):
-		frames = F.interpolate(frames, size=(h, w), mode="bilinear", align_corners=False)
-	context = deque(list(frames.unbind(0)), maxlen=history_len)
-	action_context = deque(acts[:history_len].astype(np.int64).tolist(), maxlen=history_len)
-	pending_actions: list[int] = []
+	# Bootstrap: first K real frames (same preprocessing as training).
+	init = torch.stack([tx(np.asarray(obs[i])[..., -3:]) for i in range(K)], dim=0)
+	gen_hist: deque[torch.Tensor] = deque([init[i].clone() for i in range(K)], maxlen=K)
+	data_pos = 0
 
-	fig = plt.figure(figsize=(4, 4.8))
-	gs = gridspec.GridSpec(2, 1, height_ratios=[20, 1], hspace=0.1, figure=fig)
-	ax = fig.add_subplot(gs[0])
-	ax.axis("off")
-	text_ax = fig.add_subplot(gs[1])
-	text_ax.axis("off")
-	img_disp = ax.imshow(np.zeros((h, w, 3), dtype=np.float32), interpolation="nearest")
-	status = text_ax.text(0.5, 0.5, "Press keys to queue actions", ha="center", va="center", fontsize=9)
+	fig = plt.figure(figsize=(6, 7))
+	gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 0.12], hspace=0.2, figure=fig)
+	ax_top = fig.add_subplot(gs[0])
+	ax_bot = fig.add_subplot(gs[1])
+	text_ax = fig.add_subplot(gs[2])
+	for ax in (ax_top, ax_bot, text_ax):
+		ax.axis("off")
+	img_top = ax_top.imshow(np.zeros((h, w, 3), dtype=np.float32), vmin=0, vmax=1, interpolation="nearest")
+	img_bot = ax_bot.imshow(np.zeros((h, w, 3), dtype=np.float32), vmin=0, vmax=1, interpolation="nearest")
+	ax_top.set_title("generated (model)", fontsize=10)
+	ax_bot.set_title("ground truth (dataset)", fontsize=10)
+	status = text_ax.text(
+		0.5, 0.5, "Press Space to advance one timestep", ha="center", va="center", fontsize=10,
+	)
 
-	key_to_action: Dict[str, int] = {
-		"up": 2, "down": 5, "left": 4, "right": 3,
-		" ": 0, " z": 1, "x": 6, "c": 7,
-	}
-	step_idx = {"t": 0}
-
-	def generate_chunk(action_ids: list[int]):
-		"""Generate chunk_len frames, return list of [3,H,W] tensors."""
-		ctx = torch.stack(list(context)).unsqueeze(0).to(device)     # [1,K,3,H,W]
-		ha = torch.tensor(list(action_context), dtype=torch.long).unsqueeze(0).to(device)  # [1,K]
-		fa = torch.tensor(action_ids, dtype=torch.long).unsqueeze(0).to(device)  # [1,N]
-		with torch.no_grad():
-			z_hist = wm.encode_video(ctx)
-			z_chunk = wm.generate_next_chunk(
-				z_hist, ha, fa, num_inference_steps=num_inference_steps,
-			)
-			pixels = wm.decode_video(z_chunk)  # [1,N,3,H,W]
-		return pixels[0]  # [N,3,H,W]
+	def _is_space(key: str | None) -> bool:
+		return key in (" ", "space")
 
 	def on_key(event):
-		key = event.key
-		a = key_to_action.get(key, 0)
-		pending_actions.append(a)
-		status.set_text(f"Queued: {len(pending_actions)}/{chunk_len}")
-		fig.canvas.draw_idle()
-
-		if len(pending_actions) >= chunk_len:
-			ids = pending_actions[:chunk_len]
-			chunk = generate_chunk(ids)
-			for i, frame in enumerate(chunk.unbind(0)):
-				frame_np = ((frame.clamp(-1, 1) + 1) * 0.5).cpu().permute(1, 2, 0).numpy()
-				context.append(frame.cpu())
-				action_context.append(ids[i])
-				if i == len(chunk) - 1:
-					img_disp.set_data(frame_np)
-			step_idx["t"] += chunk_len
-			pending_actions.clear()
-			status.set_text(f"t={step_idx['t']}  (last chunk generated)")
+		nonlocal data_pos
+		if not _is_space(event.key):
+			return
+		if data_pos + K >= n:
+			status.set_text("End of trajectory (no more frames).")
 			fig.canvas.draw_idle()
+			return
+
+		ha = torch.from_numpy(acts[data_pos : data_pos + K].astype(np.int64)).view(1, K).to(device)
+		a_step = int(acts[data_pos + K - 1])
+		fa = torch.tensor([a_step], dtype=torch.long, device=device)
+
+		ctx = torch.stack(list(gen_hist), dim=0).unsqueeze(0).to(device)
+		gt_idx = data_pos + K
+		gt_frame = tx(np.asarray(obs[gt_idx])[..., -3:]).cpu()
+
+		with torch.no_grad():
+			z_hist = wm.encode_video(ctx)
+			z_next = wm.generate_next_frame(
+				z_hist, ha, fa, num_inference_steps=num_inference_steps,
+			)
+			gen = wm.decode_video(z_next)[0, 0].cpu()
+
+		img_top.set_data(_tensor_to_imshow01(gen))
+		img_bot.set_data(_tensor_to_imshow01(gt_frame))
+
+		gen_hist.append(gen.clone())
+		data_pos += 1
+		status.set_text(
+			f"step={data_pos}  window_start={data_pos - 1}  dataset_action={a_step}  "
+			f"frames_left={n - data_pos - K}",
+		)
+		fig.canvas.draw_idle()
 
 	fig.canvas.mpl_connect("key_press_event", on_key)
 	plt.tight_layout()
@@ -198,7 +198,7 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit" / "step_0050000"))
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit" / "step_0100000"))
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
@@ -208,16 +208,9 @@ def main() -> None:
 	p.add_argument("--env", type=str, default="space_invaders")
 	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--num_actions", type=int, default=18)
-	p.add_argument("--history_len", type=int, default=8)
-	p.add_argument("--chunk_len", type=int, default=3)
+	p.add_argument("--context_len", type=int, default=8, help="History length K (same as training).")
 	p.add_argument("--height", type=int, default=208)
 	p.add_argument("--width", type=int, default=160)
-	p.add_argument(
-		"--trainable_parts",
-		type=str,
-		default=None,
-		help="Override finetuning layout; omit to use trainer_state.pt next to ckpt_dir (if saved by train_world_model).",
-	)
 	args = p.parse_args()
 	run_autoregressive(
 		ckpt_dir=args.ckpt_dir,
@@ -225,10 +218,8 @@ def main() -> None:
 		vae_checkpoint=args.vae_checkpoint.strip() or None,
 		num_actions=args.num_actions,
 		num_inference_steps=args.num_inference_steps,
-		history_len=args.history_len,
-		chunk_len=args.chunk_len,
+		history_len=args.context_len,
 		image_size=(args.height, args.width),
-		trainable_parts=args.trainable_parts,
 	)
 
 
