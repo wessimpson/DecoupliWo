@@ -1,4 +1,4 @@
-# Chopper — training variant A: slower heli bomb and tank shots, slightly slower tanks; bombs do not destroy tanks (mirrors aliens_train_physics_a “no damage from player shot” theme).
+# Chopper — training variant A: slower heli bomb and tank shots, slightly slower tanks; bombs do not destroy tanks—bomb bounces off tank (bomb tank reverse) and only clears at EOS (mirrors aliens_train_physics_a “shot does not remove target” theme).
 BasicGame
     SpriteSet
         layers > Immovable hidden=True
@@ -49,7 +49,8 @@ BasicGame
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        bomb tank wall EOS > killSprite
+        bomb EOS > killSprite
+        bomb tank > reverseDirection
 
         bomb sam > killBoth
 

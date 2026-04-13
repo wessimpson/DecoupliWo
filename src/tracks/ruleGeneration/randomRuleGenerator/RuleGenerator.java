@@ -13,7 +13,7 @@ public class RuleGenerator extends AbstractRuleGenerator {
 	 * Array contains all the simple interactions
 	 */
 	private String[] interactions = new String[] { "killSprite", "killAll", "killIfHasMore", "killIfHasLess",
-			"killIfFromAbove", "killIfOtherHasMore", "spawnBehind", "stepBack", "spawnIfHasMore", "spawnIfHasLess",
+			"killIfFromAbove", "killIfFromBelow", "killIfOtherHasMore", "spawnBehind", "stepBack", "spawnIfHasMore", "spawnIfHasLess",
 			"cloneSprite", "transformTo", "undoAll", "flipDirection", "transformToRandomChild", "updateSpawnType",
 			"removeScore", "addHealthPoints", "addHealthPointsToMax", "reverseDirection", "subtractHealthPoints",
 			"increaseSpeedToAll", "decreaseSpeedToAll", "attractGaze", "align", "turnAround", "wrapAround",

@@ -167,7 +167,7 @@ public class SharedData {
 	 * Array contains all interactions we want to mutate over
 	 */
 	public static String[] interactions = new String[]{
-			"killSprite", "killAll", "killIfHasMore", "killIfHasLess", "killIfFromAbove",
+			"killSprite", "killAll", "killIfHasMore", "killIfHasLess", "killIfFromAbove", "killIfFromBelow",
 			"killIfOtherHasMore", "transformToSingleton", "spawnBehind",
 			"spawnIfHasMore", "spawnIfHasLess", "cloneSprite", "transformTo", "transformIfCounts", 
 			"transformToRandomChild", "updateSpawnType", "removeScore", 

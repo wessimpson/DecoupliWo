@@ -1,4 +1,4 @@
-# Chopper: player bomb kills tank then reverses (bounces) upward; pairs (tank,bomb) and (bomb,tank) so damage + bounce apply (mirrors aliens ricochet).
+# Chopper: player bomb kills tank then reverses (bounces) upward; pairs (tank,bomb) and (bomb,tank) so damage + bounce apply (mirrors aliens ricochet). Returning bomb can hit the helicopter (killIfFromBelow), like aliens killIfFromAbove.
 BasicGame
     SpriteSet
         layers > Immovable hidden=True
@@ -51,7 +51,9 @@ BasicGame
 
         tank bomb > killSprite scoreChange=1
         bomb tank > reverseDirection
-        bomb tank wall EOS > killSprite
+        bomb wall EOS > killSprite
+
+        avatar bomb > killIfFromBelow scoreChange=-1
 
         bomb sam > killBoth
 

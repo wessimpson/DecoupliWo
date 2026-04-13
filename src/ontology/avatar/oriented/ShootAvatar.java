@@ -35,6 +35,13 @@ public class ShootAvatar extends OrientedAvatar
     public String[] stypes;
     public int[] itype;
 
+    /**
+     * If true (default), new missiles copy the avatar's facing direction. If false, missiles keep the
+     * orientation defined on the missile type (same behavior as FlakAvatar),
+     * which is required for games where shots must travel along a fixed axis regardless of movement.
+     */
+    public boolean alignShotToOrientation = true;
+
     public ShootAvatar(){}
 
     public ShootAvatar(Vector2d position, Dimension size, SpriteContent cnt)
@@ -86,16 +93,25 @@ public class ShootAvatar extends OrientedAvatar
 
     protected void shoot(Game game, int idx)
     {
-        Vector2d dir = this.orientation.getVector();
-        dir.normalise();
+        Vector2d spawn;
+        if (alignShotToOrientation) {
+            Vector2d dir = this.orientation.getVector();
+            dir.normalise();
+            spawn = new Vector2d(this.rect.x + dir.x * this.lastrect.width,
+                    this.rect.y + dir.y * this.lastrect.height);
+        } else {
+            spawn = new Vector2d(this.rect.x, this.rect.y);
+        }
 
-        VGDLSprite newOne = game.addSprite(itype[idx], new Vector2d(this.rect.x + dir.x*this.lastrect.width,
-                                           this.rect.y + dir.y*this.lastrect.height));
+        VGDLSprite newOne = game.addSprite(itype[idx], spawn);
 
         if(newOne != null)
         {
-            if(newOne.is_oriented)
+            if(alignShotToOrientation && newOne.is_oriented) {
+                Vector2d dir = this.orientation.getVector();
+                dir.normalise();
                 newOne.orientation = new Direction(dir.x, dir.y);
+            }
             reduceAmmo(idx);
             newOne.setFromAvatar(true);
         }
@@ -162,6 +178,7 @@ public class ShootAvatar extends OrientedAvatar
         targetSprite.ammo = this.ammo;
         targetSprite.ammoId= this.ammoId.clone();
         targetSprite.ammos = this.ammos.clone();
+        targetSprite.alignShotToOrientation = this.alignShotToOrientation;
 
         super.copyTo(targetSprite);
     }

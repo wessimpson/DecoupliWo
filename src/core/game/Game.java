@@ -1441,42 +1441,9 @@ public abstract class Game {
 
 		}
 
-		// Secondly, we handle single sprite events (EOS). Take each sprite
-		// itype that has
-		// a EOS effect defined.
-		for (Integer intId : definedEOSEffects) {
-			// For each effect that this sprite has assigned.
-			for (Effect ef : eosEffects[intId]) {
-				// Take all the subtypes in the hierarchy of this sprite.
-				ArrayList<Integer> allTypes = iSubTypes[intId];
-				if (ef.enabled)
-					for (Integer itype : allTypes) {
-						// Add all sprites of this subtype to the list of
-						// sprites.
-						// These are sprites that could potentially collide with
-						// EOS
-						Collection<VGDLSprite> sprites = this.getSprites(itype);
-						try{
-							for (VGDLSprite sp : sprites) {
-								// Check if they are at the edge to trigger the
-								// effect. Also check that they
-								// are not dead (could happen in this same cycle).
-								if (isAtEdge(sp.rect) && !kill_list.contains(sp) && !sp.is_disabled()) {
-									executeEffect(ef, sp, null);
-								}
-							}
-						}
-						catch(ConcurrentModificationException e){
-							Logger.getInstance().addMessage(new Message(Message.WARNING, "you can't spawn sprites outside of the screen."));
-						}
-					}
-			}
-
-		}
-
-		// Now, we handle events between pairs of sprites, for each pair of
-		// sprites that
-		// has a paired effect defined:
+		// Pairwise sprite collisions before EOS so ricochet-style rules (e.g.
+		// bomb vs tank) run while the missile still exists; otherwise edge
+		// killSprite can remove it before reverseDirection applies.
 		for (Pair<Integer, Integer> p : definedEffects) {
 			// We iterate over the (potential) multiple effects that these
 			// two sprites could have defined between them.
@@ -1526,6 +1493,28 @@ public abstract class Game {
 					}
 				}
 			}
+		}
+
+		// Single-sprite events (EOS), after pairwise collisions.
+		for (Integer intId : definedEOSEffects) {
+			for (Effect ef : eosEffects[intId]) {
+				ArrayList<Integer> allTypes = iSubTypes[intId];
+				if (ef.enabled)
+					for (Integer itype : allTypes) {
+						Collection<VGDLSprite> sprites = this.getSprites(itype);
+						try{
+							for (VGDLSprite sp : sprites) {
+								if (isAtEdge(sp.rect) && !kill_list.contains(sp) && !sp.is_disabled()) {
+									executeEffect(ef, sp, null);
+								}
+							}
+						}
+						catch(ConcurrentModificationException e){
+							Logger.getInstance().addMessage(new Message(Message.WARNING, "you can't spawn sprites outside of the screen."));
+						}
+					}
+			}
+
 		}
 
 	}

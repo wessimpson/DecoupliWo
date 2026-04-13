@@ -28,6 +28,8 @@ public class ReverseDirection extends Effect
 	    Logger.getInstance().addMessage(new Message(Message.WARNING, "1st sprite can't be EOS with ReverseDirection interaction."));
 	    return;
 	}
+	if (sprite2 != null)
+	    sprite1.setRect(sprite1.lastrect);
         game.reverseDirection(sprite1);
     }
 }

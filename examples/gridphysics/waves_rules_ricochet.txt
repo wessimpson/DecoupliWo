@@ -1,4 +1,5 @@
 # Waves: player shot kills alien then reverses direction (bounces); mirrors aliens ricochet (horizontal arena).
+# Returning shot can kill the player (killIfFromRight), like aliens killIfFromAbove.
 BasicGame
 
     SpriteSet
@@ -8,7 +9,7 @@ BasicGame
 
         missile > Missile
             rock > orientation=LEFT speed=0.95 color=BLUE img=oryx/orb3
-            sam  > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            sam  > orientation=RIGHT color=BLUE singleton=True speed=1.0 img=oryx/orb1 shrinkfactor=0.5
             laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.75 img=newset/laser2_1
 
         portal  >
@@ -17,7 +18,7 @@ BasicGame
 
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
-        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship1 rotateInPlace=False
+        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship1 rotateInPlace=False alignShotToOrientation=False
         alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
     
     LevelMapping
@@ -38,6 +39,8 @@ BasicGame
 
         alien sam > killSprite scoreChange=2
         sam alien > reverseDirection
+
+        avatar sam > killIfFromRight scoreChange=-1
 
         sam laser > transformTo stype=shield killSecond=True
 
