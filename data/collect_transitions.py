@@ -1,3 +1,12 @@
+"""
+Collect transitions from the SB3 PPO agent on Atari-style envs.
+
+Layout matches GVGAI headless runs from ``RunDataCollectionAgent`` (Java): each shard directory
+contains ``obs.npy``, ``action.npy``, ``n_actions.npy``, ``player_x.npy``, ``player_y.npy``.
+This script writes under ``data/transitions/train/<env>/``. GVGAI ``RunDataCollectionAgent`` writes the
+same shard layout to ``data/transitions/train/<game_stem>/``.
+``obs.npy`` here is stacked RGB uint8; GVGAI uses a fixed grid encoding uint8 ``[N,H,W,3]``.
+"""
 import argparse
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -72,7 +81,7 @@ def save_shard(
 ) -> None:
 	"""
 	Save one shard as uncompressed .npy files in:
-	data/transitions/<env>/shard_XXXXX/{obs.npy, action.npy, n_actions.npy, player_x.npy, player_y.npy}
+	data/transitions/train/<env>/shard_XXXXX/{obs.npy, action.npy, n_actions.npy, player_x.npy, player_y.npy}
 	"""
 	root = output_dir / env_name / f"shard_{global_shard_id:05d}"
 	root.mkdir(parents=True, exist_ok=True)
@@ -92,10 +101,13 @@ def collect_transitions(
 	total_frames: int,
 	chunk_size: int,
 	n_envs: int,
+	frame_save_freq: int = 1,
 ) -> None:
 	device = "cuda" if torch.cuda.is_available() else "cpu"
 	model_path = resolve_checkpoint_path(env_name, checkpoint_path=None)
 	model: PPO = PPO.load(model_path, device=device)
+
+	frame_save_freq = max(1, int(frame_save_freq))
 
 	vec = build_vec_env(env_name, render_mode=None, n_envs=n_envs)
 
@@ -107,13 +119,16 @@ def collect_transitions(
 	action_bufs: List[List[np.ndarray]] = [[] for _ in range(n_envs)]
 	player_xy_bufs: List[List[Tuple[Optional[float], Optional[float]]]] = [[] for _ in range(n_envs)]
 	global_shard_id = 0
+	# Policy timing: same as before (one tick per vec step batch, +n_envs per iteration).
 	frame_counter = 0
+	saved_total = 0
+	step_loop_idx = 0
 	# keep last_action per env
 	last_action: Optional[np.ndarray] = None
 
 	pbar = tqdm(total=total_frames, desc="Collecting frames", unit="frame")
 	try:
-		while frame_counter < total_frames:
+		while saved_total < total_frames:
 			# Decide action every decision_interval steps
 			if (frame_counter % DECISION_INTERVAL == 0) or last_action is None:
 				actions, _ = model.predict(obs, deterministic=True)
@@ -127,27 +142,31 @@ def collect_transitions(
 
 			next_obs, _rewards, dones, infos = vec.step(actions)
 
-			# Extract and store most recent RGB frame (last 3 channels) for ALL envs
-			for e in range(n_envs):
-				frame = obs[e]  # (H, W, 3 * n_stack)
-				if isinstance(frame, np.ndarray) and frame.ndim == 3 and frame.shape[-1] >= 3:
-					frame = frame[..., -3:]
-				frame = np.asarray(frame)
-				if frame.dtype != np.uint8:
-					if frame.max() <= 1.0:
-						frame = (frame * 255.0).round()
-					frame = frame.clip(0, 255).astype(np.uint8)
-				obs_bufs[e].append(frame)
-				# action for env e (store scalar int)
-				action_e = int(actions[e]) if getattr(actions, "ndim", 0) > 0 else int(actions)
-				action_bufs[e].append(action_e)
-				info_e = infos[e] if len(infos) > e else {}
-				player_xy = info_e.get("player_xy", (None, None))
-				player_xy_bufs[e].append(player_xy)
+			# Optionally subsample what we persist (env still steps every iteration).
+			if step_loop_idx % frame_save_freq == 0:
+				# Extract and store most recent RGB frame (last 3 channels) for ALL envs
+				for e in range(n_envs):
+					frame = obs[e]  # (H, W, 3 * n_stack)
+					if isinstance(frame, np.ndarray) and frame.ndim == 3 and frame.shape[-1] >= 3:
+						frame = frame[..., -3:]
+					frame = np.asarray(frame)
+					if frame.dtype != np.uint8:
+						if frame.max() <= 1.0:
+							frame = (frame * 255.0).round()
+						frame = frame.clip(0, 255).astype(np.uint8)
+					obs_bufs[e].append(frame)
+					# action for env e (store scalar int)
+					action_e = int(actions[e]) if getattr(actions, "ndim", 0) > 0 else int(actions)
+					action_bufs[e].append(action_e)
+					info_e = infos[e] if len(infos) > e else {}
+					player_xy = info_e.get("player_xy", (None, None))
+					player_xy_bufs[e].append(player_xy)
 
-			# Update counters
+				saved_total += n_envs
+				pbar.update(n_envs)
+
 			frame_counter += n_envs
-			pbar.update(n_envs)
+			step_loop_idx += 1
 			obs = next_obs
 
 			# reset last_action for done envs to force new decision
@@ -160,20 +179,16 @@ def collect_transitions(
 			# Save per-env when that env's buffer reaches chunk_size
 			for e in range(n_envs):
 				if len(obs_bufs[e]) >= chunk_size:
-					save_shard(TRANSITIONS_DIR, env_name, global_shard_id, obs_bufs[e], action_bufs[e], player_xy_bufs[e])
+					save_shard(TRANSITIONS_DIR / "train", env_name, global_shard_id, obs_bufs[e], action_bufs[e], player_xy_bufs[e])
 					global_shard_id += 1
 					obs_bufs[e].clear()
 					action_bufs[e].clear()
 					player_xy_bufs[e].clear()
-
-			# If we exceeded total_frames, truncate buffers and save remaining
-			if frame_counter >= total_frames:
-				break
 	finally:
 		# Flush remaining
 		for e in range(n_envs):
 			if action_bufs[e]:
-				save_shard(TRANSITIONS_DIR, env_name, global_shard_id, obs_bufs[e], action_bufs[e], player_xy_bufs[e])
+				save_shard(TRANSITIONS_DIR / "train", env_name, global_shard_id, obs_bufs[e], action_bufs[e], player_xy_bufs[e])
 				global_shard_id += 1
 		vec.close()
 		pbar.close()
@@ -190,7 +205,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--frames",
 		type=int,
-		default=1_000_000,
+		default=10_000_000,
 		help="Number of frames to collect before stopping (across all envs).",
 	)
 	parser.add_argument(
@@ -205,6 +220,12 @@ def parse_args() -> argparse.Namespace:
 		default=8,
 		help="Number of parallel environments.",
 	)
+	parser.add_argument(
+		"--frame_save_freq",
+		type=int,
+		default=4,
+		help="Append to shards only every N vec-env steps (1 = every step).",
+	)
 	return parser.parse_args()
 
 
@@ -215,6 +236,7 @@ def main() -> None:
 		total_frames=args.frames,
 		chunk_size=args.chunk_size,
 		n_envs=args.n_envs,
+		frame_save_freq=args.frame_save_freq,
 	)
 
 
