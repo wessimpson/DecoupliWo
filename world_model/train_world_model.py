@@ -60,15 +60,15 @@ def future_residuals_as_history_block(delta_bn: torch.Tensor, K: int) -> torch.T
 
 def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser(description="Train next-frame temporal world model.")
-	p.add_argument("--env", type=str, default="space_invaders")
+	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
 	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"), help="Path to vae.pt (hub architecture + this state dict)")
-	p.add_argument("--num_actions", type=int, default=18)
+	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN, help="History frames K (fixed window).")
-	p.add_argument("--resize", type=int, nargs=2, metavar=("H", "W"), default=(208, 160))
+	p.add_argument("--resize", type=int, nargs=2, metavar=("H", "W"), default=None, help="Resize frames to H×W (multiples of 8).")
 	p.add_argument("--batch_size", type=int, default=4)
-	p.add_argument("--num_train_epochs", type=int, default=10)
-	p.add_argument("--max_train_steps", type=int, default=100_000)
+	p.add_argument("--num_train_epochs", type=int, default=2)
+	p.add_argument("--max_train_steps", type=int, default=500_000)
 	p.add_argument("--lr", type=float, default=5e-5)
 	p.add_argument("--lr_scheduler", type=str, default="constant_with_warmup")
 	p.add_argument("--lr_warmup_steps", type=int, default=500)
@@ -111,12 +111,17 @@ def main() -> None:
 
 	# ── Data ──────────────────────────────────────────────────────
 	trans_root = Path(args.transitions_root)
+	resize_to = tuple(args.resize) if args.resize is not None else None
 	mk_ds = lambda d: RolloutVideoDataset(d, seq_len=seq_len, stride=1, num_actions=args.num_actions).with_transform(
-		partial(preprocess, history_len=K, resize_to=tuple(args.resize)),
+		partial(preprocess, history_len=K, resize_to=resize_to),
 	)
 	ds_train = mk_ds(trans_root / "train" / args.env)
 	ds_test = mk_ds(trans_root / "test" / args.env)
-	print(f"Dataset windows: train={len(ds_train):,} test={len(ds_test):,}")
+	_hw = ds_train[0]["target_frame"].shape[-2:]
+	print(
+		f"Dataset windows: train={len(ds_train):,} test={len(ds_test):,}  "
+		f"frame_hw={tuple(_hw)} (resize={'native' if resize_to is None else resize_to})"
+	)
 
 	loader = DataLoader(
 		ds_train,
@@ -181,7 +186,7 @@ def main() -> None:
 		val_ar_items: list[dict] = []
 		for i in range(args.val_samples):
 			idx = i % len(ds_test)
-			row = ds_test.try_contiguous_ar(idx, K, val_ar_max, tuple(args.resize))
+			row = ds_test.try_contiguous_ar(idx, K, val_ar_max, resize_to)
 			if row is not None:
 				val_ar_items.append(row)
 		if not val_ar_items:
@@ -208,6 +213,63 @@ def main() -> None:
 		for batch in loader:
 			if global_step >= total_steps:
 				break
+
+			# Validation (includes step 0 before any training)
+			if args.validation_every > 0 and global_step % args.validation_every == 0:
+				world_model.eval()
+				with torch.no_grad():
+					Bv = z_hist_val.shape[0]
+					ts = torch.randint(0, world_model.num_train_timesteps, (Bv,), device=device).long()
+					ns = torch.randn_like(z_tgt_val, dtype=world_model.diffuser.unet.dtype)
+					pred_v, _ = world_model.diffusion_forward(
+						z_hist_val, z_tgt_val, val_hist_act, ts, ns,
+					)
+					val_mse = F.mse_loss(pred_v.float(), ns.float())
+					writer.add_scalar("val/mse", val_mse.item(), global_step)
+
+					# Autoregressive val PSNR: num_inference_steps per predicted frame.
+					if val_ar_hist is not None:
+						z_ar = world_model.encode_video(val_ar_hist.to(device))
+						h_act = val_ar_hist_act.to(device)
+						assert val_ar_gt is not None and val_ar_fut is not None
+						tgt_future = val_ar_gt.to(device)
+						fut_dev = val_ar_fut.to(device)
+						decoded_frames: list[torch.Tensor] = []
+						for s in range(val_ar_max):
+							fa = h_act[:, -1] if s == 0 else fut_dev[:, s - 1]
+							z_next = world_model.generate_next_frame(
+								z_ar, h_act, fa,
+								num_inference_steps=args.num_inference_steps,
+							)
+							decoded_frames.append(world_model.decode_video(z_next))
+							z_ar = torch.cat([z_ar[:, 1:], z_next], dim=1)
+							h_act = torch.cat([h_act[:, 1:], fa.unsqueeze(1)], dim=1)
+						for h in val_ar_horizons:
+							pred_h = torch.cat(decoded_frames[:h], dim=1)
+							tgt_h = tgt_future[:, :h]
+							hid = f"h{h:02d}"
+							writer.add_scalar(
+								f"val/psnr_ar/{hid}",
+								psnr_neg1_to_01(pred_h, tgt_h),
+								global_step,
+							)
+							gen_f0 = (decoded_frames[h - 1][:1, 0].clamp(-1, 1) + 1) * 0.5
+							tgt_f0 = (tgt_future[:1, h - 1].clamp(-1, 1) + 1) * 0.5
+							writer.add_images(f"val/ar_rollout/{hid}/generated", gen_f0.cpu(), global_step)
+							writer.add_images(f"val/ar_rollout/{hid}/target", tgt_f0.cpu(), global_step)
+					else:
+						tgt_dev = val_tgt.to(device)
+						chunk_lat = world_model.generate_next_frame(
+							z_hist_val, val_hist_act, val_hist_act[:, -1],
+							num_inference_steps=args.num_inference_steps,
+						)
+						dec1 = world_model.decode_video(chunk_lat)
+						img01 = (dec1[:1, 0].clamp(-1, 1) + 1) * 0.5
+						tgt01 = (tgt_dev[:1, 0].clamp(-1, 1) + 1) * 0.5
+						writer.add_images("val/generated_f0", img01.cpu(), global_step)
+						writer.add_images("val/target_f0", tgt01.cpu(), global_step)
+				world_model.train()
+
 			optimizer.zero_grad(set_to_none=True)
 
 			hist_frames = batch["history_frames"]    # [B, K, 3, H, W]
@@ -278,62 +340,6 @@ def main() -> None:
 			if global_step > 0 and global_step % 20 == 0:
 				writer.add_scalar("train/loss", loss.item(), global_step)
 				writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
-
-			# Validation
-			if global_step > 0 and args.validation_every > 0 and global_step % args.validation_every == 0:
-				world_model.eval()
-				with torch.no_grad():
-					Bv = z_hist_val.shape[0]
-					ts = torch.randint(0, world_model.num_train_timesteps, (Bv,), device=device).long()
-					ns = torch.randn_like(z_tgt_val, dtype=world_model.diffuser.unet.dtype)
-					pred_v, _ = world_model.diffusion_forward(
-						z_hist_val, z_tgt_val, val_hist_act, ts, ns,
-					)
-					val_mse = F.mse_loss(pred_v.float(), ns.float())
-					writer.add_scalar("val/mse", val_mse.item(), global_step)
-
-					# Autoregressive val PSNR: num_inference_steps per predicted frame.
-					if val_ar_hist is not None:
-						z_ar = world_model.encode_video(val_ar_hist.to(device))
-						h_act = val_ar_hist_act.to(device)
-						assert val_ar_gt is not None and val_ar_fut is not None
-						tgt_future = val_ar_gt.to(device)
-						fut_dev = val_ar_fut.to(device)
-						decoded_frames: list[torch.Tensor] = []
-						for s in range(val_ar_max):
-							fa = h_act[:, -1] if s == 0 else fut_dev[:, s - 1]
-							z_next = world_model.generate_next_frame(
-								z_ar, h_act, fa,
-								num_inference_steps=args.num_inference_steps,
-							)
-							decoded_frames.append(world_model.decode_video(z_next))
-							z_ar = torch.cat([z_ar[:, 1:], z_next], dim=1)
-							h_act = torch.cat([h_act[:, 1:], fa.unsqueeze(1)], dim=1)
-						for h in val_ar_horizons:
-							pred_h = torch.cat(decoded_frames[:h], dim=1)
-							tgt_h = tgt_future[:, :h]
-							hid = f"h{h:02d}"
-							writer.add_scalar(
-								f"val/psnr_ar/{hid}",
-								psnr_neg1_to_01(pred_h, tgt_h),
-								global_step,
-							)
-							gen_f0 = (decoded_frames[h - 1][:1, 0].clamp(-1, 1) + 1) * 0.5
-							tgt_f0 = (tgt_future[:1, h - 1].clamp(-1, 1) + 1) * 0.5
-							writer.add_images(f"val/ar_rollout/{hid}/generated", gen_f0.cpu(), global_step)
-							writer.add_images(f"val/ar_rollout/{hid}/target", tgt_f0.cpu(), global_step)
-					else:
-						tgt_dev = val_tgt.to(device)
-						chunk_lat = world_model.generate_next_frame(
-							z_hist_val, val_hist_act, val_hist_act[:, -1],
-							num_inference_steps=args.num_inference_steps,
-						)
-						dec1 = world_model.decode_video(chunk_lat)
-						img01 = (dec1[:1, 0].clamp(-1, 1) + 1) * 0.5
-						tgt01 = (tgt_dev[:1, 0].clamp(-1, 1) + 1) * 0.5
-						writer.add_images("val/generated_f0", img01.cpu(), global_step)
-						writer.add_images("val/target_f0", tgt01.cpu(), global_step)
-				world_model.train()
 
 			if global_step > 0 and args.save_every > 0 and global_step % args.save_every == 0:
 				save_checkpoint(global_step)

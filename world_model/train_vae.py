@@ -29,18 +29,19 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--val_dir", type=str, default=str(Path("data") / "transitions" / "test"))
 	p.add_argument("--pretrained_model_name_or_path", type=str, default="stabilityai/sd-vae-ft-mse")
 	p.add_argument("--output_dir", type=str, default=str(Path("world_model") / "checkpoints" / "vae"))
-	p.add_argument("--batch_size", type=int, default=2)
-	p.add_argument("--max_train_steps", type=int, default=300_000, help="stop after this many optimizer steps")
+	p.add_argument("--batch_size", type=int, default=16)
+	p.add_argument("--epochs", type=int, default=2, help="stop after this many epochs (0 = unlimited, use --max_train_steps)")
+	p.add_argument("--max_train_steps", type=int, default=50_000, help="stop after this many optimizer steps (0 = unlimited, use --epochs)")
 	p.add_argument("--lr", type=float, default=1e-4)
 	p.add_argument("--weight_decay", type=float, default=1e-5, help="AdamW weight decay")
 	p.add_argument("--max_grad_norm", type=float, default=1.0, help="clip global grad norm (L2)")
-	p.add_argument("--num_workers", type=int, default=2)
+	p.add_argument("--num_workers", type=int, default=0)
 	p.add_argument("--save_every", type=int, default=100_000, help="0 = save only at end")
 	p.add_argument("--device", type=str, default=None)
 	p.add_argument("--seed", type=int, default=42)
 	p.add_argument("--log_dir", type=str, default=str(Path("runs") / "vae"))
 	p.add_argument("--log_every", type=int, default=20, help="0 = every step")
-	p.add_argument("--validation_every", type=int, default=1000, help="0 = no mid-run val")
+	p.add_argument("--validation_every", type=int, default=10_000, help="0 = no mid-run val")
 	p.add_argument("--val_batch_size", type=int, default=8, help="max frames per val eval")
 	p.add_argument("--kl_weight", type=float, default=1e-6, help="KL term multiplier (small)")
 	p.add_argument("--warmup_steps", type=int, default=500, help="linear LR warmup to --lr over this many optimizer steps")
@@ -186,10 +187,16 @@ def main() -> None:
 	eval_val(vae, val_x, device, writer, step, lpips_fn, args.kl_weight)
 
 	ep = 0
-	while step < args.max_train_steps:
+	steps_per_epoch = len(loader)
+	total_steps = args.epochs * steps_per_epoch
+	if args.max_train_steps > 0:
+		total_steps = min(total_steps, args.max_train_steps)
+
+	pbar = tqdm(total=total_steps)
+	while step < total_steps:
 		ep += 1
-		pbar = tqdm(loader, desc=f"epoch {ep}", total=min(len(loader), args.max_train_steps - step))
-		for batch in pbar:
+		pbar.set_description(f"epoch {ep}")
+		for batch in loader:
 			vae.train()
 			x = batch.to(device=device, dtype=vae.dtype)
 			loss, parts = recon_loss(vae, x, lpips_fn, args.kl_weight)
@@ -203,6 +210,7 @@ def main() -> None:
 				pg["lr"] = args.lr * scale
 			opt.step()
 			step += 1
+			pbar.update(1)
 			pbar.set_postfix(loss=float(loss.item()), lr=float(opt.param_groups[0]["lr"]))
 
 			if args.log_every <= 0 or step % args.log_every == 0:
@@ -222,8 +230,9 @@ def main() -> None:
 				torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
 				vae.train()
 
-			if step >= args.max_train_steps:
+			if step >= total_steps:
 				break
+	pbar.close()
 
 	eval_val(vae, val_x, device, writer, step, lpips_fn, args.kl_weight)
 	Path(args.output_dir).mkdir(parents=True, exist_ok=True)

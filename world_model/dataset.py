@@ -33,6 +33,16 @@ def _resize_hw_divisible_by_8(resize_to: tuple[int, int]) -> tuple[int, int]:
 	return max(8, (h // 8) * 8), max(8, (w // 8) * 8)
 
 
+def crop_hw_div8(h: int, w: int) -> tuple[int, int]:
+	H, W = (h // 8) * 8, (w // 8) * 8
+	assert H > 0 and W > 0, (h, w)
+	return H, W
+
+
+def _rgb_hwc(f: np.ndarray) -> np.ndarray:
+	return np.asarray(f)[..., -3:]
+
+
 IMG_TRANSFORMS = transforms.Compose([
 	transforms.ToTensor(),
 	transforms.Lambda(lambda x: x * 2.0 - 1.0),
@@ -42,19 +52,26 @@ IMG_TRANSFORMS = transforms.Compose([
 def preprocess(
 	examples: dict[str, np.ndarray],
 	history_len: int,
-	resize_to: tuple[int, int] | None = (208, 160),
+	resize_to: tuple[int, int] | None = None,
 ) -> dict[str, torch.Tensor]:
 	"""Convert raw sample → {history_frames, target_frame, history_actions}.
 
 	Seq: ``obs[i]`` with ``action[i]`` then env step → ``obs[i+1]`` (see ``collect_transitions``).
 	History is ``obs[0:K]``; target is ``obs[K]``, produced by ``action[K-1]`` (last history action).
 	``history_actions[j]`` is ``action[j]`` paired with ``history_frames[j]``.
+	If ``resize_to`` is None, keep native resolution (crop H×W to multiples of 8 for the VAE).
 	"""
 	if resize_to is not None:
 		resize_to = _resize_hw_divisible_by_8(resize_to)
-	tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
+		tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
+		frames = torch.stack([tx(_rgb_hwc(f)) for f in examples["obs"]], dim=0)  # [K+1, 3, H, W]
+	else:
+		def native_tx(f: np.ndarray) -> torch.Tensor:
+			r = _rgb_hwc(f)
+			H, W = crop_hw_div8(*r.shape[:2])
+			return IMG_TRANSFORMS(r[:H, :W])
 
-	frames = torch.stack([tx(f) for f in examples["obs"]], dim=0)  # [K+1, 3, H, W]
+		frames = torch.stack([native_tx(f) for f in examples["obs"]], dim=0)
 	actions = examples["action"].astype(np.int64)
 
 	K = history_len
@@ -69,7 +86,7 @@ def preprocess_contiguous_ar(
 	examples: dict[str, np.ndarray],
 	history_len: int,
 	num_future_frames: int,
-	resize_to: tuple[int, int] | None = (208, 160),
+	resize_to: tuple[int, int] | None = None,
 ) -> dict[str, torch.Tensor]:
 	"""Same timeline as ``preprocess``, plus ``num_future_frames`` ground-truth steps for AR eval.
 
@@ -85,9 +102,15 @@ def preprocess_contiguous_ar(
 
 	if resize_to is not None:
 		resize_to = _resize_hw_divisible_by_8(resize_to)
-	tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
+		tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
+		frames = torch.stack([tx(_rgb_hwc(f)) for f in examples["obs"][:need]], dim=0)
+	else:
+		def native_tx(f: np.ndarray) -> torch.Tensor:
+			r = _rgb_hwc(f)
+			H, W = crop_hw_div8(*r.shape[:2])
+			return IMG_TRANSFORMS(r[:H, :W])
 
-	frames = torch.stack([tx(f) for f in examples["obs"][:need]], dim=0)  # [K+Hn, 3, H, W]
+		frames = torch.stack([native_tx(f) for f in examples["obs"][:need]], dim=0)
 	actions = examples["action"][:need].astype(np.int64)
 
 	return {
@@ -220,15 +243,15 @@ def _find_test_env_dir() -> Path:
 def main() -> None:
 	"""Smoke test: dataset + DataLoader batch shapes."""
 	K = 8
-	H, W = 208, 160
 	env_dir = _find_test_env_dir()
-	tx = partial(preprocess, history_len=K, resize_to=(H, W))
+	tx = partial(preprocess, history_len=K, resize_to=None)
 	ds = RolloutVideoDataset(env_dir, seq_len=K + 1, stride=1, num_actions=18).with_transform(tx)
 	assert len(ds) > 0, "dataset empty"
 
 	row0 = ds[0]
 	for k in ("history_frames", "target_frame", "history_actions"):
 		assert k in row0, k
+	H, W = row0["target_frame"].shape[-2:]
 
 	dl = DataLoader(ds, batch_size=2, shuffle=False, num_workers=0)
 	batch = next(iter(dl))

@@ -1,7 +1,4 @@
-"""Replay inference: dataset actions only, Space advances one timestep.
-
-Top: model prediction. Bottom: ground-truth next frame from the same rollout.
-"""
+"""Interactive inference with user-key actions and generated frames only."""
 
 from __future__ import annotations
 
@@ -11,9 +8,8 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
-from torchvision import transforms
 
-from world_model.dataset import IMG_TRANSFORMS, _resize_hw_divisible_by_8
+from world_model.dataset import IMG_TRANSFORMS, crop_hw_div8
 from world_model.model.world_model import WorldModel
 
 
@@ -100,11 +96,10 @@ def _tensor_to_imshow01(t: torch.Tensor) -> np.ndarray:
 
 def run_autoregressive(
 	ckpt_dir: str,
-	env: str = "space_invaders",
-	num_actions: int = 18,
+	env: str = "aliens",
+	num_actions: int = 7,
 	history_len: int = 8,
 	num_inference_steps: int = 30,
-	image_size: tuple[int, int] = (208, 160),
 	vae_checkpoint: Optional[str] = None,
 ) -> None:
 	import matplotlib.gridspec as gridspec
@@ -118,11 +113,10 @@ def run_autoregressive(
 	)
 	wm.eval()
 
-	h, w = _resize_hw_divisible_by_8((int(image_size[0]), int(image_size[1])))
-	tx = transforms.Compose([
-		IMG_TRANSFORMS,
-		transforms.Resize((h, w), antialias=True),
-	])
+	def tx(frame: np.ndarray) -> torch.Tensor:
+		rgb = np.asarray(frame)[..., -3:]
+		h, w = crop_hw_div8(*rgb.shape[:2])
+		return IMG_TRANSFORMS(rgb[:h, :w])
 
 	transitions_root = Path("data") / "transitions" / "train" / str(env)
 	shards = sorted(p for p in transitions_root.glob("shard_*") if (p / "obs.npy").exists())
@@ -135,43 +129,50 @@ def run_autoregressive(
 	# Bootstrap: first K real frames (same preprocessing as training).
 	init = torch.stack([tx(np.asarray(obs[i])[..., -3:]) for i in range(K)], dim=0)
 	gen_hist: deque[torch.Tensor] = deque([init[i].clone() for i in range(K)], maxlen=K)
+	action_hist: deque[int] = deque([int(a) for a in acts[:K]], maxlen=K)
 	data_pos = 0
 
-	fig = plt.figure(figsize=(6, 7))
-	gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 0.12], hspace=0.2, figure=fig)
+	fig = plt.figure(figsize=(6, 4.5))
+	gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.12], hspace=0.2, figure=fig)
 	ax_top = fig.add_subplot(gs[0])
-	ax_bot = fig.add_subplot(gs[1])
-	text_ax = fig.add_subplot(gs[2])
-	for ax in (ax_top, ax_bot, text_ax):
+	text_ax = fig.add_subplot(gs[1])
+	for ax in (ax_top, text_ax):
 		ax.axis("off")
+	preview = tx(np.asarray(obs[0])[..., -3:])
+	h, w = int(preview.shape[-2]), int(preview.shape[-1])
 	img_top = ax_top.imshow(np.zeros((h, w, 3), dtype=np.float32), vmin=0, vmax=1, interpolation="nearest")
-	img_bot = ax_bot.imshow(np.zeros((h, w, 3), dtype=np.float32), vmin=0, vmax=1, interpolation="nearest")
 	ax_top.set_title("generated (model)", fontsize=10)
-	ax_bot.set_title("ground truth (dataset)", fontsize=10)
 	status = text_ax.text(
-		0.5, 0.5, "Press Space to advance one timestep", ha="center", va="center", fontsize=10,
+		0.5, 0.5, "Controls: arrows=move, space=shoot", ha="center", va="center", fontsize=10,
 	)
 
-	def _is_space(key: str | None) -> bool:
-		return key in (" ", "space")
+	key_to_action = {
+		"up": 1,
+		"left": 2,
+		"down": 3,
+		"right": 4,
+		" ": 5,
+		"space": 5,
+	}
 
 	def on_key(event):
 		nonlocal data_pos
-		if not _is_space(event.key):
+		a_step = key_to_action.get(event.key)
+		if a_step is None:
 			return
 		if data_pos + K >= n:
 			status.set_text("End of trajectory (no more frames).")
 			fig.canvas.draw_idle()
 			return
+		if a_step >= num_actions:
+			status.set_text(f"Action {a_step} out of range for num_actions={num_actions}")
+			fig.canvas.draw_idle()
+			return
 
-		ha = torch.from_numpy(acts[data_pos : data_pos + K].astype(np.int64)).view(1, K).to(device)
-		a_step = int(acts[data_pos + K - 1])
+		ha = torch.tensor(list(action_hist), dtype=torch.long, device=device).view(1, K)
 		fa = torch.tensor([a_step], dtype=torch.long, device=device)
 
 		ctx = torch.stack(list(gen_hist), dim=0).unsqueeze(0).to(device)
-		gt_idx = data_pos + K
-		gt_frame = tx(np.asarray(obs[gt_idx])[..., -3:]).cpu()
-
 		with torch.no_grad():
 			z_hist = wm.encode_video(ctx)
 			z_next = wm.generate_next_frame(
@@ -180,12 +181,12 @@ def run_autoregressive(
 			gen = wm.decode_video(z_next)[0, 0].cpu()
 
 		img_top.set_data(_tensor_to_imshow01(gen))
-		img_bot.set_data(_tensor_to_imshow01(gt_frame))
 
 		gen_hist.append(gen.clone())
+		action_hist.append(a_step)
 		data_pos += 1
 		status.set_text(
-			f"step={data_pos}  window_start={data_pos - 1}  dataset_action={a_step}  "
+			f"step={data_pos}  window_start={data_pos - 1}  action={a_step}  "
 			f"frames_left={n - data_pos - K}",
 		)
 		fig.canvas.draw_idle()
@@ -198,19 +199,17 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit" / "step_0100000"))
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit" / "step_0200000"))
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
 		default="world_model/checkpoints/vae/vae.pt",
 		help="Path to vae.pt (empty = default world_model/checkpoints/vae/vae.pt)",
 	)
-	p.add_argument("--env", type=str, default="space_invaders")
+	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--num_inference_steps", type=int, default=10)
-	p.add_argument("--num_actions", type=int, default=18)
+	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=8, help="History length K (same as training).")
-	p.add_argument("--height", type=int, default=208)
-	p.add_argument("--width", type=int, default=160)
 	args = p.parse_args()
 	run_autoregressive(
 		ckpt_dir=args.ckpt_dir,
@@ -219,7 +218,6 @@ def main() -> None:
 		num_actions=args.num_actions,
 		num_inference_steps=args.num_inference_steps,
 		history_len=args.context_len,
-		image_size=(args.height, args.width),
 	)
 
 
