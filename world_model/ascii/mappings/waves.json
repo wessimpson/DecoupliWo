@@ -1,0 +1,30 @@
+{
+	"game": "waves",
+	"native_h": 9,
+	"native_w": 32,
+	"top_sprite_priority": [
+		"avatar",
+		"sam",
+		"laser",
+		"rock",
+		"alien",
+		"shield",
+		"portalSlow",
+		"rockPortal",
+		"portal",
+		"asteroid",
+		"background"
+	],
+	"sprite_to_char": {
+		"background": ".",
+		"asteroid": "s",
+		"portalSlow": "1",
+		"rockPortal": "2",
+		"avatar": "A",
+		"sam": "|",
+		"rock": "o",
+		"laser": "L",
+		"alien": "g",
+		"shield": "S"
+	}
+}

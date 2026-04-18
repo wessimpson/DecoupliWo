@@ -25,14 +25,62 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from world_model.dataset import RolloutVideoDataset, preprocess
+from world_model.ascii.tokenizer import dump_ascii
+from world_model.dataset import (
+	RolloutVideoDataset,
+	preprocess,
+	preprocess_ascii,
+)
 from world_model.model.error_buffer import ErrorBuffer
+from world_model.model.net import ASCIIVAE
 from world_model.model.world_model import WorldModel
 
-CONTEXT_LEN = 8
+CONTEXT_LEN = 2
 CROSS_ATTENTION_DIM = 768
 PREDICTION_TYPE = "epsilon"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
+
+DEFAULT_PIXEL_VAE_PT = str(Path("world_model") / "checkpoints" / "vae" / "vae.pt")
+DEFAULT_ASCII_VAE_PT = str(Path("world_model") / "checkpoints" / "ascii_vae" / "vae.pt")
+
+
+def _batch_observations(batch: dict, modality: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+	"""Modality-agnostic unpack -> (history, target, history_actions)."""
+	if modality == "ascii":
+		return batch["history_ids"], batch["target_ids"], batch["history_actions"]
+	return batch["history_frames"], batch["target_frame"], batch["history_actions"]
+
+
+def _val_rollout_items(item: dict, modality: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+	"""Modality-agnostic AR-rollout sample unpack."""
+	if modality == "ascii":
+		return (
+			item["history_ids"],
+			item["gt_future_ids"],
+			item["history_actions"],
+			item["future_action_frames"],
+		)
+	return (
+		item["history_frames"],
+		item["gt_future_frames"],
+		item["history_actions"],
+		item["future_action_frames"],
+	)
+
+
+def _val_stack(batch_items: list[dict], modality: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+	"""Stack a list of validation samples for the fixed single-step denoise probe."""
+	if modality == "ascii":
+		return (
+			torch.stack([s["history_ids"] for s in batch_items]),
+			torch.stack([s["target_ids"] for s in batch_items]),
+			torch.stack([s["history_actions"] for s in batch_items]),
+		)
+	return (
+		torch.stack([s["history_frames"] for s in batch_items]),
+		torch.stack([s["target_frame"] for s in batch_items]),
+		torch.stack([s["history_actions"] for s in batch_items]),
+	)
 
 
 def psnr_neg1_to_01(pred: torch.Tensor, tgt: torch.Tensor) -> float:
@@ -62,7 +110,10 @@ def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser(description="Train next-frame temporal world model.")
 	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
-	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"), help="Path to vae.pt (hub architecture + this state dict)")
+	p.add_argument("--modality", type=str, choices=["pixel", "ascii"], default="pixel",
+		help="Observation modality: pixel (SD VAE) or ascii (ASCIIVAE over tile grids).")
+	p.add_argument("--vae_checkpoint", type=str, default=None,
+		help="Path to vae.pt; defaults to world_model/checkpoints/<vae|ascii_vae>/vae.pt based on --modality.")
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN, help="History frames K (fixed window).")
 	p.add_argument("--resize", type=int, nargs=2, metavar=("H", "W"), default=None, help="Resize frames to H×W (multiples of 8).")
@@ -112,15 +163,22 @@ def main() -> None:
 	# ── Data ──────────────────────────────────────────────────────
 	trans_root = Path(args.transitions_root)
 	resize_to = tuple(args.resize) if args.resize is not None else None
+	if args.modality == "ascii":
+		sample_transform = partial(preprocess_ascii, history_len=K)
+		target_key = "target_ids"
+	else:
+		sample_transform = partial(preprocess, history_len=K, resize_to=resize_to)
+		target_key = "target_frame"
 	mk_ds = lambda d: RolloutVideoDataset(d, seq_len=seq_len, stride=1, num_actions=args.num_actions).with_transform(
-		partial(preprocess, history_len=K, resize_to=resize_to),
+		sample_transform,
 	)
 	ds_train = mk_ds(trans_root / "train" / args.env)
 	ds_test = mk_ds(trans_root / "test" / args.env)
-	_hw = ds_train[0]["target_frame"].shape[-2:]
+	_hw = ds_train[0][target_key].shape[-2:]
 	print(
 		f"Dataset windows: train={len(ds_train):,} test={len(ds_test):,}  "
-		f"frame_hw={tuple(_hw)} (resize={'native' if resize_to is None else resize_to})"
+		f"modality={args.modality} frame_hw={tuple(_hw)} "
+		f"(resize={'native' if resize_to is None else resize_to})"
 	)
 
 	loader = DataLoader(
@@ -133,14 +191,18 @@ def main() -> None:
 	)
 
 	# ── Model ─────────────────────────────────────────────────────
+	vae_ckpt = args.vae_checkpoint or (
+		DEFAULT_ASCII_VAE_PT if args.modality == "ascii" else DEFAULT_PIXEL_VAE_PT
+	)
 	world_model = WorldModel(
 		num_actions=args.num_actions,
 		cross_attention_dim=CROSS_ATTENTION_DIM,
-		vae_checkpoint=args.vae_checkpoint,
+		vae_checkpoint=vae_ckpt,
 		prediction_type=PREDICTION_TYPE,
 		history_len=K,
 		gradient_checkpointing=args.gradient_checkpointing,
 		pretrained_model_name_or_path=PRETRAINED_MODEL_NAME_OR_PATH,
+		modality=args.modality,
 	).to(device)
 
 	n_diff = sum(p.numel() for p in world_model.diffuser.parameters())
@@ -177,27 +239,40 @@ def main() -> None:
 
 	with torch.no_grad():
 		val_items = [ds_test[i % len(ds_test)] for i in range(args.val_samples)]
-		val_hist = torch.stack([s["history_frames"] for s in val_items])       # [Bv,K,3,H,W]
-		val_tgt = torch.stack([s["target_frame"] for s in val_items])         # [Bv,3,H,W]
-		val_hist_act = torch.stack([s["history_actions"] for s in val_items]).to(device)  # [Bv,K]
+		val_hist, val_tgt, val_hist_act_cpu = _val_stack(val_items, args.modality)
+		val_hist_act = val_hist_act_cpu.to(device)
 		z_hist_val = world_model.encode_video(val_hist)                       # [Bv,K,C,h,w]
 		z_tgt_val = world_model.encode_frames(val_tgt)                        # [Bv,C,h,w]
 
 		val_ar_items: list[dict] = []
+		ar_loader = (
+			partial(ds_test.try_contiguous_ar_ascii, history_len=K, num_future_frames=val_ar_max)
+			if args.modality == "ascii"
+			else partial(ds_test.try_contiguous_ar, history_len=K, num_future_frames=val_ar_max, resize_to=resize_to)
+		)
 		for i in range(args.val_samples):
 			idx = i % len(ds_test)
-			row = ds_test.try_contiguous_ar(idx, K, val_ar_max, resize_to)
+			row = ar_loader(idx)
 			if row is not None:
 				val_ar_items.append(row)
 		if not val_ar_items:
 			print(
 				f"Warning: no val windows have K+{val_ar_max} contiguous rows; "
-				f"skipping autoregressive val PSNR (shards too short at sampled indices)."
+				f"skipping autoregressive val metrics (shards too short at sampled indices)."
 			)
-		val_ar_hist = torch.stack([s["history_frames"] for s in val_ar_items]) if val_ar_items else None
-		val_ar_gt = torch.stack([s["gt_future_frames"] for s in val_ar_items]) if val_ar_items else None
-		val_ar_hist_act = torch.stack([s["history_actions"] for s in val_ar_items]) if val_ar_items else None
-		val_ar_fut = torch.stack([s["future_action_frames"] for s in val_ar_items]) if val_ar_items else None
+		if val_ar_items:
+			_stacked = [
+				_val_rollout_items(s, args.modality) for s in val_ar_items
+			]
+			val_ar_hist = torch.stack([t[0] for t in _stacked])
+			val_ar_gt = torch.stack([t[1] for t in _stacked])
+			val_ar_hist_act = torch.stack([t[2] for t in _stacked])
+			val_ar_fut = torch.stack([t[3] for t in _stacked])
+		else:
+			val_ar_hist = None
+			val_ar_gt = None
+			val_ar_hist_act = None
+			val_ar_fut = None
 
 	def save_checkpoint(step: int) -> None:
 		d = ckpt_root / f"step_{step:07d}"
@@ -227,7 +302,7 @@ def main() -> None:
 					val_mse = F.mse_loss(pred_v.float(), ns.float())
 					writer.add_scalar("val/mse", val_mse.item(), global_step)
 
-					# Autoregressive val PSNR: num_inference_steps per predicted frame.
+					# Autoregressive val rollout: num_inference_steps per predicted frame.
 					if val_ar_hist is not None:
 						z_ar = world_model.encode_video(val_ar_hist.to(device))
 						h_act = val_ar_hist_act.to(device)
@@ -248,15 +323,32 @@ def main() -> None:
 							pred_h = torch.cat(decoded_frames[:h], dim=1)
 							tgt_h = tgt_future[:, :h]
 							hid = f"h{h:02d}"
-							writer.add_scalar(
-								f"val/psnr_ar/{hid}",
-								psnr_neg1_to_01(pred_h, tgt_h),
-								global_step,
-							)
-							gen_f0 = (decoded_frames[h - 1][:1, 0].clamp(-1, 1) + 1) * 0.5
-							tgt_f0 = (tgt_future[:1, h - 1].clamp(-1, 1) + 1) * 0.5
-							writer.add_images(f"val/ar_rollout/{hid}/generated", gen_f0.cpu(), global_step)
-							writer.add_images(f"val/ar_rollout/{hid}/target", tgt_f0.cpu(), global_step)
+							if args.modality == "ascii":
+								pred_ids = ASCIIVAE.logits_to_ids(pred_h)
+								acc = float((pred_ids == tgt_h).float().mean().item())
+								writer.add_scalar(f"val/accuracy_ar/{hid}", acc, global_step)
+								gen_np = pred_ids[0, -1].to(torch.uint8).cpu().numpy()
+								tgt_np = tgt_h[0, -1].to(torch.uint8).cpu().numpy()
+								writer.add_text(
+									f"val/ar_rollout/{hid}/generated",
+									"```\n" + dump_ascii(gen_np) + "\n```",
+									global_step,
+								)
+								writer.add_text(
+									f"val/ar_rollout/{hid}/target",
+									"```\n" + dump_ascii(tgt_np) + "\n```",
+									global_step,
+								)
+							else:
+								writer.add_scalar(
+									f"val/psnr_ar/{hid}",
+									psnr_neg1_to_01(pred_h, tgt_h),
+									global_step,
+								)
+								gen_f0 = (decoded_frames[h - 1][:1, 0].clamp(-1, 1) + 1) * 0.5
+								tgt_f0 = (tgt_future[:1, h - 1].clamp(-1, 1) + 1) * 0.5
+								writer.add_images(f"val/ar_rollout/{hid}/generated", gen_f0.cpu(), global_step)
+								writer.add_images(f"val/ar_rollout/{hid}/target", tgt_f0.cpu(), global_step)
 					else:
 						tgt_dev = val_tgt.to(device)
 						chunk_lat = world_model.generate_next_frame(
@@ -264,22 +356,37 @@ def main() -> None:
 							num_inference_steps=args.num_inference_steps,
 						)
 						dec1 = world_model.decode_video(chunk_lat)
-						img01 = (dec1[:1, 0].clamp(-1, 1) + 1) * 0.5
-						tgt01 = (tgt_dev[:1, 0].clamp(-1, 1) + 1) * 0.5
-						writer.add_images("val/generated_f0", img01.cpu(), global_step)
-						writer.add_images("val/target_f0", tgt01.cpu(), global_step)
+						if args.modality == "ascii":
+							pred_ids = ASCIIVAE.logits_to_ids(dec1)
+							acc = float((pred_ids[:, 0] == tgt_dev).float().mean().item())
+							writer.add_scalar("val/accuracy_f0", acc, global_step)
+							gen_np = pred_ids[0, 0].to(torch.uint8).cpu().numpy()
+							tgt_np = tgt_dev[0].to(torch.uint8).cpu().numpy()
+							writer.add_text(
+								"val/generated_f0",
+								"```\n" + dump_ascii(gen_np) + "\n```",
+								global_step,
+							)
+							writer.add_text(
+								"val/target_f0",
+								"```\n" + dump_ascii(tgt_np) + "\n```",
+								global_step,
+							)
+						else:
+							img01 = (dec1[:1, 0].clamp(-1, 1) + 1) * 0.5
+							tgt01 = (tgt_dev[:1, 0].clamp(-1, 1) + 1) * 0.5
+							writer.add_images("val/generated_f0", img01.cpu(), global_step)
+							writer.add_images("val/target_f0", tgt01.cpu(), global_step)
 				world_model.train()
 
 			optimizer.zero_grad(set_to_none=True)
 
-			hist_frames = batch["history_frames"]    # [B, K, 3, H, W]
-			tgt_frame = batch["target_frame"]        # [B, 3, H, W]
-			hist_actions = batch["history_actions"]   # [B, K]
-			B = hist_frames.shape[0]
+			hist_obs, tgt_obs, hist_actions = _batch_observations(batch, args.modality)
+			B = hist_obs.shape[0]
 
 			with torch.no_grad():
-				z_hist = world_model.encode_video(hist_frames)   # [B, K, C, h, w]
-				z_tgt = world_model.encode_frames(tgt_frame)     # [B, C, h, w]
+				z_hist = world_model.encode_video(hist_obs)   # [B, K, C, h, w]
+				z_tgt = world_model.encode_frames(tgt_obs)    # [B, C, h, w]
 
 			# Error-buffer history corruption: fixed target gamma, linear warmup in global_step
 			Wg = args.gamma_warmup_steps

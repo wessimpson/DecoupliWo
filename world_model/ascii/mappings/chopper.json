@@ -1,0 +1,42 @@
+{
+	"game": "chopper",
+	"native_h": 12,
+	"native_w": 31,
+	"top_sprite_priority": [
+		"avatar",
+		"sam",
+		"bomb",
+		"satellite",
+		"tank",
+		"supply",
+		"portalBase",
+		"portalAmmo",
+		"portal",
+		"leftCloud",
+		"fastLeftCloud",
+		"rightCloud",
+		"fastRightCloud",
+		"cloud",
+		"stratosphere",
+		"thermosphere",
+		"troposphere",
+		"layers"
+	],
+	"sprite_to_char": {
+		"stratosphere": "s",
+		"thermosphere": "t",
+		"troposphere": "p",
+		"avatar": "A",
+		"satellite": "c",
+		"portalBase": "b",
+		"portalAmmo": "a",
+		"leftCloud": "l",
+		"fastLeftCloud": "d",
+		"rightCloud": "r",
+		"fastRightCloud": "e",
+		"sam": "|",
+		"bomb": "v",
+		"tank": "T",
+		"supply": "$"
+	}
+}

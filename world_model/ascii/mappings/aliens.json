@@ -1,0 +1,29 @@
+{
+	"game": "aliens",
+	"native_h": 11,
+	"native_w": 30,
+	"top_sprite_priority": [
+		"avatar",
+		"sam",
+		"bomb",
+		"alienGreen",
+		"alienBlue",
+		"alien",
+		"base",
+		"portalSlow",
+		"portalFast",
+		"portal",
+		"background"
+	],
+	"sprite_to_char": {
+		"background": ".",
+		"base": "0",
+		"portalSlow": "1",
+		"portalFast": "2",
+		"avatar": "A",
+		"sam": "|",
+		"bomb": "v",
+		"alienGreen": "g",
+		"alienBlue": "b"
+	}
+}
