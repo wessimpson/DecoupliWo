@@ -36,11 +36,15 @@ SOURCES = (
     "rollout",
     "diverse",
     "left_wall",
+    "right_wall",
     "top_bounce",
     "bottom_bounce",
     "wrapped_top",
     "wrapped_bottom",
+    "wrapped_left",
+    "wrapped_right",
     "paddle_hit",
+    "block_hit",
     "miss",
 )
 SOURCE_TO_ID = {source: idx for idx, source in enumerate(SOURCES)}

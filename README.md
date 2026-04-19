@@ -36,6 +36,14 @@ Use `render_mode=None` in `PongEnv(...)`.
 
 Use the `gvgai_jpype` env or any Python env with `numpy` and `torch`.
 
+Run the smallest end-to-end sanity check with only one environment and one rule, `pong:normal`:
+
+```bash
+./scripts/pong_normal_smoke.sh
+```
+
+This collects only Pong normal transitions, trains a small model, evaluates only normal mode with `--eval-modes normal`, and runs headless model playback.
+
 Collect broad counterfactual transitions. This stores the same state/action under all three rule variants:
 
 ```bash
@@ -87,6 +95,26 @@ Collect a mixed Pong + Breakout-lite dataset in the same shared-slot format:
 ```
 
 Breakout-lite uses the same object schema: slot `0` is the ball, slot `1` is the paddle, and slots `2-9` are blocks. The model learns `next_object_mask` so disappearing blocks are represented.
+
+Generate a larger diverse dataset with random, heuristic, and mixed policies plus targeted rare states:
+
+```bash
+./scripts/generate_large_editable_world_dataset.sh
+```
+
+Defaults:
+
+```text
+OUTPUT=data/transitions/editable_world/pong_breakout_large_seed0
+GAMES="pong breakout"
+MODES="normal gravity teleport"
+POLICIES="random heuristic mixed"
+EPISODES=5000
+STEPS_PER_EPISODE=300
+RARE_SAMPLES_PER_SOURCE=20000
+```
+
+The large generator combines ordinary rollouts with targeted rare starts. For Pong this includes wall bounces, top/bottom bounces, teleport wraps, paddle hits, misses, and diverse random states. For Breakout this includes left/right wall cases, top bounces, teleport wraps, paddle hits, block hits, misses, and diverse random states.
 
 Train PPO+RND and save rollout transitions:
 

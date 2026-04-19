@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--rollout-episodes", type=int, default=32)
     parser.add_argument("--rollout-horizon", type=int, default=100)
+    parser.add_argument("--eval-modes", nargs="+", choices=MODES, default=list(MODES), help="Rule modes for rollout and counterfactual eval.")
     parser.add_argument("--policy", choices=("random", "heuristic", "mixed"), default="mixed")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
@@ -75,10 +76,19 @@ def predict_next(model: RuleConditionedPongGNN, state: np.ndarray, action: int, 
     return out["pred_next"][0].detach().cpu().numpy()
 
 
-def rollout_eval(model: RuleConditionedPongGNN, device: torch.device, episodes: int, horizon: int, policy: str, seed: int, rule_ablation: str) -> dict[str, float]:
+def rollout_eval(
+    model: RuleConditionedPongGNN,
+    device: torch.device,
+    episodes: int,
+    horizon: int,
+    policy: str,
+    seed: int,
+    rule_ablation: str,
+    modes: list[str],
+) -> dict[str, float]:
     rng = random.Random(seed)
     metrics: dict[str, float] = {}
-    for mode in MODES:
+    for mode in modes:
         env = make_env(mode, seed=seed + RULE_TO_ID[mode])
         per_step_errors: list[list[float]] = [[] for _ in range(horizon)]
         for _ in range(int(episodes)):
@@ -101,11 +111,19 @@ def rollout_eval(model: RuleConditionedPongGNN, device: torch.device, episodes: 
     return metrics
 
 
-def counterfactual_eval(model: RuleConditionedPongGNN, device: torch.device, samples: int, policy: str, seed: int, rule_ablation: str) -> dict[str, float]:
+def counterfactual_eval(
+    model: RuleConditionedPongGNN,
+    device: torch.device,
+    samples: int,
+    policy: str,
+    seed: int,
+    rule_ablation: str,
+    modes: list[str],
+) -> dict[str, float]:
     rng = random.Random(seed)
     base_env = make_env("normal", seed=seed)
-    rule_envs = {mode: make_env(mode, seed=seed + 100 + RULE_TO_ID[mode]) for mode in MODES}
-    errors = {mode: [] for mode in MODES}
+    rule_envs = {mode: make_env(mode, seed=seed + 100 + RULE_TO_ID[mode]) for mode in modes}
+    errors = {mode: [] for mode in modes}
     true_variance = []
     pred_variance = []
     try:
@@ -161,8 +179,8 @@ def main() -> int:
             holdout_data = PongTransitionDataset(dataset_root, "val", combos=holdout_combos, rule_ablation=rule_ablation, seed=args.seed)
             holdout_loader = DataLoader(holdout_data, batch_size=args.batch_size, shuffle=False)
             metrics.update({f"holdout/{key}": value for key, value in evaluate(model, holdout_loader, device).items()})
-    metrics.update(rollout_eval(model, device, args.rollout_episodes, args.rollout_horizon, args.policy, args.seed, rule_ablation))
-    metrics.update(counterfactual_eval(model, device, args.rollout_episodes * args.rollout_horizon, args.policy, args.seed, rule_ablation))
+    metrics.update(rollout_eval(model, device, args.rollout_episodes, args.rollout_horizon, args.policy, args.seed, rule_ablation, args.eval_modes))
+    metrics.update(counterfactual_eval(model, device, args.rollout_episodes * args.rollout_horizon, args.policy, args.seed, rule_ablation, args.eval_modes))
 
     print(json.dumps(metrics, indent=2, sort_keys=True))
     if args.output:

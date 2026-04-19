@@ -28,6 +28,17 @@ from data.pong_common import (
 )
 from custom_pong import ACTION_STAY, BallState, GameState, PaddleState
 
+PONG_RARE_SOURCES = (
+    "diverse",
+    "left_wall",
+    "top_bounce",
+    "bottom_bounce",
+    "wrapped_top",
+    "wrapped_bottom",
+    "paddle_hit",
+    "miss",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect state-action-next-state transitions for custom Pong.")
@@ -43,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--counterfactual-base-mode", choices=MODES, default="normal")
     parser.add_argument("--rare-events", action="store_true", help="Append targeted rare/diverse state transitions.")
     parser.add_argument("--rare-samples-per-source", type=int, default=2000)
-    parser.add_argument("--rare-sources", nargs="+", choices=SOURCES[1:], default=list(SOURCES[1:]))
+    parser.add_argument("--rare-sources", nargs="+", choices=PONG_RARE_SOURCES, default=list(PONG_RARE_SOURCES))
     parser.add_argument("--rare-counterfactual", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
