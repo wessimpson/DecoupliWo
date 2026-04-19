@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--paddle-speed", type=float, default=360.0)
     parser.add_argument("--ball-speed", type=float, default=280.0)
     parser.add_argument("--max-steps", type=int, default=3000)
+    parser.add_argument("--random-start", action="store_true", help="Sample a new reproducible random initial state on each reset.")
     parser.add_argument("--mask-threshold", type=float, default=0.5)
     parser.add_argument("--auto-reset", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--headless-steps", type=int, default=0)
@@ -58,6 +59,44 @@ def build_env(args: argparse.Namespace, mode: str, render_mode: str | None = "hu
         render_mode=render_mode,
         seed=args.seed,
     )
+
+
+def apply_random_start(env: BreakoutEnv, args: argparse.Namespace, rng: np.random.Generator | None = None) -> None:
+    if not args.random_start:
+        return
+    rng = rng or np.random.default_rng(args.seed)
+    cfg = env.config
+    state = env.get_state()
+    speed = float(rng.uniform(max(cfg.min_ball_speed, 120.0), max(cfg.ball_speed * 1.6, cfg.min_ball_speed)))
+    angle = float(rng.uniform(-np.pi, np.pi))
+    ball_x = float(rng.uniform(0.15 * cfg.width, 0.85 * cfg.width))
+    ball_y = float(rng.uniform(0.22 * cfg.height, 0.78 * cfg.height))
+    paddle_x = float(rng.uniform(0.0, cfg.width - cfg.paddle_width))
+    env.set_state(
+        BreakoutState(
+            ball=BallState(
+                x=ball_x,
+                y=ball_y,
+                vx=float(speed * np.cos(angle)),
+                vy=float(speed * np.sin(angle)),
+                radius=cfg.ball_radius,
+            ),
+            paddle=PaddleState(
+                x=paddle_x,
+                y=cfg.height - cfg.paddle_margin - cfg.paddle_height,
+                width=cfg.paddle_width,
+                height=cfg.paddle_height,
+                vx=0.0,
+            ),
+            blocks=[block.copy() for block in state.blocks],
+            last_event="random_start",
+        )
+    )
+
+
+def reset_with_start(env: BreakoutEnv, args: argparse.Namespace, seed: int | None = None, rng: np.random.Generator | None = None) -> None:
+    env.reset(seed=seed)
+    apply_random_start(env, args, rng=rng)
 
 
 def sanitize_slots(slots: np.ndarray, env: BreakoutEnv) -> np.ndarray:
@@ -163,12 +202,13 @@ def load_model(checkpoint_path: pathlib.Path, device: torch.device):
 
 def run_headless(args: argparse.Namespace, model, device: torch.device) -> int:
     env = build_env(args, args.mode, render_mode=None)
-    env.reset(seed=args.seed)
+    rng = np.random.default_rng(args.seed)
+    reset_with_start(env, args, seed=args.seed, rng=rng)
     try:
         for _ in range(int(args.headless_steps)):
             model_step(model, env, ACTION_STAY, RULE_TO_ID[args.mode], device, args.mask_threshold)
             if env.is_done:
-                env.reset()
+                reset_with_start(env, args, rng=rng)
         print(f"Ran {args.headless_steps} headless Breakout world-model steps in mode={args.mode}.")
     finally:
         env.close()
@@ -184,7 +224,8 @@ def main() -> int:
 
     pygame = require_pygame()
     env = build_env(args, args.mode, render_mode="human")
-    env.reset(seed=args.seed)
+    rng = np.random.default_rng(args.seed)
+    reset_with_start(env, args, seed=args.seed, rng=rng)
     env.render()
     clock = pygame.time.Clock()
     running = True
@@ -201,25 +242,25 @@ def main() -> int:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_r:
-                        env.reset(seed=args.seed)
+                        reset_with_start(env, args, rng=rng)
                     elif event.key == pygame.K_p:
                         paused = not paused
                     elif event.key == pygame.K_1:
                         mode = "normal"
                         env.config.mode = mode
-                        env.reset(seed=args.seed)
+                        reset_with_start(env, args, seed=args.seed, rng=rng)
                     elif event.key == pygame.K_2:
                         mode = "gravity"
                         env.config.mode = mode
-                        env.reset(seed=args.seed)
+                        reset_with_start(env, args, seed=args.seed, rng=rng)
                     elif event.key == pygame.K_3:
                         mode = "teleport"
                         env.config.mode = mode
-                        env.reset(seed=args.seed)
+                        reset_with_start(env, args, seed=args.seed, rng=rng)
             if not paused and not env.is_done:
                 model_step(model, env, action_from_keys(pygame), RULE_TO_ID[mode], device, args.mask_threshold)
             if args.auto_reset and env.is_done:
-                env.reset()
+                reset_with_start(env, args, rng=rng)
             env.render()
             pygame.display.set_caption(f"World Model Breakout | rule={mode} | step={env.get_state().step_count}")
             clock.tick(int(args.fps))

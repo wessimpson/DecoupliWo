@@ -187,7 +187,9 @@ Play through the learned world model using pygame:
 /home/soyuj/miniconda3/envs/gvgai_jpype/bin/python play_pong_world_model.py \
   --checkpoint runs/editable_world_slot_gnn_seed0/best.pt \
   --mode gravity \
-  --device auto
+  --device auto \
+  --random-start \
+  --seed 123
 ```
 
 Controls: `Up`/`Down` move the paddle, `R` resets, `1`/`2`/`3` switch rules, `P` pauses, `S` single-steps, and `Esc` quits.
@@ -198,7 +200,9 @@ Play Breakout-lite through the same learned world model:
 /home/soyuj/miniconda3/envs/gvgai_jpype/bin/python play_breakout_world_model.py \
   --checkpoint runs/editable_world_slot_gnn_seed0/best.pt \
   --mode teleport \
-  --device auto
+  --device auto \
+  --random-start \
+  --seed 123
 ```
 
 Breakout controls: `Left`/`Right` move the paddle, `R` resets, `1`/`2`/`3` switch rules, `P` pauses, and `Esc` quits.

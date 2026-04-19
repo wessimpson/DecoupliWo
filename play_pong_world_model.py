@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-ball-vy", type=float, default=None)
     parser.add_argument("--start-paddle-y", type=float, default=None)
     parser.add_argument("--toward-paddle", action="store_true", help="Initialize ball moving right toward the paddle.")
+    parser.add_argument("--random-start", action="store_true", help="Sample a new reproducible random initial state on each reset.")
     parser.add_argument("--no-clamp", action="store_true", help="Do not clamp predicted state values before rendering.")
     parser.add_argument("--auto-reset", action=argparse.BooleanOptionalAction, default=True, help="Reset when model rollout terminates or leaves the visible screen.")
     parser.add_argument("--out-margin", type=float, default=80.0, help="Reset if predicted ball is this far outside the screen.")
@@ -67,14 +68,32 @@ def build_env(args: argparse.Namespace, mode: str, render_mode: str | None = "hu
     )
 
 
-def apply_start_state(env: PongEnv, args: argparse.Namespace) -> None:
+def apply_start_state(env: PongEnv, args: argparse.Namespace, rng: np.random.Generator | None = None) -> None:
     state = env.get_state()
     cfg = env.config
-    ball_x = cfg.width / 3.0 if args.toward_paddle and args.start_ball_x is None else state.ball.x
-    ball_y = cfg.height / 2.0 if args.toward_paddle and args.start_ball_y is None else state.ball.y
-    ball_vx = abs(state.ball.vx) if args.toward_paddle and args.start_ball_vx is None else state.ball.vx
+    ball_x = state.ball.x
+    ball_y = state.ball.y
+    ball_vx = state.ball.vx
     ball_vy = state.ball.vy
     paddle_y = state.paddle.y
+
+    if args.random_start:
+        rng = rng or np.random.default_rng(args.seed)
+        speed = float(rng.uniform(max(cfg.min_ball_speed, 120.0), max(cfg.ball_speed * 1.6, cfg.min_ball_speed)))
+        angle = float(rng.uniform(-0.65, 0.65))
+        direction = 1.0 if (args.toward_paddle or rng.random() < 0.5) else -1.0
+        ball_x = float(rng.uniform(0.2 * cfg.width, 0.65 * cfg.width))
+        ball_y = float(rng.uniform(0.15 * cfg.height, 0.85 * cfg.height))
+        ball_vx = direction * speed * np.cos(angle)
+        ball_vy = speed * np.sin(angle)
+        paddle_y = float(rng.uniform(0.0, cfg.height - cfg.paddle_height))
+
+    if args.toward_paddle and args.start_ball_x is None and not args.random_start:
+        ball_x = cfg.width / 3.0
+    if args.toward_paddle and args.start_ball_y is None and not args.random_start:
+        ball_y = cfg.height / 2.0
+    if args.toward_paddle and args.start_ball_vx is None:
+        ball_vx = abs(ball_vx)
 
     if args.start_ball_x is not None:
         ball_x = args.start_ball_x
@@ -200,28 +219,29 @@ def action_from_keys(pygame) -> int:
     return ACTION_STAY
 
 
-def reset_with_start(env: PongEnv, args: argparse.Namespace, seed: int | None = None) -> None:
+def reset_with_start(env: PongEnv, args: argparse.Namespace, seed: int | None = None, rng: np.random.Generator | None = None) -> None:
     env.reset(seed=seed)
-    apply_start_state(env, args)
+    apply_start_state(env, args, rng=rng)
 
 
-def switch_mode(env: PongEnv, mode: str, args: argparse.Namespace, seed: int | None) -> None:
+def switch_mode(env: PongEnv, mode: str, args: argparse.Namespace, seed: int | None, rng: np.random.Generator | None = None) -> None:
     # Do not call env.close() here. close() calls pygame.quit(), which can
     # freeze some SDL backends when reinitializing inside the active event loop.
     env.config.mode = mode
-    reset_with_start(env, args, seed=seed)
+    reset_with_start(env, args, seed=seed, rng=rng)
     env.render()
 
 
 def run_headless(args: argparse.Namespace, model, device: torch.device) -> int:
     env = build_env(args, args.mode, render_mode=None)
-    reset_with_start(env, args, seed=args.seed)
+    rng = np.random.default_rng(args.seed)
+    reset_with_start(env, args, seed=args.seed, rng=rng)
     rule_id = RULE_TO_ID[args.mode]
     try:
         for _ in range(int(args.headless_steps)):
             model_step(model, env, ACTION_STAY, rule_id, device, clamp=not args.no_clamp, out_margin=args.out_margin)
             if env.is_done:
-                env.reset()
+                reset_with_start(env, args, rng=rng)
         print(f"Ran {args.headless_steps} headless world-model steps in mode={args.mode}.")
     finally:
         env.close()
@@ -239,7 +259,8 @@ def main() -> int:
 
     pygame = require_pygame()
     env = build_env(args, args.mode, render_mode="human")
-    reset_with_start(env, args, seed=args.seed)
+    rng = np.random.default_rng(args.seed)
+    reset_with_start(env, args, seed=args.seed, rng=rng)
     env.render()
     clock = pygame.time.Clock()
     running = True
@@ -259,26 +280,26 @@ def main() -> int:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_r:
-                        reset_with_start(env, args)
+                        reset_with_start(env, args, rng=rng)
                     elif event.key == pygame.K_p:
                         paused = not paused
                     elif event.key == pygame.K_s:
                         single_step = True
                     elif event.key == pygame.K_1:
                         mode = "normal"
-                        switch_mode(env, mode, args, args.seed)
+                        switch_mode(env, mode, args, args.seed, rng=rng)
                     elif event.key == pygame.K_2:
                         mode = "gravity"
-                        switch_mode(env, mode, args, args.seed)
+                        switch_mode(env, mode, args, args.seed, rng=rng)
                     elif event.key == pygame.K_3:
                         mode = "teleport"
-                        switch_mode(env, mode, args, args.seed)
+                        switch_mode(env, mode, args, args.seed, rng=rng)
 
             action = action_from_keys(pygame)
             if not env.is_done and (not paused or single_step):
                 model_step(model, env, action, RULE_TO_ID[mode], device, clamp=not args.no_clamp, out_margin=args.out_margin)
             if args.auto_reset and env.is_done:
-                reset_with_start(env, args)
+                reset_with_start(env, args, rng=rng)
 
             env.render()
             pygame.display.set_caption(
