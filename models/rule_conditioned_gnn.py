@@ -1,0 +1,327 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from data.pong_common import (
+    GAME_TO_ID,
+    MAX_OBJECTS,
+    OBJECT_TYPES,
+    OBJECT_TYPE_TO_ID,
+    SLOT_DIM,
+    PongSlotConfig,
+)
+
+
+@dataclass(frozen=True)
+class PongObjectConstants:
+    width: float = 640.0
+    height: float = 480.0
+    paddle_width: float = 12.0
+    paddle_height: float = 88.0
+    paddle_margin: float = 24.0
+    paddle_speed: float = 360.0
+    ball_radius: float = 8.0
+    max_ball_speed: float = 720.0
+    max_objects: int = MAX_OBJECTS
+
+    @property
+    def scales(self) -> tuple[float, float, float, float, float, float]:
+        return (
+            self.width,
+            self.height,
+            self.max_ball_speed,
+            self.max_ball_speed,
+            max(1.0, self.height - self.paddle_height),
+            max(1.0, self.paddle_speed),
+        )
+
+    @property
+    def slot_scales(self) -> tuple[float, float, float, float, float, float]:
+        return (
+            self.width,
+            self.height,
+            self.max_ball_speed,
+            self.max_ball_speed,
+            self.width,
+            self.height,
+        )
+
+    @property
+    def paddle_x(self) -> float:
+        return self.width - self.paddle_margin - self.paddle_width
+
+    def as_slot_config(self) -> PongSlotConfig:
+        return PongSlotConfig(
+            width=self.width,
+            height=self.height,
+            paddle_width=self.paddle_width,
+            paddle_height=self.paddle_height,
+            paddle_margin=self.paddle_margin,
+            paddle_speed=self.paddle_speed,
+            ball_radius=self.ball_radius,
+            max_ball_speed=self.max_ball_speed,
+        )
+
+
+def mlp(in_dim: int, hidden_dim: int, out_dim: int, layers: int = 2) -> nn.Sequential:
+    modules: list[nn.Module] = []
+    dim = int(in_dim)
+    for _ in range(max(int(layers), 1)):
+        modules += [nn.Linear(dim, int(hidden_dim)), nn.LayerNorm(int(hidden_dim)), nn.ReLU()]
+        dim = int(hidden_dim)
+    modules.append(nn.Linear(dim, int(out_dim)))
+    return nn.Sequential(*modules)
+
+
+class PongStateNormalizer(nn.Module):
+    def __init__(self, constants: PongObjectConstants | None = None):
+        super().__init__()
+        constants = constants or PongObjectConstants()
+        self.constants = constants
+        self.register_buffer("scales", torch.tensor(constants.scales, dtype=torch.float32))
+        self.register_buffer("slot_scales", torch.tensor(constants.slot_scales, dtype=torch.float32))
+
+    def normalize(self, state: torch.Tensor) -> torch.Tensor:
+        return state.to(torch.float32) / self.scales.to(state.device)
+
+    def denormalize(self, state: torch.Tensor) -> torch.Tensor:
+        return state.to(torch.float32) * self.scales.to(state.device)
+
+    def normalize_slots(self, slots: torch.Tensor) -> torch.Tensor:
+        out = slots.to(torch.float32).clone()
+        out[..., :6] = out[..., :6] / self.slot_scales.to(slots.device)
+        return out
+
+    def denormalize_slots(self, slots: torch.Tensor) -> torch.Tensor:
+        out = slots.to(torch.float32).clone()
+        out[..., :6] = out[..., :6] * self.slot_scales.to(slots.device)
+        return out
+
+
+class RuleConditionedPongGNN(nn.Module):
+    """Masked object-slot GNN dynamics model.
+
+    The public name is kept for backward compatibility with the previous Pong
+    world model. The model now operates on fixed object slots:
+    x, y, vx, vy, width, height, type_id. Flat 6D Pong state is still accepted
+    and converted internally to two active slots: ball and paddle.
+    """
+
+    def __init__(
+        self,
+        num_rules: int = 3,
+        action_dim: int = 3,
+        num_object_types: int = len(OBJECT_TYPES),
+        node_numeric_dim: int = 6,
+        latent_dim: int = 64,
+        rule_dim: int = 16,
+        type_dim: int = 8,
+        hidden_dim: int = 128,
+        message_passing_steps: int = 2,
+        mlp_layers: int = 2,
+        constants: PongObjectConstants | None = None,
+    ):
+        super().__init__()
+        self.num_rules = int(num_rules)
+        self.action_dim = int(action_dim)
+        self.num_object_types = int(num_object_types)
+        self.node_numeric_dim = int(node_numeric_dim)
+        self.latent_dim = int(latent_dim)
+        self.rule_dim = int(rule_dim)
+        self.type_dim = int(type_dim)
+        self.message_passing_steps = int(message_passing_steps)
+        self.constants = constants or PongObjectConstants()
+        self.max_objects = int(self.constants.max_objects)
+        self.normalizer = PongStateNormalizer(self.constants)
+
+        self.rule_embedding = nn.Embedding(self.num_rules, self.rule_dim)
+        self.type_embedding = nn.Embedding(self.num_object_types, self.type_dim)
+        self.node_encoder = mlp(node_numeric_dim + type_dim + action_dim + 1, hidden_dim, latent_dim, layers=mlp_layers)
+        self.edge_mlp = mlp(2 * latent_dim + rule_dim, hidden_dim, latent_dim, layers=mlp_layers)
+        self.node_mlp = mlp(latent_dim + latent_dim + action_dim + rule_dim, hidden_dim, latent_dim, layers=mlp_layers)
+        self.decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, node_numeric_dim, layers=mlp_layers)
+        self.mask_decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, 1, layers=mlp_layers)
+
+    def state_to_slots(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        state = state.to(torch.float32)
+        batch = state.shape[0]
+        device = state.device
+        c = self.constants
+        slots = torch.zeros(batch, self.max_objects, SLOT_DIM, dtype=torch.float32, device=device)
+        mask = torch.zeros(batch, self.max_objects, dtype=torch.float32, device=device)
+        diameter = 2.0 * c.ball_radius
+        slots[:, 0, 0] = state[:, 0]
+        slots[:, 0, 1] = state[:, 1]
+        slots[:, 0, 2] = state[:, 2]
+        slots[:, 0, 3] = state[:, 3]
+        slots[:, 0, 4] = diameter
+        slots[:, 0, 5] = diameter
+        slots[:, 0, 6] = OBJECT_TYPE_TO_ID["ball"]
+        slots[:, 1, 0] = c.paddle_x
+        slots[:, 1, 1] = state[:, 4]
+        slots[:, 1, 3] = state[:, 5]
+        slots[:, 1, 4] = c.paddle_width
+        slots[:, 1, 5] = c.paddle_height
+        slots[:, 1, 6] = OBJECT_TYPE_TO_ID["paddle"]
+        mask[:, :2] = 1.0
+        return slots, mask
+
+    def slots_to_state(self, slots: torch.Tensor, game_id: torch.Tensor | None = None) -> torch.Tensor:
+        out = torch.zeros(slots.shape[0], 6, dtype=slots.dtype, device=slots.device)
+        out[:, 0] = slots[:, 0, 0]
+        out[:, 1] = slots[:, 0, 1]
+        out[:, 2] = slots[:, 0, 2]
+        out[:, 3] = slots[:, 0, 3]
+        if game_id is None:
+            out[:, 4] = slots[:, 1, 1]
+            out[:, 5] = slots[:, 1, 3]
+        else:
+            game_id = game_id.to(slots.device)
+            breakout = game_id == GAME_TO_ID["breakout"]
+            out[:, 4] = torch.where(breakout, slots[:, 1, 0], slots[:, 1, 1])
+            out[:, 5] = torch.where(breakout, slots[:, 1, 2], slots[:, 1, 3])
+        return out
+
+    def action_to_nodes(self, action: torch.Tensor, slots: torch.Tensor, object_mask: torch.Tensor) -> torch.Tensor:
+        if action.ndim == 2:
+            one_hot = action.to(torch.float32)
+        else:
+            one_hot = F.one_hot(action.to(torch.int64), num_classes=self.action_dim).to(torch.float32)
+        type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
+        paddle_mask = (type_ids == OBJECT_TYPE_TO_ID["paddle"]).to(torch.float32) * object_mask.to(torch.float32)
+        return one_hot[:, None, :].expand(-1, slots.shape[1], -1) * paddle_mask[..., None]
+
+    def encode_slots(self, slots: torch.Tensor, object_mask: torch.Tensor, action: torch.Tensor | None = None) -> torch.Tensor:
+        slots = slots.to(torch.float32)
+        object_mask = object_mask.to(torch.float32)
+        normalized = self.normalizer.normalize_slots(slots)
+        type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
+        type_emb = self.type_embedding(type_ids)
+        if action is None:
+            action_nodes = torch.zeros(slots.shape[0], slots.shape[1], self.action_dim, dtype=slots.dtype, device=slots.device)
+        else:
+            action_nodes = self.action_to_nodes(action, slots, object_mask)
+        node_in = torch.cat([normalized[..., :6], type_emb, action_nodes, object_mask[..., None]], dim=-1)
+        return self.node_encoder(node_in) * object_mask[..., None]
+
+    def encode_state(self, normalized_state: torch.Tensor) -> torch.Tensor:
+        raw_state = self.normalizer.denormalize(normalized_state)
+        slots, mask = self.state_to_slots(raw_state)
+        return self.encode_slots(slots, mask)
+
+    def transition_latents(
+        self,
+        z: torch.Tensor,
+        action: torch.Tensor,
+        rule_id: torch.Tensor,
+        slots: torch.Tensor | None = None,
+        object_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        batch, nodes, _ = z.shape
+        rule = self.rule_embedding(rule_id.to(torch.int64))
+        if slots is None or object_mask is None:
+            node_actions = torch.zeros(batch, nodes, self.action_dim, dtype=z.dtype, device=z.device)
+            object_mask = torch.ones(batch, nodes, dtype=z.dtype, device=z.device)
+        else:
+            node_actions = self.action_to_nodes(action, slots, object_mask).to(z.device)
+            object_mask = object_mask.to(z.device).to(z.dtype)
+
+        current = z
+        eye = torch.eye(nodes, dtype=z.dtype, device=z.device)[None, :, :]
+        pair_mask = object_mask[:, :, None] * object_mask[:, None, :] * (1.0 - eye)
+        for _ in range(self.message_passing_steps):
+            src = current[:, None, :, :].expand(batch, nodes, nodes, self.latent_dim)
+            dst = current[:, :, None, :].expand(batch, nodes, nodes, self.latent_dim)
+            rule_edges = rule[:, None, None, :].expand(batch, nodes, nodes, self.rule_dim)
+            edge_in = torch.cat([src, dst, rule_edges], dim=-1)
+            messages = self.edge_mlp(edge_in) * pair_mask[..., None]
+            message_tensor = messages.sum(dim=2)
+            rule_nodes = rule[:, None, :].expand(batch, nodes, self.rule_dim)
+            node_in = torch.cat([current, message_tensor, node_actions, rule_nodes], dim=-1)
+            current = (current + self.node_mlp(node_in)) * object_mask[..., None]
+        return current
+
+    def decode_next_slots(
+        self,
+        z_next: torch.Tensor,
+        slots: torch.Tensor,
+        object_mask: torch.Tensor,
+        rule_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        rule = self.rule_embedding(rule_id.to(torch.int64))
+        type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
+        type_emb = self.type_embedding(type_ids)
+        rule_nodes = rule[:, None, :].expand(slots.shape[0], slots.shape[1], self.rule_dim)
+        decoder_in = torch.cat([z_next, rule_nodes, type_emb], dim=-1)
+        delta_norm = self.decoder(decoder_in)
+        mask_logits = self.mask_decoder(decoder_in).squeeze(-1)
+        mask_logits[:, 0:2] = 20.0
+        inactive = object_mask <= 0.0
+        mask_logits = mask_logits.masked_fill(inactive, -20.0)
+        normalized = self.normalizer.normalize_slots(slots)
+        pred_norm = normalized.clone()
+        pred_norm[..., :6] = normalized[..., :6] + delta_norm * object_mask[..., None]
+        pred_norm[..., 6] = slots[..., 6]
+        pred_slots = self.normalizer.denormalize_slots(pred_norm)
+        pred_slots[..., 6] = slots[..., 6]
+        return pred_slots * object_mask[..., None], mask_logits
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        action: torch.Tensor,
+        rule_id: torch.Tensor,
+        normalized: bool = False,
+        object_slots: torch.Tensor | None = None,
+        object_mask: torch.Tensor | None = None,
+        game_id: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        if object_slots is None or object_mask is None:
+            raw_state = self.normalizer.denormalize(state) if normalized else state.to(torch.float32)
+            object_slots, object_mask = self.state_to_slots(raw_state)
+        else:
+            object_slots = object_slots.to(torch.float32)
+            object_mask = object_mask.to(torch.float32)
+
+        z = self.encode_slots(object_slots, object_mask, action)
+        z_next = self.transition_latents(z, action, rule_id, object_slots, object_mask)
+        pred_next_slots, pred_next_mask_logits = self.decode_next_slots(z_next, object_slots, object_mask, rule_id)
+        pred_next_normalized_slots = self.normalizer.normalize_slots(pred_next_slots)
+        pred_next = self.slots_to_state(pred_next_slots, game_id)
+        return {
+            "pred_next_normalized_slots": pred_next_normalized_slots,
+            "pred_next_slots": pred_next_slots,
+            "pred_next_mask_logits": pred_next_mask_logits,
+            "pred_next_mask_prob": torch.sigmoid(pred_next_mask_logits),
+            "pred_next_normalized": self.normalizer.normalize(pred_next),
+            "pred_next": pred_next,
+            "z": z,
+            "z_next_pred": z_next,
+            "object_slots": object_slots,
+            "object_mask": object_mask,
+        }
+
+    def contrastive_loss(
+        self,
+        z_next_pred: torch.Tensor,
+        next_slots: torch.Tensor,
+        next_mask: torch.Tensor,
+        negative_slots: torch.Tensor,
+        negative_mask: torch.Tensor,
+        margin: float = 1.0,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        z_true = self.encode_slots(next_slots, next_mask).detach()
+        z_neg = self.encode_slots(negative_slots, negative_mask)
+        mask = next_mask.to(z_next_pred.device).to(z_next_pred.dtype)
+        node_count = mask.sum(dim=1).clamp_min(1.0)
+        positive = 0.5 * ((z_next_pred - z_true).pow(2).mean(dim=-1) * mask).sum(dim=1) / node_count
+        negative = 0.5 * ((z_neg - z_true).pow(2).mean(dim=-1) * mask).sum(dim=1) / node_count
+        loss = positive.mean() + torch.relu(torch.as_tensor(margin, device=positive.device) - negative).mean()
+        return loss, {
+            "contrastive_positive": positive.mean().detach(),
+            "contrastive_negative": negative.mean().detach(),
+        }

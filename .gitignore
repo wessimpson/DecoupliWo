@@ -1,1 +1,38 @@
-__pycache__
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Generated training outputs
+runs/
+logdir/
+logs/
+checkpoints/
+
+# Generated datasets and exports. Keep data/*.py source files trackable.
+data/transitions/
+data/episodes/
+data/datasets/
+
+# Local media/debug outputs
+*.mp4
+*.mov
+*.avi
+*.gif
+*.png
+
+# OS/editor noise
+.DS_Store
+.vscode/
+.idea/

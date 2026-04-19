@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+
+import numpy as np
 
 from custom_pong import BallState, GameState, PaddleState, PongEnv
+from data.pong_common import (
+    GAME_TO_ID,
+    OBJECT_TYPE_TO_ID,
+    TransitionShardWriter,
+    flat_pong_state_to_slots,
+    load_shards,
+    slot_config_from_env,
+)
 
 
 class PongEnvTests(unittest.TestCase):
@@ -111,6 +123,59 @@ class PongEnvTests(unittest.TestCase):
         self.assertFalse(truncated)
         self.assertEqual(reward, -1.0)
         self.assertTrue(info["miss"])
+
+    def test_flat_state_to_slots_uses_ball_and_paddle_slots(self) -> None:
+        env = PongEnv(render_mode=None)
+        obs, _ = env.reset(seed=1)
+        slots, mask = flat_pong_state_to_slots(obs, slot_config_from_env(env))
+        self.assertEqual(slots.shape, (10, 7))
+        self.assertEqual(mask.shape, (10,))
+        self.assertEqual(float(mask.sum()), 2.0)
+        self.assertEqual(int(slots[0, 6]), OBJECT_TYPE_TO_ID["ball"])
+        self.assertEqual(int(slots[1, 6]), OBJECT_TYPE_TO_ID["paddle"])
+        self.assertAlmostEqual(float(slots[0, 0]), float(obs[0]))
+        self.assertAlmostEqual(float(slots[1, 1]), float(obs[4]))
+
+    def test_transition_writer_saves_object_slots_and_game_id(self) -> None:
+        env = PongEnv(render_mode=None)
+        obs, _ = env.reset(seed=1)
+        next_obs, reward, terminated, truncated, info = env.step(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = TransitionShardWriter(tmp, "train", chunk_size=1, slot_config=slot_config_from_env(env))
+            writer.append(obs, 0, next_obs, reward, terminated, truncated, 0, 0, 0, 0)
+            writer.flush()
+            data = load_shards(tmp, "train")
+        self.assertEqual(data["object_slots"].shape, (1, 10, 7))
+        self.assertEqual(data["next_object_slots"].shape, (1, 10, 7))
+        self.assertEqual(data["object_mask"].shape, (1, 10))
+        self.assertEqual(int(data["game_id"][0]), GAME_TO_ID["pong"])
+        np.testing.assert_allclose(data["state"][0], obs)
+
+    def test_load_shards_synthesizes_slots_for_legacy_flat_shards(self) -> None:
+        env = PongEnv(render_mode=None)
+        obs, _ = env.reset(seed=2)
+        next_obs, reward, terminated, truncated, _ = env.step(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            split = Path(tmp) / "train"
+            split.mkdir()
+            np.savez_compressed(
+                split / "shard_00000.npz",
+                state=obs[None],
+                action=np.asarray([0], dtype=np.int64),
+                next_state=next_obs[None],
+                reward=np.asarray([reward], dtype=np.float32),
+                terminated=np.asarray([terminated], dtype=np.bool_),
+                truncated=np.asarray([truncated], dtype=np.bool_),
+                rule_id=np.asarray([0], dtype=np.int64),
+                event_id=np.asarray([0], dtype=np.int64),
+                episode_id=np.asarray([0], dtype=np.int64),
+                step=np.asarray([0], dtype=np.int64),
+            )
+            data = load_shards(tmp, "train")
+        self.assertIn("object_slots", data)
+        self.assertIn("game_id", data)
+        self.assertEqual(data["object_slots"].shape, (1, 10, 7))
+        self.assertEqual(float(data["object_mask"][0].sum()), 2.0)
 
 
 if __name__ == "__main__":
