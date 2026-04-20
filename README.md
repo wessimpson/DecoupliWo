@@ -116,6 +116,24 @@ RARE_SAMPLES_PER_SOURCE=20000
 
 The large generator combines ordinary rollouts with targeted rare starts. For Pong this includes wall bounces, top/bottom bounces, teleport wraps, paddle hits, misses, and diverse random states. For Breakout this includes left/right wall cases, top bounces, teleport wraps, paddle hits, block hits, misses, and diverse random states.
 
+Generate the large Pong-only dataset across all three rules:
+
+```bash
+./scripts/generate_large_pong_all_rules_dataset.sh
+```
+
+Defaults:
+
+```text
+OUTPUT=data/transitions/editable_world/pong_all_rules_large_seed0
+MODES=normal gravity teleport
+POLICIES=random heuristic mixed
+EPISODES=10000
+STEPS_PER_EPISODE=900
+RARE_SAMPLES_PER_SOURCE=50000
+COUNTERFACTUAL=enabled
+```
+
 Train PPO+RND and save rollout transitions:
 
 ```bash
@@ -141,9 +159,61 @@ Train the rule-conditioned GNN dynamics model:
 /home/soyuj/miniconda3/envs/gvgai_jpype/bin/python train_pong_world_model.py \
   --dataset data/transitions/editable_world/pong_breakout_counterfactual_seed0 \
   --output runs/editable_world_slot_gnn_seed0 \
+  --model-size large \
   --epochs 100 \
   --batch-size 1024 \
   --device auto
+```
+
+Model-size presets:
+
+```text
+small:  latent=64,  hidden=128, message_steps=2
+medium: latent=128, hidden=256, message_steps=3
+large:  latent=256, hidden=512, message_steps=4
+xl:     latent=384, hidden=768, message_steps=5
+```
+
+For a stronger Pong-normal-only run:
+
+```bash
+DATASET=data/transitions/debug/pong_normal_large_seed0 \
+OUTPUT=runs/pong_normal_large_slot_gnn_scaled_seed0 \
+BATCH_SIZE=2048 \
+DEVICE=auto \
+TRAIN_COMBOS="pong:normal" \
+./scripts/train_scaled_world_model.sh
+```
+
+The scaled trainer now defaults to:
+
+```text
+MODEL_SIZE=large
+EPOCHS=1000
+```
+
+Train XL on all Pong rules:
+
+```bash
+DATASET=data/transitions/editable_world/pong_all_rules_large_seed0 \
+OUTPUT=runs/pong_all_rules_slot_gnn_xl_seed0 \
+BATCH_SIZE=2048 \
+DEVICE=auto \
+TRAIN_COMBOS="pong:normal pong:gravity pong:teleport" \
+./scripts/train_scaled_world_model.sh
+```
+
+For the mixed Pong+Breakout editable-world run:
+
+```bash
+DATASET=data/transitions/editable_world/pong_breakout_large_seed0 \
+OUTPUT=runs/editable_world_slot_gnn_large_seed0 \
+MODEL_SIZE=large \
+EPOCHS=300 \
+BATCH_SIZE=2048 \
+DEVICE=auto \
+TRAIN_COMBOS="" \
+./scripts/train_scaled_world_model.sh
 ```
 
 Train while holding out a rule combination from optimization and reporting held-out validation metrics:

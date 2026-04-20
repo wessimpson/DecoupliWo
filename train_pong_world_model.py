@@ -87,15 +87,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", required=True, help="Dataset root containing train/val shards.")
     parser.add_argument("--output", default="runs/pong_world_model", help="Output directory.")
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--model-size",
+        choices=("custom", "small", "medium", "large", "xl"),
+        default="custom",
+        help="Named capacity preset. Explicit dimension flags override this.",
+    )
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
-    parser.add_argument("--latent-dim", type=int, default=64)
-    parser.add_argument("--rule-dim", type=int, default=16)
-    parser.add_argument("--type-dim", type=int, default=8)
-    parser.add_argument("--hidden-dim", type=int, default=128)
-    parser.add_argument("--message-passing-steps", type=int, default=2)
+    parser.add_argument("--latent-dim", type=int, default=None)
+    parser.add_argument("--rule-dim", type=int, default=None)
+    parser.add_argument("--type-dim", type=int, default=None)
+    parser.add_argument("--hidden-dim", type=int, default=None)
+    parser.add_argument("--message-passing-steps", type=int, default=None)
     parser.add_argument("--contrastive-weight", type=float, default=0.05)
     parser.add_argument("--contrastive-margin", type=float, default=1.0)
     parser.add_argument("--mask-loss-weight", type=float, default=0.1, help="Weight for active-object mask prediction loss.")
@@ -106,6 +112,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=0)
     return parser.parse_args()
+
+
+MODEL_PRESETS = {
+    "custom": {"latent_dim": 64, "rule_dim": 16, "type_dim": 8, "hidden_dim": 128, "message_passing_steps": 2},
+    "small": {"latent_dim": 64, "rule_dim": 16, "type_dim": 8, "hidden_dim": 128, "message_passing_steps": 2},
+    "medium": {"latent_dim": 128, "rule_dim": 32, "type_dim": 16, "hidden_dim": 256, "message_passing_steps": 3},
+    "large": {"latent_dim": 256, "rule_dim": 64, "type_dim": 32, "hidden_dim": 512, "message_passing_steps": 4},
+    "xl": {"latent_dim": 384, "rule_dim": 96, "type_dim": 48, "hidden_dim": 768, "message_passing_steps": 5},
+}
+
+
+def apply_model_preset(args: argparse.Namespace) -> argparse.Namespace:
+    preset = MODEL_PRESETS[args.model_size]
+    for arg_name, default_value in preset.items():
+        if getattr(args, arg_name) is None:
+            setattr(args, arg_name, default_value)
+    return args
 
 
 def choose_device(requested: str) -> torch.device:
@@ -326,7 +349,7 @@ def save_checkpoint(path: pathlib.Path, model: RuleConditionedPongGNN, optimizer
 
 
 def main() -> int:
-    args = parse_args()
+    args = apply_model_preset(parse_args())
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     dataset_root = pathlib.Path(args.dataset).expanduser().resolve()
@@ -373,6 +396,10 @@ def main() -> int:
     print(f"dataset={dataset_root}")
     print(f"output={output}")
     print(f"device={device}")
+    print(
+        f"model_size={args.model_size} latent={args.latent_dim} hidden={args.hidden_dim} "
+        f"rule={args.rule_dim} type={args.type_dim} mp_steps={args.message_passing_steps}"
+    )
     print(f"train rows={len(train_data)} val rows={len(val_data)}")
     if holdout_data is not None:
         print(f"holdout rows={len(holdout_data)} combos={args.holdout_combos}")
