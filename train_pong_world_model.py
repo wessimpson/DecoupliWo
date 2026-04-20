@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.pong_common import EVENTS, GAME_TO_ID, ID_TO_EVENT, ID_TO_GAME, ID_TO_RULE, ID_TO_SOURCE, RULE_TO_ID, load_shards
+from models.object_losses import LossWeights, compute_object_centric_losses, event_prediction_loss, relative_slot_loss, rollout_slot_loss
 from models.rule_conditioned_gnn import PongObjectConstants, RuleConditionedPongGNN
 
 
@@ -30,6 +31,7 @@ class PongTransitionDataset(Dataset):
         exclude_combos: set[tuple[int, int]] | None = None,
         rule_ablation: str = "none",
         seed: int = 0,
+        rollout_horizon: int = 1,
     ):
         data = load_shards(root, split)
         game_id = data.get("game_id", np.zeros_like(data["rule_id"], dtype=np.int64))
@@ -57,16 +59,61 @@ class PongTransitionDataset(Dataset):
         self.game_id = torch.as_tensor(game_id[keep], dtype=torch.long)
         self.event_id = torch.as_tensor(data["event_id"][keep], dtype=torch.long)
         self.source_id = torch.as_tensor(data["source_id"][keep], dtype=torch.long)
+        self.episode_id = torch.as_tensor(data["episode_id"][keep], dtype=torch.long)
+        self.step = torch.as_tensor(data["step"][keep], dtype=torch.long)
+        self.terminated = torch.as_tensor(data.get("terminated", np.zeros_like(data["action"], dtype=np.bool_))[keep], dtype=torch.bool)
+        self.truncated = torch.as_tensor(data.get("truncated", np.zeros_like(data["action"], dtype=np.bool_))[keep], dtype=torch.bool)
         self.object_slots = torch.as_tensor(data["object_slots"][keep], dtype=torch.float32)
         self.next_object_slots = torch.as_tensor(data["next_object_slots"][keep], dtype=torch.float32)
         self.object_mask = torch.as_tensor(data["object_mask"][keep], dtype=torch.float32)
         self.next_object_mask = torch.as_tensor(data["next_object_mask"][keep], dtype=torch.float32)
+        self.rollout_horizon = max(1, int(rollout_horizon))
+        self.rollout_indices, self.rollout_valid = self._build_rollout_index()
+
+    def _build_rollout_index(self) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = int(self.action.shape[0])
+        horizon = int(self.rollout_horizon)
+        indices = torch.zeros(rows, horizon, dtype=torch.long)
+        valid = torch.zeros(rows, horizon, dtype=torch.float32)
+        if horizon <= 1:
+            indices[:, 0] = torch.arange(rows, dtype=torch.long)
+            valid[:, 0] = 1.0
+            return indices, valid
+
+        lookup: dict[tuple[int, int, int, int], int] = {}
+        game_np = self.game_id.numpy()
+        rule_np = self.true_rule_id.numpy()
+        episode_np = self.episode_id.numpy()
+        step_np = self.step.numpy()
+        for idx in range(rows):
+            key = (int(game_np[idx]), int(rule_np[idx]), int(episode_np[idx]), int(step_np[idx]))
+            lookup.setdefault(key, idx)
+
+        for idx in range(rows):
+            indices[idx, 0] = idx
+            valid[idx, 0] = 1.0
+            terminal_seen = bool(self.terminated[idx] or self.truncated[idx])
+            for offset in range(1, horizon):
+                key = (
+                    int(game_np[idx]),
+                    int(rule_np[idx]),
+                    int(episode_np[idx]),
+                    int(step_np[idx]) + offset,
+                )
+                next_idx = lookup.get(key)
+                if terminal_seen or next_idx is None:
+                    indices[idx, offset] = idx
+                    continue
+                indices[idx, offset] = int(next_idx)
+                valid[idx, offset] = 1.0
+                terminal_seen = bool(self.terminated[next_idx] or self.truncated[next_idx])
+        return indices, valid
 
     def __len__(self) -> int:
         return int(self.action.shape[0])
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        return {
+        item = {
             "state": self.state[idx],
             "action": self.action[idx],
             "next_state": self.next_state[idx],
@@ -80,6 +127,18 @@ class PongTransitionDataset(Dataset):
             "object_mask": self.object_mask[idx],
             "next_object_mask": self.next_object_mask[idx],
         }
+        if self.rollout_horizon > 1:
+            rollout_idx = self.rollout_indices[idx]
+            item.update(
+                {
+                    "rollout_action": self.action[rollout_idx],
+                    "rollout_rule_id": self.rule_id[rollout_idx],
+                    "rollout_next_object_slots": self.next_object_slots[rollout_idx],
+                    "rollout_next_object_mask": self.next_object_mask[rollout_idx],
+                    "rollout_valid": self.rollout_valid[idx],
+                }
+            )
+        return item
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +161,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--type-dim", type=int, default=None)
     parser.add_argument("--hidden-dim", type=int, default=None)
     parser.add_argument("--message-passing-steps", type=int, default=None)
+    parser.add_argument("--edge-mode", choices=("fully_connected", "distance", "hybrid"), default="hybrid")
+    parser.add_argument("--edge-distance-threshold", type=float, default=0.35)
+    parser.add_argument("--alpha-rel", type=float, default=0.1, help="Weight for relative object-state loss after --rel-start-epoch.")
+    parser.add_argument("--beta-roll", type=float, default=0.1, help="Weight for rollout loss after --rollout-start-epoch.")
+    parser.add_argument("--gamma-event", type=float, default=0.05, help="Weight for event classification after --event-start-epoch.")
+    parser.add_argument("--rel-start-epoch", type=int, default=2, help="Epoch at which relative-state loss turns on.")
+    parser.add_argument("--rollout-start-epoch", type=int, default=10, help="Epoch at which multi-step rollout loss turns on.")
+    parser.add_argument("--event-start-epoch", type=int, default=20, help="Epoch at which event prediction loss turns on.")
+    parser.add_argument("--rollout-horizon", type=int, default=3, help="Number of contiguous transitions used for rollout loss/eval.")
+    parser.add_argument("--noise-std", type=float, default=0.0, help="Normalized Gaussian noise added to active x/y/vx/vy inputs during training.")
     parser.add_argument("--contrastive-weight", type=float, default=0.05)
     parser.add_argument("--contrastive-margin", type=float, default=1.0)
     parser.add_argument("--mask-loss-weight", type=float, default=0.1, help="Weight for active-object mask prediction loss.")
@@ -185,6 +254,28 @@ def transition_weights(event_id: torch.Tensor, event_weight: float) -> torch.Ten
     return weights
 
 
+def loss_weights_for_epoch(args: argparse.Namespace, epoch: int) -> LossWeights:
+    return LossWeights(
+        alpha_rel=float(args.alpha_rel) if epoch >= int(args.rel_start_epoch) else 0.0,
+        beta_roll=float(args.beta_roll) if epoch >= int(args.rollout_start_epoch) else 0.0,
+        gamma_event=float(args.gamma_event) if epoch >= int(args.event_start_epoch) else 0.0,
+        mask=float(args.mask_loss_weight),
+        contrastive=float(args.contrastive_weight),
+        event_weight=float(args.event_weight),
+        contrastive_margin=float(args.contrastive_margin),
+    )
+
+
+def add_object_noise(slots: torch.Tensor, object_mask: torch.Tensor, model: RuleConditionedPongGNN, noise_std: float) -> torch.Tensor:
+    if noise_std <= 0.0:
+        return slots
+    noisy = slots.clone()
+    scales = model.normalizer.slot_scales.to(slots.device, slots.dtype)
+    noise = torch.randn_like(noisy[..., :4]) * scales[:4] * float(noise_std)
+    noisy[..., :4] = noisy[..., :4] + noise * object_mask[..., None].to(slots.dtype)
+    return noisy
+
+
 def masked_slot_loss(
     pred_next_slots: torch.Tensor,
     target_next_slots: torch.Tensor,
@@ -213,48 +304,44 @@ def train_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    contrastive_weight: float,
-    contrastive_margin: float,
-    mask_loss_weight: float,
-    event_weight: float,
+    loss_weights: LossWeights,
+    noise_std: float,
 ) -> dict[str, float]:
     model.train()
-    totals: dict[str, float] = {"loss": 0.0, "state_loss": 0.0, "contrastive_loss": 0.0, "mask_loss": 0.0}
+    totals: dict[str, float] = {
+        "loss": 0.0,
+        "state_loss": 0.0,
+        "rel_loss": 0.0,
+        "rollout_loss": 0.0,
+        "event_loss": 0.0,
+        "contrastive_loss": 0.0,
+        "mask_loss": 0.0,
+    }
     rows = 0
     for batch in loader:
         batch = batch_to_device(batch, device)
         optimizer.zero_grad(set_to_none=True)
+        model_slots = add_object_noise(batch["object_slots"], batch["object_mask"], model, noise_std)
         out = model(
             batch["state"],
             batch["action"],
             batch["rule_id"],
             normalized=False,
-            object_slots=batch["object_slots"],
+            object_slots=model_slots,
             object_mask=batch["object_mask"],
             game_id=batch["game_id"],
         )
-        weights = transition_weights(batch["event_id"], event_weight).to(device)
-        state_loss = masked_slot_loss(out["pred_next_slots"], batch["next_object_slots"], batch["next_object_mask"], model, weights)
-        mask_loss = object_mask_loss(out["pred_next_mask_logits"], batch["next_object_mask"], batch["object_mask"])
-        neg_perm = torch.randperm(batch["next_object_slots"].shape[0], device=device)
-        contrastive_loss, _ = model.contrastive_loss(
-            out["z_next_pred"],
-            batch["next_object_slots"],
-            batch["next_object_mask"],
-            batch["next_object_slots"][neg_perm],
-            batch["next_object_mask"][neg_perm],
-            margin=contrastive_margin,
-        )
-        loss = state_loss + float(contrastive_weight) * contrastive_loss + float(mask_loss_weight) * mask_loss
+        if noise_std > 0.0:
+            batch = {**batch, "object_slots": model_slots}
+        losses = compute_object_centric_losses(model, batch, out, loss_weights)
+        loss = losses["loss"]
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
         optimizer.step()
         batch_rows = int(batch["action"].shape[0])
         rows += batch_rows
-        totals["loss"] += float(loss.item()) * batch_rows
-        totals["state_loss"] += float(state_loss.item()) * batch_rows
-        totals["contrastive_loss"] += float(contrastive_loss.item()) * batch_rows
-        totals["mask_loss"] += float(mask_loss.item()) * batch_rows
+        for key in totals:
+            totals[key] += float(losses[key].detach().item()) * batch_rows
     return {key: value / max(rows, 1) for key, value in totals.items()}
 
 
@@ -265,6 +352,10 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
     flat_sqerr = []
     var_sqerr = []
     mask_losses = []
+    rel_losses = []
+    rollout_losses = []
+    event_losses = []
+    event_accuracies = []
     mask_accuracies = []
     group_sums: dict[str, float] = {}
     group_counts: dict[str, int] = {}
@@ -294,6 +385,10 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
         slot_sq = (slot_err.pow(2).mean(dim=-1) * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
         flat_sq = (out["pred_next"] - batch["next_state"]).pow(2)
         mask_loss = object_mask_loss(out["pred_next_mask_logits"], batch["next_object_mask"], batch["object_mask"])
+        rel_loss = relative_slot_loss(out["pred_next_slots"], batch["next_object_slots"], batch["next_object_mask"], model)
+        roll_loss = rollout_slot_loss(model, batch)
+        event_loss = event_prediction_loss(out["pred_event_logits"], batch["event_id"])
+        event_acc = (out["pred_event_logits"].argmax(dim=-1) == batch["event_id"]).to(torch.float32).mean()
         mask_pred = out["pred_next_mask_prob"] >= 0.5
         mask_true = batch["next_object_mask"] >= 0.5
         mask_acc = (mask_pred == mask_true).to(torch.float32).mean()
@@ -301,6 +396,10 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
         flat_sqerr.append(flat_sq.mean(dim=-1).detach().cpu())
         var_sqerr.append(flat_sq.detach().cpu())
         mask_losses.append(mask_loss.detach().cpu())
+        rel_losses.append(rel_loss.detach().cpu())
+        rollout_losses.append(roll_loss.detach().cpu())
+        event_losses.append(event_loss.detach().cpu())
+        event_accuracies.append(event_acc.detach().cpu())
         mask_accuracies.append(mask_acc.detach().cpu())
         slot_values = slot_sq.detach().cpu().numpy()
         games = batch["game_id"].detach().cpu().numpy()
@@ -325,6 +424,10 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
         "val_rmse": float(torch.sqrt(all_flat_sq.mean()).item()),
         "val_mask_loss": float(torch.stack(mask_losses).mean().item()),
         "val_mask_accuracy": float(torch.stack(mask_accuracies).mean().item()),
+        "val_rel_loss": float(torch.stack(rel_losses).mean().item()),
+        "val_rollout_loss": float(torch.stack(rollout_losses).mean().item()),
+        "val_event_loss": float(torch.stack(event_losses).mean().item()),
+        "val_event_accuracy": float(torch.stack(event_accuracies).mean().item()),
     }
     names = ("ball_x", "ball_y", "ball_vx", "ball_vy", "paddle_pos", "paddle_vel")
     for idx, name in enumerate(names):
@@ -367,10 +470,18 @@ def main() -> int:
         exclude_combos=holdout_combos,
         rule_ablation=args.rule_ablation,
         seed=args.seed,
+        rollout_horizon=args.rollout_horizon,
     )
-    val_data = PongTransitionDataset(dataset_root, "val", rule_ablation=args.rule_ablation, seed=args.seed)
+    val_data = PongTransitionDataset(dataset_root, "val", rule_ablation=args.rule_ablation, seed=args.seed, rollout_horizon=args.rollout_horizon)
     holdout_data = (
-        PongTransitionDataset(dataset_root, "val", combos=holdout_combos, rule_ablation=args.rule_ablation, seed=args.seed)
+        PongTransitionDataset(
+            dataset_root,
+            "val",
+            combos=holdout_combos,
+            rule_ablation=args.rule_ablation,
+            seed=args.seed,
+            rollout_horizon=args.rollout_horizon,
+        )
         if holdout_combos
         else None
     )
@@ -389,6 +500,8 @@ def main() -> int:
         hidden_dim=args.hidden_dim,
         message_passing_steps=args.message_passing_steps,
         constants=constants,
+        edge_mode=args.edge_mode,
+        edge_distance_threshold=args.edge_distance_threshold,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -398,34 +511,48 @@ def main() -> int:
     print(f"device={device}")
     print(
         f"model_size={args.model_size} latent={args.latent_dim} hidden={args.hidden_dim} "
-        f"rule={args.rule_dim} type={args.type_dim} mp_steps={args.message_passing_steps}"
+        f"rule={args.rule_dim} type={args.type_dim} mp_steps={args.message_passing_steps} "
+        f"edge={args.edge_mode}@{args.edge_distance_threshold}"
+    )
+    print(
+        f"loss schedule: rel@{args.rel_start_epoch} roll@{args.rollout_start_epoch} "
+        f"event@{args.event_start_epoch} rollout_horizon={args.rollout_horizon} noise_std={args.noise_std}"
     )
     print(f"train rows={len(train_data)} val rows={len(val_data)}")
     if holdout_data is not None:
         print(f"holdout rows={len(holdout_data)} combos={args.holdout_combos}")
     for epoch in range(1, int(args.epochs) + 1):
         start = time.time()
+        epoch_weights = loss_weights_for_epoch(args, epoch)
         train_metrics = train_epoch(
             model,
             train_loader,
             optimizer,
             device,
-            args.contrastive_weight,
-            args.contrastive_margin,
-            args.mask_loss_weight,
-            args.event_weight,
+            epoch_weights,
+            args.noise_std,
         )
         val_metrics = evaluate(model, val_loader, device)
         if holdout_loader is not None:
             holdout_metrics = evaluate(model, holdout_loader, device)
             val_metrics.update({f"holdout/{key}": value for key, value in holdout_metrics.items()})
-        metrics: dict[str, Any] = {"epoch": epoch, "time_sec": time.time() - start, **train_metrics, **val_metrics}
+        metrics: dict[str, Any] = {
+            "epoch": epoch,
+            "time_sec": time.time() - start,
+            "weight_alpha_rel": epoch_weights.alpha_rel,
+            "weight_beta_roll": epoch_weights.beta_roll,
+            "weight_gamma_event": epoch_weights.gamma_event,
+            **train_metrics,
+            **val_metrics,
+        }
         with metrics_path.open("a") as handle:
             handle.write(json.dumps(metrics, sort_keys=True) + "\n")
         print(
             f"[{epoch:04d}] loss={metrics['loss']:.6f} state={metrics['state_loss']:.6f} "
-            f"mask={metrics['mask_loss']:.6f} contrast={metrics['contrastive_loss']:.6f} "
-            f"val_slot_rmse={metrics['val_slot_rmse']:.4f} val_rmse={metrics['val_rmse']:.4f}"
+            f"rel={metrics['rel_loss']:.6f} roll={metrics['rollout_loss']:.6f} "
+            f"event={metrics['event_loss']:.6f} mask={metrics['mask_loss']:.6f} "
+            f"contrast={metrics['contrastive_loss']:.6f} val_slot_rmse={metrics['val_slot_rmse']:.4f} "
+            f"val_roll={metrics['val_rollout_loss']:.6f} val_event_acc={metrics['val_event_accuracy']:.3f}"
         )
         save_checkpoint(output / "latest.pt", model, optimizer, args, epoch, metrics)
         if float(val_metrics["val_mse"]) < best:

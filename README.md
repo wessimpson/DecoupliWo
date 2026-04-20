@@ -165,6 +165,21 @@ Train the rule-conditioned GNN dynamics model:
   --device auto
 ```
 
+The trainer is object-centric throughout: it consumes object slots, builds an
+interaction graph, predicts residual slot dynamics, and never uses pixels,
+CNNs, image reconstruction, VAEs, or diffusion models. The current neural game
+engine exposes the main rule-transfer controls:
+
+```text
+--edge-mode hybrid              # hybrid moving-object full edges + nearby static edges
+--edge-distance-threshold 0.35   # normalized threshold for distance edges
+--rel-start-epoch 2              # Stage 2: relative object loss
+--rollout-start-epoch 10         # Stage 3: multi-step rollout loss
+--event-start-epoch 20           # Stage 4: event/collision classification
+--rollout-horizon 3              # contiguous transition window for rollout loss/eval
+--noise-std 0.0                  # normalized x/y/vx/vy noise injection
+```
+
 Model-size presets:
 
 ```text

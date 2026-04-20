@@ -53,6 +53,8 @@ def build_model(checkpoint: dict, device: torch.device) -> RuleConditionedPongGN
         hidden_dim=int(args.get("hidden_dim", 128)),
         message_passing_steps=int(args.get("message_passing_steps", 2)),
         constants=constants,
+        edge_mode=str(args.get("edge_mode", "hybrid")),
+        edge_distance_threshold=float(args.get("edge_distance_threshold", 0.35)),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -171,12 +173,19 @@ def main() -> int:
     metrics: dict[str, float | str] = {"checkpoint_epoch": float(checkpoint.get("epoch", -1)), "rule_ablation": rule_ablation}
     if args.dataset:
         dataset_root = pathlib.Path(args.dataset).expanduser().resolve()
-        val_data = PongTransitionDataset(dataset_root, "val", rule_ablation=rule_ablation, seed=args.seed)
+        val_data = PongTransitionDataset(dataset_root, "val", rule_ablation=rule_ablation, seed=args.seed, rollout_horizon=args.rollout_horizon)
         val_loader = DataLoader(val_data, batch_size=args.batch_size, shuffle=False)
         metrics.update(evaluate(model, val_loader, device))
         holdout_combos = parse_combos(args.holdout_combos)
         if holdout_combos:
-            holdout_data = PongTransitionDataset(dataset_root, "val", combos=holdout_combos, rule_ablation=rule_ablation, seed=args.seed)
+            holdout_data = PongTransitionDataset(
+                dataset_root,
+                "val",
+                combos=holdout_combos,
+                rule_ablation=rule_ablation,
+                seed=args.seed,
+                rollout_horizon=args.rollout_horizon,
+            )
             holdout_loader = DataLoader(holdout_data, batch_size=args.batch_size, shuffle=False)
             metrics.update({f"holdout/{key}": value for key, value in evaluate(model, holdout_loader, device).items()})
     metrics.update(rollout_eval(model, device, args.rollout_episodes, args.rollout_horizon, args.policy, args.seed, rule_ablation, args.eval_modes))

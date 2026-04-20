@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from data.pong_common import (
+    EVENTS,
     GAME_TO_ID,
     MAX_OBJECTS,
     OBJECT_TYPES,
@@ -14,6 +15,7 @@ from data.pong_common import (
     SLOT_DIM,
     PongSlotConfig,
 )
+from models.object_graph import ObjectGraphBuilder
 
 
 @dataclass(frozen=True)
@@ -103,12 +105,13 @@ class PongStateNormalizer(nn.Module):
 
 
 class RuleConditionedPongGNN(nn.Module):
-    """Masked object-slot GNN dynamics model.
+    """Rule-conditioned object-centric neural game engine.
 
-    The public name is kept for backward compatibility with the previous Pong
-    world model. The model now operates on fixed object slots:
-    x, y, vx, vy, width, height, type_id. Flat 6D Pong state is still accepted
-    and converted internally to two active slots: ball and paddle.
+    The public name is kept for compatibility with the earlier Pong scripts,
+    but the model is no longer Pong-specific internally. It consumes structured
+    object slots, builds an interaction graph, sends rule/action-conditioned
+    messages over explicit relative position/velocity/type edge features, and
+    predicts residual object dynamics plus object liveness and event logits.
     """
 
     def __init__(
@@ -124,6 +127,9 @@ class RuleConditionedPongGNN(nn.Module):
         message_passing_steps: int = 2,
         mlp_layers: int = 2,
         constants: PongObjectConstants | None = None,
+        edge_mode: str = "hybrid",
+        edge_distance_threshold: float = 0.35,
+        num_events: int = len(EVENTS),
     ):
         super().__init__()
         self.num_rules = int(num_rules)
@@ -134,17 +140,28 @@ class RuleConditionedPongGNN(nn.Module):
         self.rule_dim = int(rule_dim)
         self.type_dim = int(type_dim)
         self.message_passing_steps = int(message_passing_steps)
+        self.edge_mode = edge_mode
+        self.edge_distance_threshold = float(edge_distance_threshold)
+        self.num_events = int(num_events)
         self.constants = constants or PongObjectConstants()
         self.max_objects = int(self.constants.max_objects)
         self.normalizer = PongStateNormalizer(self.constants)
+        self.graph_builder = ObjectGraphBuilder(
+            self.constants.slot_scales,
+            num_object_types=self.num_object_types,
+            edge_mode=edge_mode,
+            distance_threshold=edge_distance_threshold,
+        )
 
         self.rule_embedding = nn.Embedding(self.num_rules, self.rule_dim)
         self.type_embedding = nn.Embedding(self.num_object_types, self.type_dim)
         self.node_encoder = mlp(node_numeric_dim + type_dim + action_dim + 1, hidden_dim, latent_dim, layers=mlp_layers)
-        self.edge_mlp = mlp(2 * latent_dim + rule_dim, hidden_dim, latent_dim, layers=mlp_layers)
+        edge_in_dim = 2 * latent_dim + self.graph_builder.edge_feature_dim + 2 * type_dim + action_dim + rule_dim
+        self.edge_mlp = mlp(edge_in_dim, hidden_dim, latent_dim, layers=mlp_layers)
         self.node_mlp = mlp(latent_dim + latent_dim + action_dim + rule_dim, hidden_dim, latent_dim, layers=mlp_layers)
         self.decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, node_numeric_dim, layers=mlp_layers)
         self.mask_decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, 1, layers=mlp_layers)
+        self.event_head = mlp(latent_dim + rule_dim + action_dim, hidden_dim, self.num_events, layers=mlp_layers)
 
     def state_to_slots(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         state = state.to(torch.float32)
@@ -186,11 +203,13 @@ class RuleConditionedPongGNN(nn.Module):
             out[:, 5] = torch.where(breakout, slots[:, 1, 2], slots[:, 1, 3])
         return out
 
-    def action_to_nodes(self, action: torch.Tensor, slots: torch.Tensor, object_mask: torch.Tensor) -> torch.Tensor:
+    def action_one_hot(self, action: torch.Tensor) -> torch.Tensor:
         if action.ndim == 2:
-            one_hot = action.to(torch.float32)
-        else:
-            one_hot = F.one_hot(action.to(torch.int64), num_classes=self.action_dim).to(torch.float32)
+            return action.to(torch.float32)
+        return F.one_hot(action.to(torch.int64), num_classes=self.action_dim).to(torch.float32)
+
+    def action_to_nodes(self, action: torch.Tensor, slots: torch.Tensor, object_mask: torch.Tensor) -> torch.Tensor:
+        one_hot = self.action_one_hot(action)
         type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
         paddle_mask = (type_ids == OBJECT_TYPE_TO_ID["paddle"]).to(torch.float32) * object_mask.to(torch.float32)
         return one_hot[:, None, :].expand(-1, slots.shape[1], -1) * paddle_mask[..., None]
@@ -223,22 +242,41 @@ class RuleConditionedPongGNN(nn.Module):
     ) -> torch.Tensor:
         batch, nodes, _ = z.shape
         rule = self.rule_embedding(rule_id.to(torch.int64))
+        global_action = self.action_one_hot(action).to(z.device)
         if slots is None or object_mask is None:
             node_actions = torch.zeros(batch, nodes, self.action_dim, dtype=z.dtype, device=z.device)
             object_mask = torch.ones(batch, nodes, dtype=z.dtype, device=z.device)
+            graph_mask = torch.ones(batch, nodes, nodes, dtype=z.dtype, device=z.device)
+            eye = torch.eye(nodes, dtype=z.dtype, device=z.device)[None, :, :]
+            graph_mask = graph_mask * (1.0 - eye)
+            graph_features = torch.zeros(
+                batch,
+                nodes,
+                nodes,
+                self.graph_builder.edge_feature_dim,
+                dtype=z.dtype,
+                device=z.device,
+            )
+            type_ids = torch.zeros(batch, nodes, dtype=torch.long, device=z.device)
         else:
             node_actions = self.action_to_nodes(action, slots, object_mask).to(z.device)
             object_mask = object_mask.to(z.device).to(z.dtype)
+            graph = self.graph_builder(slots.to(z.device), object_mask)
+            graph_mask = graph.edge_mask.to(z.dtype)
+            graph_features = graph.edge_features.to(z.dtype)
+            type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long).to(z.device)
+        type_emb = self.type_embedding(type_ids)
 
         current = z
-        eye = torch.eye(nodes, dtype=z.dtype, device=z.device)[None, :, :]
-        pair_mask = object_mask[:, :, None] * object_mask[:, None, :] * (1.0 - eye)
         for _ in range(self.message_passing_steps):
             src = current[:, None, :, :].expand(batch, nodes, nodes, self.latent_dim)
             dst = current[:, :, None, :].expand(batch, nodes, nodes, self.latent_dim)
+            src_type = type_emb[:, None, :, :].expand(batch, nodes, nodes, self.type_dim)
+            dst_type = type_emb[:, :, None, :].expand(batch, nodes, nodes, self.type_dim)
+            action_edges = global_action[:, None, None, :].expand(batch, nodes, nodes, self.action_dim)
             rule_edges = rule[:, None, None, :].expand(batch, nodes, nodes, self.rule_dim)
-            edge_in = torch.cat([src, dst, rule_edges], dim=-1)
-            messages = self.edge_mlp(edge_in) * pair_mask[..., None]
+            edge_in = torch.cat([src, dst, graph_features, src_type, dst_type, action_edges, rule_edges], dim=-1)
+            messages = self.edge_mlp(edge_in) * graph_mask[..., None]
             message_tensor = messages.sum(dim=2)
             rule_nodes = rule[:, None, :].expand(batch, nodes, self.rule_dim)
             node_in = torch.cat([current, message_tensor, node_actions, rule_nodes], dim=-1)
@@ -270,6 +308,13 @@ class RuleConditionedPongGNN(nn.Module):
         pred_slots[..., 6] = slots[..., 6]
         return pred_slots * object_mask[..., None], mask_logits
 
+    def predict_events(self, z_next: torch.Tensor, action: torch.Tensor, rule_id: torch.Tensor, object_mask: torch.Tensor) -> torch.Tensor:
+        mask = object_mask.to(z_next.device).to(z_next.dtype)
+        pooled = (z_next * mask[..., None]).sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp_min(1.0)
+        rule = self.rule_embedding(rule_id.to(torch.int64))
+        action_emb = self.action_one_hot(action).to(z_next.device)
+        return self.event_head(torch.cat([pooled, rule, action_emb], dim=-1))
+
     def forward(
         self,
         state: torch.Tensor,
@@ -290,6 +335,7 @@ class RuleConditionedPongGNN(nn.Module):
         z = self.encode_slots(object_slots, object_mask, action)
         z_next = self.transition_latents(z, action, rule_id, object_slots, object_mask)
         pred_next_slots, pred_next_mask_logits = self.decode_next_slots(z_next, object_slots, object_mask, rule_id)
+        pred_event_logits = self.predict_events(z_next, action, rule_id, object_mask)
         pred_next_normalized_slots = self.normalizer.normalize_slots(pred_next_slots)
         pred_next = self.slots_to_state(pred_next_slots, game_id)
         return {
@@ -297,6 +343,8 @@ class RuleConditionedPongGNN(nn.Module):
             "pred_next_slots": pred_next_slots,
             "pred_next_mask_logits": pred_next_mask_logits,
             "pred_next_mask_prob": torch.sigmoid(pred_next_mask_logits),
+            "pred_event_logits": pred_event_logits,
+            "pred_event_prob": torch.softmax(pred_event_logits, dim=-1),
             "pred_next_normalized": self.normalizer.normalize(pred_next),
             "pred_next": pred_next,
             "z": z,

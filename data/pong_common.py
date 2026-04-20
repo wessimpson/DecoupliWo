@@ -453,6 +453,8 @@ def load_shards(root: pathlib.Path, split: str) -> dict[str, np.ndarray]:
             }
             normalized.setdefault("source_id", np.zeros(row_count, dtype=np.int64))
             normalized.setdefault("game_id", np.full(row_count, GAME_TO_ID["pong"], dtype=np.int64))
+            normalized.setdefault("episode_id", np.arange(row_count, dtype=np.int64))
+            normalized.setdefault("step", np.zeros(row_count, dtype=np.int64))
             normalized["object_slots"] = object_slots.astype(np.float32)
             normalized["next_object_slots"] = next_object_slots.astype(np.float32)
             normalized["object_mask"] = object_mask.astype(np.float32)
