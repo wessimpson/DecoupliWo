@@ -145,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a rule-conditioned GNN dynamics model for custom Pong.")
     parser.add_argument("--dataset", required=True, help="Dataset root containing train/val shards.")
     parser.add_argument("--output", default="runs/pong_world_model", help="Output directory.")
+    parser.add_argument("--resume", default=None, help="Optional checkpoint path to continue training from, usually runs/.../latest.pt.")
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--model-size",
@@ -451,6 +452,22 @@ def save_checkpoint(path: pathlib.Path, model: RuleConditionedPongGNN, optimizer
     tmp.replace(path)
 
 
+def load_training_checkpoint(
+    path: pathlib.Path,
+    model: RuleConditionedPongGNN,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> tuple[int, float]:
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    if "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    epoch = int(checkpoint.get("epoch", 0))
+    metrics = checkpoint.get("metrics", {})
+    best = float(metrics.get("val_mse", float("inf")))
+    return epoch, best
+
+
 def main() -> int:
     args = apply_model_preset(parse_args())
     torch.manual_seed(args.seed)
@@ -506,6 +523,13 @@ def main() -> int:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best = float("inf")
+    start_epoch = 1
+    if args.resume:
+        resume_path = pathlib.Path(args.resume).expanduser().resolve()
+        loaded_epoch, loaded_best = load_training_checkpoint(resume_path, model, optimizer, device)
+        best = loaded_best
+        start_epoch = loaded_epoch + 1
+
     print(f"dataset={dataset_root}")
     print(f"output={output}")
     print(f"device={device}")
@@ -521,7 +545,12 @@ def main() -> int:
     print(f"train rows={len(train_data)} val rows={len(val_data)}")
     if holdout_data is not None:
         print(f"holdout rows={len(holdout_data)} combos={args.holdout_combos}")
-    for epoch in range(1, int(args.epochs) + 1):
+    if args.resume:
+        print(f"resumed from {pathlib.Path(args.resume).expanduser().resolve()} at epoch={start_epoch - 1}")
+    if start_epoch > int(args.epochs):
+        print(f"checkpoint already reached epoch {start_epoch - 1}; target epochs={args.epochs}")
+        return 0
+    for epoch in range(start_epoch, int(args.epochs) + 1):
         start = time.time()
         epoch_weights = loss_weights_for_epoch(args, epoch)
         train_metrics = train_epoch(
