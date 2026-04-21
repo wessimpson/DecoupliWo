@@ -2,8 +2,8 @@
 Next-frame temporal world model.
 
 Architecture: frozen SD VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
-Training:    denoise the next latent frame from history; actions follow env convention a[i]: obs[i]→obs[i+1],
-             so the target slot repeats a[K-1] (same tensor as last history action).
+Training:    denoise the next latent frame from history; cross-attn conditioned on a single action a_t
+             (the transition action a[K-1]: obs[K-1]→obs[K]).
 Inference:   pass the action that leaves the last history state (one step control).
 """
 
@@ -24,8 +24,8 @@ class WorldModel(nn.Module):
 		num_actions: int,
 		cross_attention_dim: int,
 		vae_checkpoint: str | Path | None = None,
-		prediction_type: str = "epsilon",
-		history_len: int = 8,
+		prediction_type: str = "v_prediction",
+		history_len: int = 2,
 		gradient_checkpointing: bool = False,
 		pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
 	) -> None:
@@ -55,12 +55,6 @@ class WorldModel(nn.Module):
 
 	def enable_gradient_checkpointing(self) -> None:
 		self.diffuser.unet.enable_gradient_checkpointing()
-
-	def _actions_for_unet(self, history_actions: torch.Tensor) -> torch.Tensor:
-		"""[B, K] → [B, K+1]: last slot repeats a[K-1] so it matches the transition into the target frame."""
-		device = history_actions.device
-		h = history_actions.to(device)
-		return torch.cat([h, h[:, -1:]], dim=1)
 
 	# ── VAE helpers ───────────────────────────────────────────────
 
@@ -95,13 +89,14 @@ class WorldModel(nn.Module):
 		"""
 		z_hist:           [B, K, C, h, w] clean history latents (frames …, t-1)
 		z_tgt:            [B, C, h, w] clean frame at t (from a[t-1]: obs[t-1]→obs[t])
-		history_actions:  [B, K]  a[i] paired with obs[i] in data (a[i]: obs[i]→obs[i+1])
+		history_actions:  [B, K]  a[i] paired with obs[i] in data; only a[K-1] (last col) is used as a_t
 		timesteps:        [B]
 		noise:            [B, C, h, w]
 		delta_hist:       [B, K, C, h, w] | None
 		gamma:            corruption scale
 
-		Returns (model_pred, noise) both [B, C, h, w].
+		Returns (model_pred, target) both [B, C, h, w]. Target matches scheduler's prediction_type
+		(epsilon → noise, v_prediction → velocity, sample → z_tgt).
 		"""
 		B, K, C, h, w = z_hist.shape
 		device = z_tgt.device
@@ -111,13 +106,22 @@ class WorldModel(nn.Module):
 		elif gamma > 0:
 			z_hist = z_hist + gamma * torch.randn_like(z_hist)
 
-		noisy_tgt = self.diffuser.noise_scheduler.add_noise(z_tgt, noise, timesteps)
+		sched = self.diffuser.noise_scheduler
+		noisy_tgt = sched.add_noise(z_tgt, noise, timesteps)
 
 		x = torch.cat([z_hist, noisy_tgt.unsqueeze(1)], dim=1)  # [B, K+1, C, h, w]
-		all_actions = self._actions_for_unet(history_actions.to(device))
+		a_t = history_actions[:, -1].to(device)
 
-		model_pred = self.diffuser(x, timesteps, all_actions)
-		return model_pred, noise
+		model_pred = self.diffuser(x, timesteps, a_t)
+
+		pt = sched.config.prediction_type
+		if pt == "v_prediction":
+			target = sched.get_velocity(z_tgt, noise, timesteps)
+		elif pt == "sample":
+			target = z_tgt
+		else:
+			target = noise
+		return model_pred, target
 
 	# ── Inference ─────────────────────────────────────────────────
 
@@ -145,10 +149,7 @@ class WorldModel(nn.Module):
 			z_hist = z_hist + gamma * torch.randn_like(z_hist)
 
 		z_hist = z_hist.to(dtype=dtype)
-
-		all_actions = torch.cat(
-			[history_actions.to(device), transition_action.to(device).unsqueeze(1)], dim=1,
-		)
+		a_t = transition_action.to(device=device, dtype=torch.long)
 
 		latents = torch.randn(B, C, h, w, device=device, dtype=dtype)
 		sched = self.diffuser.noise_scheduler
@@ -158,10 +159,14 @@ class WorldModel(nn.Module):
 		ts = sched.timesteps
 		if isinstance(ts, torch.Tensor):
 			ts = ts.to(device=device)
+		sc = self.diffuser.cfg_scale
 		for t in ts:
 			x = torch.cat([z_hist, latents.unsqueeze(1)], dim=1)
 			t_batch = t.unsqueeze(0).expand(B).contiguous()
-			pred = self.diffuser(x, t_batch, all_actions)
+			null_a = torch.full_like(a_t, self.diffuser.null_action_index)
+			pred_c = self.diffuser(x, t_batch, a_t)
+			pred_u = self.diffuser(x, t_batch, null_a)
+			pred = pred_u + sc * (pred_c - pred_u)
 			latents = sched.step(
 				pred,
 				t,
@@ -174,12 +179,11 @@ class WorldModel(nn.Module):
 	# ── Save / load ──────────────────────────────────────────────
 
 	def save_diffuser(self, out_dir: Path) -> None:
-		"""Persist full UNet weights (including LoRA tensors if injected), action head, and DDIM config."""
+		"""Persist UNet weights, action embedding, and DDIM scheduler config."""
 		out_dir = Path(out_dir)
 		out_dir.mkdir(parents=True, exist_ok=True)
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
 		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
-		torch.save(self.diffuser.action_context.state_dict(), out_dir / "action_context.pt")
 		sched_dir = out_dir / "noise_scheduler"
 		sched_dir.mkdir(parents=True, exist_ok=True)
 		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))
@@ -192,7 +196,7 @@ if __name__ == "__main__":
 	import numpy as np
 	from torchvision import transforms
 
-	K = 8
+	K = 2
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 	# ── Load a few frames from first test shard ──────────────────
@@ -231,7 +235,7 @@ if __name__ == "__main__":
 		num_actions=18,
 		cross_attention_dim=768,
 		vae_checkpoint=DEFAULT_VAE_PT,
-		prediction_type="epsilon",
+		prediction_type="v_prediction",
 		history_len=K,
 		pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4",
 	).to(device)
@@ -249,8 +253,8 @@ if __name__ == "__main__":
 	noise = torch.randn_like(z_tgt)
 
 	print("running diffusion_forward ...")
-	pred, tgt_noise = wm.diffusion_forward(z_hist, z_tgt, hist_act, t, noise)
-	print(f"  model_pred={tuple(pred.shape)}  noise={tuple(tgt_noise.shape)}")
-	loss = torch.nn.functional.mse_loss(pred.float(), tgt_noise.float())
+	pred, target = wm.diffusion_forward(z_hist, z_tgt, hist_act, t, noise)
+	print(f"  model_pred={tuple(pred.shape)}  target={tuple(target.shape)}")
+	loss = torch.nn.functional.mse_loss(pred.float(), target.float())
 	print(f"  mse_loss={loss.item():.4f}")
 	print("OK")

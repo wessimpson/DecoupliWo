@@ -52,7 +52,7 @@ def load_world_model(
 		num_actions=num_actions,
 		cross_attention_dim=768,
 		vae_checkpoint=vae_eff,
-		prediction_type="epsilon",
+		prediction_type="v_prediction",
 		history_len=history_len,
 		pretrained_model_name_or_path=pretrained_model_name_or_path,
 	)
@@ -74,17 +74,11 @@ def load_world_model(
 		emb_path = ckpt_dir / "future_action_embedding.pt"
 	if emb_path.exists():
 		wm.diffuser.action_embedding.load_state_dict(_load_sd(emb_path, device))
-	ctx_path = ckpt_dir / "action_context.pt"
-	if ctx_path.exists():
-		wm.diffuser.action_context.load_state_dict(_load_sd(ctx_path, device))
-	else:
-		legacy = ckpt_dir / "action_mlp.pt"
-		if not legacy.exists():
-			legacy = ckpt_dir / "future_action_mlp.pt"
-		if legacy.exists():
+	for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
+		legacy = ckpt_dir / legacy_name
+		if legacy.is_file():
 			raise RuntimeError(
-				f"Checkpoint has legacy {legacy.name} (MLP action head); this build expects action_context.pt "
-				f"(lightweight attention). Retrain or migrate weights."
+				f"Checkpoint has legacy {legacy_name} (MLP action head). Retrain with the current embedding-only diffuser."
 			)
 	return wm
 
@@ -98,7 +92,7 @@ def run_autoregressive(
 	ckpt_dir: str,
 	env: str = "aliens",
 	num_actions: int = 7,
-	history_len: int = 8,
+	history_len: int = 2,
 	num_inference_steps: int = 30,
 	vae_checkpoint: Optional[str] = None,
 ) -> None:
@@ -199,7 +193,7 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit" / "step_0200000"))
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded" / "step_0204960"))
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
@@ -209,7 +203,7 @@ def main() -> None:
 	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--num_actions", type=int, default=7)
-	p.add_argument("--context_len", type=int, default=8, help="History length K (same as training).")
+	p.add_argument("--context_len", type=int, default=2, help="History length K (same as training).")
 	args = p.parse_args()
 	run_autoregressive(
 		ckpt_dir=args.ckpt_dir,

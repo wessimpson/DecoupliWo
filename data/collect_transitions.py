@@ -6,6 +6,8 @@ contains ``obs.npy``, ``action.npy``, ``n_actions.npy``, ``player_x.npy``, ``pla
 This script writes under ``data/transitions/train/<env>/``. GVGAI ``RunDataCollectionAgent`` writes the
 same shard layout to ``data/transitions/train/<game_stem>/``.
 ``obs.npy`` here is stacked RGB uint8; GVGAI uses a fixed grid encoding uint8 ``[N,H,W,3]``.
+
+GVGAI MCTS collection (separate repo, not this file): ``examples/data_collection/run_mcts_data_collection.ps1``.
 """
 import argparse
 from pathlib import Path
