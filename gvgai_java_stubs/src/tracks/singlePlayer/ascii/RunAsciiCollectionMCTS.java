@@ -45,6 +45,7 @@ import java.util.Random;
  *     --gvgai-root &lt;path&gt; \
  *     --repo-root  &lt;path&gt; \
  *     --game       aliens \
+ *     --variant    physics_a \
  *     --out        data/transitions/train/aliens \
  *     --frames     500000 \
  *     --levels     0,1,2,3,4 \
@@ -52,6 +53,13 @@ import java.util.Random;
  *     --chunk-size 5000 \
  *     --seed       42
  * </pre>
+ *
+ * <p>Supported {@code --variant} values (determines the VGDL game rule file;
+ * level files always stay ``{game}_lvl{N}.txt``):
+ * <ul>
+ *   <li>{@code stock} \u2192 ``examples/gridphysics/{game}.txt`` (default)</li>
+ *   <li>{@code physics_a|b|c} \u2192 ``examples/gridphysics/{game}_train_physics_{a|b|c}.txt``</li>
+ * </ul>
  */
 public final class RunAsciiCollectionMCTS {
 
@@ -71,10 +79,10 @@ public final class RunAsciiCollectionMCTS {
 		int episode = 0;
 		long totalFrames = 0L;
 		long startNs = System.nanoTime();
+		Path gamePath = resolveGameFile(a.gvgaiRoot, a.game, a.variant);
 		while (totalFrames < a.totalFrames) {
 			int levelIdx = a.levels.get(episode % a.levels.size());
 			Path levelPath = a.gvgaiRoot.resolve("examples/gridphysics/" + a.game + "_lvl" + levelIdx + ".txt");
-			Path gamePath = a.gvgaiRoot.resolve("examples/gridphysics/" + a.game + ".txt");
 			int episodeSeed = rng.nextInt(Integer.MAX_VALUE);
 
 			ArcadeMachine.runOneGame(
@@ -100,14 +108,41 @@ public final class RunAsciiCollectionMCTS {
 
 			double elapsedS = (System.nanoTime() - startNs) / 1e9;
 			System.out.printf(Locale.ROOT,
-					"[%s lvl%d] episode=%d frames=%d total=%d / %d (%.1f fps, %.1fs)%n",
-					a.game, levelIdx, episode, frames.size(), totalFrames, a.totalFrames,
+					"[%s/%s lvl%d] episode=%d frames=%d total=%d / %d (%.1f fps, %.1fs)%n",
+					a.game, a.variant, levelIdx, episode, frames.size(), totalFrames, a.totalFrames,
 					totalFrames / Math.max(elapsedS, 1e-9), elapsedS);
 		}
 		acc.flush(a.game, extractor.getNativeH(), extractor.getNativeW());
 		System.out.printf(Locale.ROOT,
-				"done: %d frames across %d episodes -> %s%n",
-				totalFrames, episode, a.outDir);
+				"done: %d frames across %d episodes (variant=%s) -> %s%n",
+				totalFrames, episode, a.variant, a.outDir);
+	}
+
+	/**
+	 * Map a variant identifier to its VGDL game-rule file path.
+	 * {@code stock} reuses the base game file; {@code physics_a|b|c} selects
+	 * the matching {@code {game}_train_physics_{a|b|c}.txt} variant.
+	 */
+	private static Path resolveGameFile(Path gvgaiRoot, String game, String variant) {
+		Path base = gvgaiRoot.resolve("examples/gridphysics");
+		Path p;
+		switch (variant) {
+			case "stock":
+				p = base.resolve(game + ".txt");
+				break;
+			case "physics_a":
+			case "physics_b":
+			case "physics_c":
+				p = base.resolve(game + "_train_" + variant + ".txt");
+				break;
+			default:
+				throw new IllegalArgumentException("unknown --variant: " + variant
+						+ " (expected: stock, physics_a, physics_b, physics_c)");
+		}
+		if (!Files.isRegularFile(p))
+			throw new IllegalArgumentException("VGDL not found: " + p
+					+ " \u2014 ensure gvgai/ is checked out at the variants branch (commit 8da36ff5).");
+		return p;
 	}
 
 	/** Parsed command-line arguments. */
@@ -115,6 +150,7 @@ public final class RunAsciiCollectionMCTS {
 		Path gvgaiRoot;
 		Path repoRoot;
 		String game;
+		String variant;
 		Path mappingPath;
 		Path outDir;
 		List<Integer> levels;
@@ -137,6 +173,7 @@ public final class RunAsciiCollectionMCTS {
 			a.gvgaiRoot = Paths.get(require(flags, "--gvgai-root")).toAbsolutePath().normalize();
 			a.repoRoot = Paths.get(require(flags, "--repo-root")).toAbsolutePath().normalize();
 			a.game = require(flags, "--game");
+			a.variant = flags.getOrDefault("--variant", "stock");
 			a.outDir = Paths.get(require(flags, "--out")).toAbsolutePath().normalize();
 			a.totalFrames = Long.parseLong(flags.getOrDefault("--frames", "100000"));
 			a.mctsMs = Long.parseLong(flags.getOrDefault("--mcts-ms", "40"));

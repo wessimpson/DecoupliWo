@@ -40,12 +40,14 @@ DEFAULT_OUT_ROOT = REPO_ROOT / "data" / "transitions"
 DEFAULT_MAPPINGS_ROOT = REPO_ROOT / "world_model" / "ascii" / "mappings"
 MAIN_CLASS = "tracks.singlePlayer.ascii.RunAsciiCollectionMCTS"
 DEFAULT_GAMES = ("aliens", "chopper", "waves")
+DEFAULT_VARIANTS = ("stock", "physics_a", "physics_b", "physics_c")
 TRAIN_TEST_SPLIT = 0.9
 
 
 @dataclass(frozen=True)
 class Run:
 	game: str
+	variant: str
 	split: str
 	frames: int
 	seed: int
@@ -62,8 +64,12 @@ def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 	p.add_argument("--games", type=str, default=",".join(DEFAULT_GAMES),
 		help=f"comma-separated game names (default: {','.join(DEFAULT_GAMES)})")
+	p.add_argument("--variants", type=str, default=",".join(DEFAULT_VARIANTS),
+		help=("comma-separated VGDL variants per game; the per-game frame budget is "
+			f"divided evenly across variants (default: {','.join(DEFAULT_VARIANTS)}). "
+			"Valid values: stock, physics_a, physics_b, physics_c."))
 	p.add_argument("--frames-per-game", type=int, default=500_000,
-		help="total frames (train + test) to collect per game")
+		help="total frames (train + test) to collect per game, split evenly across variants")
 	p.add_argument("--mcts-ms", type=int, default=40, help="per-tick MCTS budget (ms)")
 	p.add_argument("--levels", type=str, default="0,1,2,3,4", help="comma-separated level indices to rotate")
 	p.add_argument("--chunk-size", type=int, default=5_000, help="frames per shard")
@@ -82,14 +88,21 @@ def parse_args() -> argparse.Namespace:
 	return p.parse_args()
 
 
-def build_runs(games: list[str], frames_per_game: int, base_seed: int) -> list[Run]:
-	train_frames = int(frames_per_game * TRAIN_TEST_SPLIT)
-	test_frames = frames_per_game - train_frames
+def build_runs(
+	games: list[str],
+	variants: list[str],
+	frames_per_game: int,
+	base_seed: int,
+) -> list[Run]:
+	frames_per_variant = frames_per_game // len(variants)
+	train_frames = int(frames_per_variant * TRAIN_TEST_SPLIT)
+	test_frames = frames_per_variant - train_frames
 	runs: list[Run] = []
 	for g_idx, game in enumerate(games):
-		game_seed = base_seed + 10_000 * g_idx
-		runs.append(Run(game=game, split="train", frames=train_frames, seed=game_seed))
-		runs.append(Run(game=game, split="test", frames=test_frames, seed=game_seed + 1))
+		for v_idx, variant in enumerate(variants):
+			seed = base_seed + 10_000 * g_idx + 100 * v_idx
+			runs.append(Run(game=game, variant=variant, split="train", frames=train_frames, seed=seed))
+			runs.append(Run(game=game, variant=variant, split="test", frames=test_frames, seed=seed + 1))
 	return runs
 
 
@@ -107,6 +120,7 @@ def run_java_collector(args: argparse.Namespace, run: Run) -> int:
 		"--gvgai-root", str(args.gvgai_root),
 		"--repo-root", str(REPO_ROOT),
 		"--game", run.game,
+		"--variant", run.variant,
 		"--out", str(out_dir),
 		"--mapping", str(mapping_path),
 		"--frames", str(run.frames),
@@ -116,7 +130,7 @@ def run_java_collector(args: argparse.Namespace, run: Run) -> int:
 		"--seed", str(run.seed),
 	]
 
-	print(f"\n=== [{run.split}] {run.game}  frames={run.frames:,}  seed={run.seed} ===")
+	print(f"\n=== [{run.split}] {run.game}/{run.variant}  frames={run.frames:,}  seed={run.seed} ===")
 	print("  " + " ".join(cmd))
 	if args.dry_run:
 		return 0
@@ -127,18 +141,27 @@ def run_java_collector(args: argparse.Namespace, run: Run) -> int:
 def main() -> int:
 	args = parse_args()
 	games = [g.strip() for g in args.games.split(",") if g.strip()]
+	variants = [v.strip() for v in args.variants.split(",") if v.strip()]
 	if not games:
 		print("no games specified", file=sys.stderr)
+		return 2
+	if not variants:
+		print("no variants specified", file=sys.stderr)
+		return 2
+	allowed = set(DEFAULT_VARIANTS)
+	bad = [v for v in variants if v not in allowed]
+	if bad:
+		print(f"unknown variant(s): {bad} (valid: {sorted(allowed)})", file=sys.stderr)
 		return 2
 	if not args.gvgai_root.is_dir():
 		print(f"gvgai root missing: {args.gvgai_root}", file=sys.stderr)
 		return 2
 
-	runs = build_runs(games, args.frames_per_game, args.seed)
+	runs = build_runs(games, variants, args.frames_per_game, args.seed)
 	for run in runs:
 		rc = run_java_collector(args, run)
 		if rc != 0:
-			print(f"collector failed for {run.split}/{run.game} (exit {rc})", file=sys.stderr)
+			print(f"collector failed for {run.split}/{run.game}/{run.variant} (exit {rc})", file=sys.stderr)
 			return rc
 	print(f"\nall done -> {args.out_root}")
 	return 0
