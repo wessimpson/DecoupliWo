@@ -31,6 +31,7 @@ import argparse
 import os
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,7 @@ MAIN_CLASS = "tracks.singlePlayer.ascii.RunAsciiCollectionMCTS"
 DEFAULT_GAMES = ("aliens", "chopper", "waves")
 DEFAULT_VARIANTS = ("stock", "physics_a", "physics_b", "physics_c")
 TRAIN_TEST_SPLIT = 0.9
+DEFAULT_JOBS = max(1, (os.cpu_count() or 1) - 1)
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,10 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--java-bin", type=str, default="java", help="path to java executable")
 	p.add_argument("--mappings-root", type=Path, default=DEFAULT_MAPPINGS_ROOT,
 		help="directory containing <game>.json sprite-to-char mappings")
+	p.add_argument("--jobs", type=int, default=DEFAULT_JOBS,
+		help=(f"number of Java collectors to run in parallel (default: {DEFAULT_JOBS}, "
+			f"i.e. os.cpu_count()-1). Each run is single-threaded CPU-bound MCTS, so "
+			f"wall-clock scales ~linearly with --jobs up to the vCPU count."))
 	p.add_argument("--dry-run", action="store_true",
 		help="print the java commands that would run and exit")
 	return p.parse_args()
@@ -106,13 +112,21 @@ def build_runs(
 	return runs
 
 
-def run_java_collector(args: argparse.Namespace, run: Run) -> int:
+def build_java_command(args: argparse.Namespace, run: Run) -> tuple[list[str], Path]:
+	"""Return (cmd, cwd) for the Java collector for this run.
+
+	Each (game, variant, split) writes to its own subdirectory
+	``<out-root>/<split>/<game>/<variant>/shard_*`` so concurrent runs never
+	race on ``ShardAccumulator.nextFreeShardIndex``. The training dataset
+	loader recurses with ``rglob("shard_*")``, so this nested layout is
+	transparent to downstream code.
+	"""
 	classpath = args.classpath or default_classpath(args.gvgai_root)
 	mapping_path = args.mappings_root / f"{run.game}.json"
 	if not mapping_path.is_file():
 		raise FileNotFoundError(f"mapping not found: {mapping_path}")
 
-	out_dir = args.out_root / run.split / run.game
+	out_dir = args.out_root / run.split / run.game / run.variant
 	out_dir.mkdir(parents=True, exist_ok=True)
 
 	cmd = [
@@ -129,13 +143,63 @@ def run_java_collector(args: argparse.Namespace, run: Run) -> int:
 		"--chunk-size", str(args.chunk_size),
 		"--seed", str(run.seed),
 	]
+	return cmd, Path(args.gvgai_root)
 
-	print(f"\n=== [{run.split}] {run.game}/{run.variant}  frames={run.frames:,}  seed={run.seed} ===")
-	print("  " + " ".join(cmd))
+
+def _invoke(cmd: list[str], cwd: str) -> int:
+	"""ProcessPool worker: fork/exec the Java collector and wait.
+
+	Kept at module scope so it is picklable by ``ProcessPoolExecutor``.
+	"""
+	return subprocess.run(cmd, cwd=cwd).returncode
+
+
+def run_all_collectors(args: argparse.Namespace, runs: list[Run]) -> int:
+	"""Launch all Java collectors, up to ``args.jobs`` at a time.
+
+	Returns the first non-zero exit code encountered, or 0 if all succeeded.
+	A failed run cancels not-yet-started runs but lets in-flight ones finish
+	(killing them mid-episode would leave half-written shards).
+	"""
+	jobs = max(1, min(int(args.jobs), len(runs)))
+	prepared: list[tuple[Run, list[str], Path]] = []
+	for run in runs:
+		cmd, cwd = build_java_command(args, run)
+		prepared.append((run, cmd, cwd))
+		print(f"=== [{run.split}] {run.game}/{run.variant}  frames={run.frames:,}  seed={run.seed} ===")
+		print("  " + " ".join(cmd))
+
 	if args.dry_run:
 		return 0
-	proc = subprocess.run(cmd, cwd=str(args.gvgai_root))
-	return proc.returncode
+
+	print(f"\nlaunching {len(prepared)} run(s) with --jobs={jobs}\n")
+
+	if jobs == 1:
+		for run, cmd, cwd in prepared:
+			rc = _invoke(cmd, str(cwd))
+			if rc != 0:
+				print(f"collector failed for {run.split}/{run.game}/{run.variant} (exit {rc})", file=sys.stderr)
+				return rc
+		return 0
+
+	first_failure = 0
+	with ProcessPoolExecutor(max_workers=jobs) as pool:
+		future_to_run = {
+			pool.submit(_invoke, cmd, str(cwd)): run
+			for run, cmd, cwd in prepared
+		}
+		for fut in as_completed(future_to_run):
+			run = future_to_run[fut]
+			try:
+				rc = fut.result()
+			except Exception as exc:
+				print(f"collector crashed for {run.split}/{run.game}/{run.variant}: {exc}", file=sys.stderr)
+				first_failure = first_failure or 1
+				continue
+			if rc != 0:
+				print(f"collector failed for {run.split}/{run.game}/{run.variant} (exit {rc})", file=sys.stderr)
+				first_failure = first_failure or rc
+	return first_failure
 
 
 def main() -> int:
@@ -158,11 +222,9 @@ def main() -> int:
 		return 2
 
 	runs = build_runs(games, variants, args.frames_per_game, args.seed)
-	for run in runs:
-		rc = run_java_collector(args, run)
-		if rc != 0:
-			print(f"collector failed for {run.split}/{run.game}/{run.variant} (exit {rc})", file=sys.stderr)
-			return rc
+	rc = run_all_collectors(args, runs)
+	if rc != 0:
+		return rc
 	print(f"\nall done -> {args.out_root}")
 	return 0
 
