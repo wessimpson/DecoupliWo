@@ -197,6 +197,56 @@ def preprocess_contiguous_ar(
 	}
 
 
+def obs_array_to_pixels(obs: np.ndarray, resize_to: tuple[int, int] | None = None) -> torch.Tensor:
+	"""Full-shard ``obs`` [N, …] → stacked pixels [N, 3, H, W] in [-1, 1] (same rules as ``preprocess``)."""
+	if resize_to is not None:
+		resize_to = _resize_hw_divisible_by_8(resize_to)
+		tx = transforms.Compose([IMG_TRANSFORMS, transforms.Resize(resize_to, antialias=True)])
+		return torch.stack([tx(_rgb_hwc(f)) for f in obs], dim=0)
+
+	def native_tx(f: np.ndarray) -> torch.Tensor:
+		r = _rgb_hwc(f)
+		H, W = crop_hw_div8(*r.shape[:2])
+		return IMG_TRANSFORMS(r[:H, :W])
+
+	return torch.stack([native_tx(f) for f in obs], dim=0)
+
+
+def preprocess_latent(
+	examples: dict[str, np.ndarray],
+	history_len: int,
+) -> dict[str, torch.Tensor]:
+	"""Windowed latent shard row → tensors (same timeline as ``preprocess``)."""
+	z = torch.from_numpy(np.asarray(examples["latent"], dtype=np.float32))
+	actions = examples["action"].astype(np.int64)
+	K = history_len
+	return {
+		"history_latents": z[:K],
+		"target_latent": z[K],
+		"history_actions": torch.from_numpy(actions[:K]).long(),
+	}
+
+
+def preprocess_contiguous_latent_ar(
+	examples: dict[str, np.ndarray],
+	history_len: int,
+	num_future_frames: int,
+) -> dict[str, torch.Tensor]:
+	"""AR eval slice over pre-encoded latents (decode to RGB in the trainer for PSNR if needed)."""
+	K, Hn = history_len, int(num_future_frames)
+	need = K + Hn
+	if examples["latent"].shape[0] < need or examples["action"].shape[0] < need:
+		raise ValueError(f"need {need} rows, got latent={examples['latent'].shape[0]}")
+	z = torch.from_numpy(np.asarray(examples["latent"][:need], dtype=np.float32))
+	actions = examples["action"][:need].astype(np.int64)
+	return {
+		"history_latents": z[:K],
+		"history_actions": torch.from_numpy(actions[:K]).long(),
+		"gt_future_latents": z[K:],
+		"future_action_frames": torch.from_numpy(actions[K:]).long(),
+	}
+
+
 class RolloutVideoDataset(Dataset):
 	"""Lazy, mmap-backed windowed dataset over rollout shards."""
 
@@ -323,6 +373,111 @@ class RolloutVideoDataset(Dataset):
 		}
 		return preprocess_contiguous_ar_ascii(sample, history_len, num_future_frames, canvas)
 
+
+class EncodedRolloutVideoDataset(Dataset):
+	"""Same windowing as ``RolloutVideoDataset``, but each shard has ``latent.npy`` (+ ``action.npy``)."""
+
+	def __init__(
+		self,
+		data_dir: str | Path,
+		seq_len: int,
+		stride: int = 1,
+		num_actions: int | None = None,
+		transform: SampleTransform | None = None,
+	) -> None:
+		super().__init__()
+		self.data_dir = Path(data_dir)
+		self.seq_len = int(seq_len)
+		self.stride = max(1, int(stride))
+		self.num_actions = None if num_actions is None else int(num_actions)
+		self.transform = transform
+
+		paths = sorted(
+			p for p in self.data_dir.glob("shard_*")
+			if (p / "latent.npy").exists() and (p / "action.npy").exists()
+		)
+		assert paths, f"No shard_* with latent.npy/action.npy under {self.data_dir}"
+
+		self._shards: list[ShardMeta] = []
+		self._cumulative_windows: list[int] = []
+		self._worker_cache: dict[str, dict[str, np.memmap]] = {}
+		self.n_actions = 0
+		total_windows = 0
+
+		for path in paths:
+			lat = np.load(path / "latent.npy", mmap_mode="r")
+			num_rows = int(lat.shape[0])
+
+			n_actions_path = path / "n_actions.npy"
+			if n_actions_path.exists():
+				n_actions = int(np.load(n_actions_path))
+			elif self.num_actions is not None:
+				n_actions = self.num_actions
+			else:
+				raise KeyError(f"{path}: need n_actions.npy or fixed num_actions")
+
+			num_windows = max(0, (num_rows - self.seq_len) // self.stride + 1)
+			total_windows += num_windows
+			self._shards.append(ShardMeta(
+				path=path, num_rows=num_rows, num_windows=num_windows,
+				cumulative_windows=total_windows, n_actions=n_actions,
+				game_name=self.data_dir.name,
+			))
+			self._cumulative_windows.append(total_windows)
+			self.n_actions = max(self.n_actions, n_actions)
+
+		self._total_windows = total_windows
+
+	def with_transform(self, transform: SampleTransform) -> EncodedRolloutVideoDataset:
+		cloned = copy(self)
+		cloned.transform = transform
+		cloned._worker_cache = {}
+		return cloned
+
+	def __len__(self) -> int:
+		return self._total_windows
+
+	def _resolve_index(self, idx: int) -> tuple[ShardMeta, int]:
+		assert 0 <= idx < self._total_windows
+		si = bisect_right(self._cumulative_windows, idx)
+		meta = self._shards[si]
+		prev = 0 if si == 0 else self._cumulative_windows[si - 1]
+		return meta, (idx - prev) * self.stride
+
+	def _get_shard(self, meta: ShardMeta) -> dict[str, np.memmap]:
+		key = str(meta.path)
+		if key not in self._worker_cache:
+			self._worker_cache[key] = {
+				"latent": np.load(meta.path / "latent.npy", mmap_mode="r"),
+				"action": np.load(meta.path / "action.npy", mmap_mode="r"),
+			}
+		return self._worker_cache[key]
+
+	def __getitem__(self, idx: int):
+		meta, row = self._resolve_index(idx)
+		shard = self._get_shard(meta)
+		sample = {
+			"latent": shard["latent"][row : row + self.seq_len],
+			"action": shard["action"][row : row + self.seq_len],
+		}
+		return self.transform(sample) if self.transform is not None else sample
+
+	def try_contiguous_ar(
+		self,
+		idx: int,
+		history_len: int,
+		num_future_frames: int,
+	) -> dict[str, torch.Tensor] | None:
+		meta, row = self._resolve_index(idx)
+		need = history_len + int(num_future_frames)
+		if row + need > meta.num_rows:
+			return None
+		shard = self._get_shard(meta)
+		sample = {
+			"latent": shard["latent"][row : row + need],
+			"action": shard["action"][row : row + need],
+		}
+		return preprocess_contiguous_latent_ar(sample, history_len, num_future_frames)
 
 
 """test"""

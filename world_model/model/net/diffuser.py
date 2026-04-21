@@ -19,25 +19,8 @@ from diffusers import DDIMScheduler, UNet2DConditionModel
 SD_DEFAULT_IN_CHANNELS: int = 4
 
 
-class _LightweightActionContext(nn.Module):
-	"""Single pre-norm self-attention over F action tokens (residual), replaces MLP mix."""
-
-	def __init__(self, dim: int, num_heads: int) -> None:
-		super().__init__()
-		if dim % num_heads != 0:
-			raise ValueError(f"cross_attention_dim={dim} must be divisible by num_heads={num_heads}")
-		self.norm = nn.LayerNorm(dim)
-		self.attn = nn.MultiheadAttention(dim, num_heads, dropout=0.0, batch_first=True)
-
-	def forward(self, x: torch.Tensor) -> torch.Tensor:
-		# x: [B, F, D]
-		h = self.norm(x)
-		y, _ = self.attn(h, h, h, need_weights=False)
-		return x + y
-
-
 class Diffuser(nn.Module):
-	"""UNet2DConditionModel (SD 1.4): latents ``[B, K+1, C, H, W]`` folded to ``[B, (K+1)*C, H, W]``."""
+	"""UNet2DConditionModel (compact): latents ``[B, K+1, C, H, W]`` folded to ``[B, (K+1)*C, H, W]``."""
 
 	def __init__(
 		self,
@@ -45,7 +28,7 @@ class Diffuser(nn.Module):
 		latent_channels: int,
 		cross_attention_dim: int,
 		history_len: int,
-		prediction_type: Literal["epsilon", "sample", "v_prediction"] = "epsilon",
+		prediction_type: Literal["epsilon", "sample", "v_prediction"] = "v_prediction",
 		pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
 		num_action_attn_heads: int = 4,
 		latent_upsample: int = 1,
@@ -59,8 +42,25 @@ class Diffuser(nn.Module):
 		assert self.latent_upsample >= 1, f"latent_upsample must be >= 1, got {latent_upsample}"
 		stacked_in = self.num_latent_frames * self.latent_channels
 
-		unet = UNet2DConditionModel.from_pretrained(
-			pretrained_model_name_or_path, subfolder="unet", low_cpu_mem_usage=False,
+		unet = UNet2DConditionModel(
+			sample_size=None,
+			in_channels=stacked_in,
+			out_channels=latent_channels,
+			cross_attention_dim=cross_attention_dim,
+			layers_per_block=1,
+			block_out_channels=(160, 320, 320),
+			down_block_types=(
+				"CrossAttnDownBlock2D",
+				"CrossAttnDownBlock2D",
+				"DownBlock2D",
+			),
+			up_block_types=(
+				"UpBlock2D",
+				"CrossAttnUpBlock2D",
+				"CrossAttnUpBlock2D",
+			),
+			attention_head_dim=(8, 8, 8),
+			norm_num_groups=32,
 		)
 
 		old_conv = unet.conv_in
@@ -119,6 +119,8 @@ class Diffuser(nn.Module):
 		self.action_embedding = nn.Embedding(num_actions, cross_attention_dim)
 		self.action_context = _LightweightActionContext(cross_attention_dim, num_action_attn_heads)
 		nn.init.normal_(self.action_embedding.weight, std=0.02)
+		with torch.no_grad():
+			self.action_embedding.weight[self.null_action_index].zero_()
 
 		self.noise_scheduler = DDIMScheduler.from_pretrained(
 			pretrained_model_name_or_path, subfolder="scheduler",
@@ -133,7 +135,7 @@ class Diffuser(nn.Module):
 		self,
 		noisy_latents: torch.Tensor,
 		timesteps: torch.Tensor,
-		actions: torch.Tensor,
+		action: torch.Tensor,
 	) -> torch.Tensor:
 		"""Stacked-frame denoise: predict noise / v for the next frame.
 

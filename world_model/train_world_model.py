@@ -37,7 +37,7 @@ from world_model.model.world_model import WorldModel
 
 CONTEXT_LEN = 2
 CROSS_ATTENTION_DIM = 768
-PREDICTION_TYPE = "epsilon"
+PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 
 DEFAULT_PIXEL_VAE_PT = str(Path("world_model") / "checkpoints" / "vae" / "vae.pt")
@@ -296,10 +296,10 @@ def main() -> None:
 					Bv = z_hist_val.shape[0]
 					ts = torch.randint(0, world_model.num_train_timesteps, (Bv,), device=device).long()
 					ns = torch.randn_like(z_tgt_val, dtype=world_model.diffuser.unet.dtype)
-					pred_v, _ = world_model.diffusion_forward(
+					pred_v, tgt_v = world_model.diffusion_forward(
 						z_hist_val, z_tgt_val, val_hist_act, ts, ns,
 					)
-					val_mse = F.mse_loss(pred_v.float(), ns.float())
+					val_mse = F.mse_loss(pred_v.float(), tgt_v.float())
 					writer.add_scalar("val/mse", val_mse.item(), global_step)
 
 					# Autoregressive val rollout: num_inference_steps per predicted frame.
@@ -404,11 +404,11 @@ def main() -> None:
 			noise = torch.randn_like(z_tgt, dtype=world_model.diffuser.unet.dtype)
 
 			with autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-				model_pred, target_noise = world_model.diffusion_forward(
+				model_pred, target = world_model.diffusion_forward(
 					z_hist, z_tgt, hist_actions, timesteps, noise,
 					delta_hist=delta_hist, gamma=gamma_eff,
 				)
-				loss = F.mse_loss(model_pred.float(), target_noise.float())
+				loss = F.mse_loss(model_pred.float(), target.float())
 
 			if scaler.is_enabled():
 				scaler.scale(loss).backward()
@@ -421,7 +421,13 @@ def main() -> None:
 				sqrt_a = alpha_bar.sqrt().view(B, 1, 1, 1)
 				sqrt_1ma = (1 - alpha_bar).sqrt().view(B, 1, 1, 1)
 				noisy_tgt = (sqrt_a * z_tgt + sqrt_1ma * noise).to(model_pred.dtype)
-				z_hat = (noisy_tgt - sqrt_1ma * model_pred) / sqrt_a.clamp(min=1e-8)
+				pt = world_model.diffuser.noise_scheduler.config.prediction_type
+				if pt == "v_prediction":
+					z_hat = sqrt_a * noisy_tgt - sqrt_1ma * model_pred
+				elif pt == "sample":
+					z_hat = model_pred
+				else:
+					z_hat = (noisy_tgt - sqrt_1ma * model_pred) / sqrt_a.clamp(min=1e-8)
 				delta_fut = z_hat - z_tgt.to(z_hat.dtype)  # [B, C, h, w]
 				error_buffer.push(future_residuals_as_history_block(delta_fut, K))
 
