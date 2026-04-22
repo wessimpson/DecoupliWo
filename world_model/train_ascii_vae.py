@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -50,15 +51,23 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--warmup_steps", type=int, default=500, help="linear LR warmup to --lr over this many optimizer steps")
 	p.add_argument("--canvas_h", type=int, default=CANVAS_H)
 	p.add_argument("--canvas_w", type=int, default=CANVAS_W)
+	p.add_argument("--refresh_every", type=int, default=0,
+		help="rescan --train_dir every N optimizer steps to pick up newly-written shards (0 = off)")
+	p.add_argument("--sync_from", type=str, default=None,
+		help="rsync this path into --train_dir before each refresh (e.g. Drive -> local SSD streaming)")
 	return p.parse_args()
 
 
-def discover_shards(root: Path) -> list[Path]:
-	out = sorted(
+def _scan_shards(root: Path) -> list[Path]:
+	return sorted(
 		p
 		for p in root.rglob("shard_*")
 		if p.is_dir() and (p / "obs.npy").exists() and (p / "action.npy").exists()
 	)
+
+
+def discover_shards(root: Path) -> list[Path]:
+	out = _scan_shards(root)
 	assert out, f"no shards under {root}"
 	return out
 
@@ -66,12 +75,26 @@ def discover_shards(root: Path) -> list[Path]:
 class AllAsciiFramesDataset(Dataset):
 	def __init__(self, root: Path, canvas_h: int, canvas_w: int) -> None:
 		super().__init__()
+		self.root = Path(root)
 		self.canvas_h = int(canvas_h)
 		self.canvas_w = int(canvas_w)
 		self.paths: list[Path] = []
 		self.ends: list[int] = []
-		o = 0
-		for p in discover_shards(root):
+		self.n = 0
+		self.refresh()
+		assert self.ends, f"empty dataset at {self.root}"
+
+	def __len__(self) -> int:
+		return self.n
+
+	def refresh(self) -> int:
+		"""Rescan ``self.root`` and append any previously-unseen shards; returns the number of new frames added."""
+		seen = set(self.paths)
+		added = 0
+		o = self.n
+		for p in _scan_shards(self.root):
+			if p in seen:
+				continue
 			arr = np.load(p / "obs.npy", mmap_mode="r")
 			assert arr.dtype == np.uint8 and arr.ndim == 3, (
 				f"expected uint8[N,H,W] ASCII shard, got dtype={arr.dtype} ndim={arr.ndim} at {p}"
@@ -82,11 +105,9 @@ class AllAsciiFramesDataset(Dataset):
 			self.paths.append(p)
 			o += n
 			self.ends.append(o)
-		assert self.ends, "empty dataset"
-		self.n = self.ends[-1]
-
-	def __len__(self) -> int:
-		return self.n
+			added += n
+		self.n = o
+		return added
 
 	def _loc(self, i: int) -> tuple[Path, int]:
 		si = bisect.bisect_right(self.ends, i)
@@ -97,6 +118,25 @@ class AllAsciiFramesDataset(Dataset):
 		frame = np.asarray(np.load(p / "obs.npy", mmap_mode="r")[r])  # [H, W] uint8
 		padded = pad_to_canvas(frame, self.canvas_h, self.canvas_w, PAD_BYTE)
 		return torch.from_numpy(padded).long()
+
+
+def _maybe_sync(args: argparse.Namespace) -> None:
+	if not args.sync_from:
+		return
+	src = str(args.sync_from).rstrip("/") + "/"
+	dst = str(args.train_dir).rstrip("/") + "/"
+	subprocess.run(["rsync", "-a", src, dst], check=True)
+
+
+def _build_train_loader(train_ds: AllAsciiFramesDataset, args: argparse.Namespace, device: torch.device) -> DataLoader:
+	return DataLoader(
+		train_ds,
+		batch_size=args.batch_size,
+		shuffle=True,
+		num_workers=args.num_workers,
+		pin_memory=device.type == "cuda",
+		persistent_workers=args.num_workers > 0,
+	)
 
 
 def per_cell_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
@@ -140,16 +180,10 @@ def main() -> None:
 	np.random.seed(args.seed)
 	device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
+	_maybe_sync(args)
 	train_ds = AllAsciiFramesDataset(Path(args.train_dir), args.canvas_h, args.canvas_w)
 	val_ds = AllAsciiFramesDataset(Path(args.val_dir), args.canvas_h, args.canvas_w)
-	loader = DataLoader(
-		train_ds,
-		batch_size=args.batch_size,
-		shuffle=True,
-		num_workers=args.num_workers,
-		pin_memory=device.type == "cuda",
-		persistent_workers=args.num_workers > 0,
-	)
+	loader = _build_train_loader(train_ds, args, device)
 	rng = np.random.default_rng(args.seed)
 	k = min(args.val_batch_size, len(val_ds))
 	idx = rng.choice(len(val_ds), size=k, replace=False) if k < len(val_ds) else np.arange(len(val_ds))
@@ -213,7 +247,19 @@ def main() -> None:
 				Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 				torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
 
+			refreshed = False
+			if args.refresh_every > 0 and step % args.refresh_every == 0:
+				_maybe_sync(args)
+				added = train_ds.refresh()
+				if added > 0:
+					writer.add_scalar("train/dataset_frames", float(len(train_ds)), step)
+					print(f"[step {step}] refreshed +{added:,} frames -> {len(train_ds):,}")
+					refreshed = True
+
 			if step >= total_steps:
+				break
+			if refreshed:
+				loader = _build_train_loader(train_ds, args, device)
 				break
 	pbar.close()
 
