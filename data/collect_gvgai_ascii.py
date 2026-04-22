@@ -112,6 +112,30 @@ def build_runs(
 	return runs
 
 
+def round_robin_by_game(runs: list[Run]) -> list[Run]:
+	"""Re-order ``runs`` so the first slice contains one run per game, then the second, etc.
+
+	``build_runs`` emits runs grouped game-by-game. ``ProcessPoolExecutor`` submits in that
+	order, so with ``--jobs < len(games)*len(variants)*2`` the first workers all collect the
+	same game before the next game starts. Interleaving by game here means the first
+	``len(games)`` workers each cover a different game, so shards from every game begin
+	appearing on disk (and on Drive, once the uploader flushes them) roughly in parallel —
+	which is what the downstream VAE trainer wants so each mini-batch mixes games even when
+	collection is still in-progress.
+	"""
+	by_game: dict[str, list[Run]] = {}
+	for r in runs:
+		by_game.setdefault(r.game, []).append(r)
+	out: list[Run] = []
+	while by_game:
+		for game in list(by_game):
+			bucket = by_game[game]
+			out.append(bucket.pop(0))
+			if not bucket:
+				del by_game[game]
+	return out
+
+
 def build_java_command(args: argparse.Namespace, run: Run) -> tuple[list[str], Path]:
 	"""Return (cmd, cwd) for the Java collector for this run.
 
@@ -221,7 +245,7 @@ def main() -> int:
 		print(f"gvgai root missing: {args.gvgai_root}", file=sys.stderr)
 		return 2
 
-	runs = build_runs(games, variants, args.frames_per_game, args.seed)
+	runs = round_robin_by_game(build_runs(games, variants, args.frames_per_game, args.seed))
 	rc = run_all_collectors(args, runs)
 	if rc != 0:
 		return rc
