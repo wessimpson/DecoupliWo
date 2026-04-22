@@ -1,21 +1,30 @@
 """
 Next-frame temporal world model.
 
-Architecture: frozen SD VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
-Training:    denoise the next latent frame from history; cross-attn conditioned on a single action a_t
-             (the transition action a[K-1]: obs[K-1]→obs[K]).
+Architecture: frozen VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
+	* ``modality="pixel"``: SD VAE over RGB frames (original behaviour).
+	* ``modality="ascii"``: :class:`ASCIIVAE` over uint8 ASCII tile grids; latents
+	  are still continuous ``[B, C, H, W]`` so the diffuser call sites are unchanged.
+Training:    denoise the next latent frame from history; actions follow env convention a[i]: obs[i]->obs[i+1],
+             so the target slot repeats a[K-1] (same tensor as last history action).
 Inference:   pass the action that leaves the last history state (one step control).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import torch
 import torch.nn as nn
 
-from world_model.model.net import Diffuser, VAE
+from world_model.model.net import ASCIIVAE, Diffuser, VAE, load_ascii_vae
+from world_model.model.net.ascii_vae import DEFAULT_ASCII_VAE_PT
 from world_model.model.net.vae import DEFAULT_VAE_PT
+
+Modality = Literal["pixel", "ascii"]
+
+ASCII_DIFFUSER_LATENT_UPSAMPLE: int = 2
 
 
 class WorldModel(nn.Module):
@@ -24,16 +33,24 @@ class WorldModel(nn.Module):
 		num_actions: int,
 		cross_attention_dim: int,
 		vae_checkpoint: str | Path | None = None,
-		prediction_type: str = "v_prediction",
+		prediction_type: str = "epsilon",
 		history_len: int = 2,
 		gradient_checkpointing: bool = False,
 		pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
+		modality: Modality = "pixel",
 	) -> None:
 		super().__init__()
 		self.history_len = history_len
+		self.modality: Modality = modality
 
-		pt = Path(DEFAULT_VAE_PT if vae_checkpoint is None else vae_checkpoint)
-		self.vae = VAE(checkpoint=pt)
+		if modality == "pixel":
+			pt = Path(DEFAULT_VAE_PT if vae_checkpoint is None else vae_checkpoint)
+			self.vae: nn.Module = VAE(checkpoint=pt)
+		elif modality == "ascii":
+			pt = Path(DEFAULT_ASCII_VAE_PT if vae_checkpoint is None else vae_checkpoint)
+			self.vae = load_ascii_vae(pt)
+		else:
+			raise ValueError(f"Unknown modality={modality!r}; expected 'pixel' or 'ascii'")
 		self.vae.freeze()
 		self.latent_channels = self.vae.latent_channels
 
@@ -44,6 +61,7 @@ class WorldModel(nn.Module):
 			history_len=history_len,
 			prediction_type=prediction_type,
 			pretrained_model_name_or_path=pretrained_model_name_or_path,
+			latent_upsample=ASCII_DIFFUSER_LATENT_UPSAMPLE if modality == "ascii" else 1,
 		)
 		if gradient_checkpointing:
 			self.diffuser.unet.enable_gradient_checkpointing()
@@ -58,21 +76,28 @@ class WorldModel(nn.Module):
 
 	# ── VAE helpers ───────────────────────────────────────────────
 
-	def encode_video(self, pixels: torch.Tensor) -> torch.Tensor:
-		"""[B,T,3,H,W] → [B,T,C,h,w] scaled latents (no grad)."""
-		return self.vae.encode_video(pixels.to(next(self.vae.parameters()).device))
+	def _vae_device(self) -> torch.device:
+		return next(self.vae.parameters()).device
+
+	def encode_video(self, observations: torch.Tensor) -> torch.Tensor:
+		"""Pixel: [B,T,3,H,W] float -> [B,T,C,h,w]. ASCII: [B,T,H,W] long -> [B,T,C,H,W]."""
+		return self.vae.encode_video(observations.to(self._vae_device()))
 
 	def decode_video(self, latents: torch.Tensor) -> torch.Tensor:
-		"""[B,T,C,h,w] → [B,T,3,H,W] (no grad)."""
-		return self.vae.decode_video(latents.to(next(self.vae.parameters()).device))
+		"""Pixel: [B,T,C,h,w] -> [B,T,3,H,W]. ASCII: [B,T,C,H,W] -> [B,T,V,H,W] logits."""
+		return self.vae.decode_video(latents.to(self._vae_device()))
 
-	def encode_frames(self, pixels: torch.Tensor) -> torch.Tensor:
-		"""[B,3,H,W] → [B,C,h,w] scaled latents (no grad)."""
-		return self.vae.encode_pixels(pixels.to(next(self.vae.parameters()).device))
+	def encode_frames(self, observations: torch.Tensor) -> torch.Tensor:
+		"""Pixel: [B,3,H,W] float -> [B,C,h,w]. ASCII: [B,H,W] long -> [B,C,H,W]."""
+		x = observations.to(self._vae_device())
+		if self.modality == "ascii":
+			assert isinstance(self.vae, ASCIIVAE)
+			return self.vae.encode_ids(x)
+		return self.vae.encode_pixels(x)
 
 	def decode_frames(self, latents: torch.Tensor) -> torch.Tensor:
-		"""[B,C,h,w] → [B,3,H,W] (no grad)."""
-		return self.vae.decode_latents(latents.to(next(self.vae.parameters()).device))
+		"""Pixel: [B,C,h,w] -> [B,3,H,W]. ASCII: [B,C,H,W] -> [B,V,H,W] logits."""
+		return self.vae.decode_latents(latents.to(self._vae_device()))
 
 	# ── Training forward ─────────────────────────────────────────
 

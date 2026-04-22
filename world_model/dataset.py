@@ -14,6 +14,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
+from world_model.ascii.constants import CANVAS_H, CANVAS_W, PAD_BYTE
+
 
 @dataclass(frozen=True)
 class ShardMeta:
@@ -79,6 +81,80 @@ def preprocess(
 		"history_frames": frames[:K],                            # [K, 3, H, W]
 		"target_frame": frames[K],                               # [3, H, W]
 		"history_actions": torch.from_numpy(actions[:K]).long(),  # [K]
+	}
+
+
+def _pad_ascii_to_canvas(
+	frames: np.ndarray,
+	canvas_h: int,
+	canvas_w: int,
+	pad_byte: int,
+) -> np.ndarray:
+	"""Pad ``[N, h, w]`` uint8 ASCII frames up to ``[N, canvas_h, canvas_w]`` with ``pad_byte``."""
+	assert frames.dtype == np.uint8, f"ASCII obs must be uint8, got {frames.dtype}"
+	assert frames.ndim == 3, f"ASCII obs must be [N,H,W], got shape {frames.shape}"
+	n, h, w = frames.shape
+	assert h <= canvas_h and w <= canvas_w, (
+		f"native grid {h}x{w} exceeds canvas {canvas_h}x{canvas_w}"
+	)
+	if h == canvas_h and w == canvas_w:
+		return np.ascontiguousarray(frames)
+	out = np.full((n, canvas_h, canvas_w), pad_byte, dtype=np.uint8)
+	out[:, :h, :w] = frames
+	return out
+
+
+def preprocess_ascii(
+	examples: dict[str, np.ndarray],
+	history_len: int,
+	canvas: tuple[int, int] = (CANVAS_H, CANVAS_W),
+	pad_byte: int = PAD_BYTE,
+) -> dict[str, torch.Tensor]:
+	"""Convert a raw ASCII sample -> ``{history_ids, target_ids, history_actions}``.
+
+	``examples["obs"]`` is ``[K+1, h, w]`` uint8 ASCII bytes (see
+	``data/collect_transitions.py`` docstring for the shard schema). Frames are
+	padded up to the unified ``canvas`` and cast to ``long`` for the VAE's
+	embedding lookup. History/target/action alignment matches :func:`preprocess`.
+	"""
+	canvas_h, canvas_w = int(canvas[0]), int(canvas[1])
+	padded = _pad_ascii_to_canvas(np.asarray(examples["obs"]), canvas_h, canvas_w, int(pad_byte))
+	ids = torch.from_numpy(padded).long()  # [K+1, H, W]
+	actions = np.asarray(examples["action"]).astype(np.int64)
+
+	k = history_len
+	return {
+		"history_ids": ids[:k],                                  # [K, H, W]
+		"target_ids": ids[k],                                    # [H, W]
+		"history_actions": torch.from_numpy(actions[:k]).long(),  # [K]
+	}
+
+
+def preprocess_contiguous_ar_ascii(
+	examples: dict[str, np.ndarray],
+	history_len: int,
+	num_future_frames: int,
+	canvas: tuple[int, int] = (CANVAS_H, CANVAS_W),
+	pad_byte: int = PAD_BYTE,
+) -> dict[str, torch.Tensor]:
+	"""ASCII counterpart of :func:`preprocess_contiguous_ar` for AR eval rollouts."""
+	k, hn = history_len, int(num_future_frames)
+	need = k + hn
+	if examples["obs"].shape[0] < need or examples["action"].shape[0] < need:
+		raise ValueError(f"need {need} rows, got obs={examples['obs'].shape[0]}")
+
+	canvas_h, canvas_w = int(canvas[0]), int(canvas[1])
+	padded = _pad_ascii_to_canvas(
+		np.asarray(examples["obs"][:need]), canvas_h, canvas_w, int(pad_byte),
+	)
+	ids = torch.from_numpy(padded).long()  # [K+Hn, H, W]
+	actions = np.asarray(examples["action"][:need]).astype(np.int64)
+
+	return {
+		"history_ids": ids[:k],
+		"history_actions": torch.from_numpy(actions[:k]).long(),
+		"gt_future_ids": ids[k:],                                           # [Hn, H, W]
+		"future_action_frames": torch.from_numpy(actions[k:]).long(),        # [Hn]
 	}
 
 
@@ -278,6 +354,25 @@ class RolloutVideoDataset(Dataset):
 		}
 		return preprocess_contiguous_ar(sample, history_len, num_future_frames, resize_to)
 
+	def try_contiguous_ar_ascii(
+		self,
+		idx: int,
+		history_len: int,
+		num_future_frames: int,
+		canvas: tuple[int, int] = (CANVAS_H, CANVAS_W),
+	) -> dict[str, torch.Tensor] | None:
+		"""ASCII counterpart of :meth:`try_contiguous_ar`; returns ``history_ids``/``gt_future_ids``/etc."""
+		meta, row = self._resolve_index(idx)
+		need = history_len + int(num_future_frames)
+		if row + need > meta.num_rows:
+			return None
+		shard = self._get_shard(meta)
+		sample = {
+			"obs": shard["obs"][row : row + need],
+			"action": shard["action"][row : row + need],
+		}
+		return preprocess_contiguous_ar_ascii(sample, history_len, num_future_frames, canvas)
+
 
 class EncodedRolloutVideoDataset(Dataset):
 	"""Same windowing as ``RolloutVideoDataset``, but each shard has ``latent.npy`` (+ ``action.npy``)."""
@@ -397,7 +492,7 @@ def _find_test_env_dir() -> Path:
 
 def main() -> None:
 	"""Smoke test: dataset + DataLoader batch shapes."""
-	K = 8
+	K = 2
 	env_dir = _find_test_env_dir()
 	tx = partial(preprocess, history_len=K, resize_to=None)
 	ds = RolloutVideoDataset(env_dir, seq_len=K + 1, stride=1, num_actions=18).with_transform(tx)
