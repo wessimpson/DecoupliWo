@@ -58,6 +58,9 @@ def parse_args() -> argparse.Namespace:
 		help="rescan --train_dir every N optimizer steps to pick up newly-written shards (0 = off)")
 	p.add_argument("--sync_from", type=str, default=None,
 		help="rsync this path into --train_dir before each refresh (e.g. Drive -> local SSD streaming)")
+	p.add_argument("--log_mirror", type=str, default=None,
+		help="rsync the timestamped run dir from --log_dir into this root after every checkpoint "
+		"(keeps TensorBoard events on fast local SSD while persisting to Drive for durability)")
 	p.add_argument("--render_rgb", action="store_true",
 		help="log RGB original|reconstruction panels to TensorBoard via GvgaiRenderer "
 		"(requires gvgai/out/production/gvgai/tracks/singlePlayer/rendering/AsciiRenderServer.class; "
@@ -137,6 +140,20 @@ def _maybe_sync(args: argparse.Namespace) -> None:
 	src = str(args.sync_from).rstrip("/") + "/"
 	dst = str(args.train_dir).rstrip("/") + "/"
 	subprocess.run(["rsync", "-a", src, dst], check=True)
+
+
+def _mirror_log_dir(log_dir: Path, mirror: str | None) -> None:
+	"""Best-effort rsync of the live run dir into ``mirror/<log_dir.name>/`` for durability."""
+	if not mirror:
+		return
+	dst = Path(mirror) / log_dir.name
+	dst.parent.mkdir(parents=True, exist_ok=True)
+	src = str(log_dir).rstrip("/") + "/"
+	dst_str = str(dst).rstrip("/") + "/"
+	try:
+		subprocess.run(["rsync", "-a", src, dst_str], check=True)
+	except subprocess.CalledProcessError as err:
+		print(f"[log_mirror] rsync {src} -> {dst_str} failed: {err}")
 
 
 def _build_train_loader(train_ds: AllAsciiFramesDataset, args: argparse.Namespace, device: torch.device) -> DataLoader:
@@ -358,6 +375,8 @@ def main() -> None:
 				Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 				torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
 				log_rgb_reconstruction(vae, renderers, render_samples, writer, step, device)
+				writer.flush()
+				_mirror_log_dir(log_dir, args.log_mirror)
 				vae.train(True)
 
 			refreshed = False
@@ -386,6 +405,8 @@ def main() -> None:
 	torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
 	log_rgb_reconstruction(vae, renderers, render_samples, writer, step, device)
 	close_renderers(renderers)
+	writer.flush()
+	_mirror_log_dir(log_dir, args.log_mirror)
 	writer.close()
 	print(f"Saved ASCIIVAE -> {(Path(args.output_dir) / 'vae.pt').resolve()}")
 
