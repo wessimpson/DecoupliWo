@@ -18,14 +18,17 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from world_model.ascii.constants import CANVAS_H, CANVAS_W, PAD_BYTE
+from world_model.ascii.renderer import GvgaiRenderer
 from world_model.ascii.tokenizer import pad_to_canvas
 from world_model.model.net.ascii_vae import ASCIIVAE
+
+DEFAULT_RENDER_GAMES: str = "aliens,chopper,waves"
+RENDER_FAILURE_TINT_RED: int = 80
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,6 +58,14 @@ def parse_args() -> argparse.Namespace:
 		help="rescan --train_dir every N optimizer steps to pick up newly-written shards (0 = off)")
 	p.add_argument("--sync_from", type=str, default=None,
 		help="rsync this path into --train_dir before each refresh (e.g. Drive -> local SSD streaming)")
+	p.add_argument("--render_rgb", action="store_true",
+		help="log RGB original|reconstruction panels to TensorBoard via GvgaiRenderer "
+		"(requires gvgai/out/production/gvgai/tracks/singlePlayer/rendering/AsciiRenderServer.class; "
+		"no-ops with a warning if the class is missing)")
+	p.add_argument("--render_games", type=str, default=DEFAULT_RENDER_GAMES,
+		help="comma-separated games to render in the TensorBoard RGB panel (only used when --render_rgb)")
+	p.add_argument("--gvgai_root", type=str, default="gvgai",
+		help="path to the GVGAI build tree used by the JVM renderer (only used when --render_rgb)")
 	return p.parse_args()
 
 
@@ -174,6 +185,92 @@ def estimate_scaling_factor(vae: ASCIIVAE, ids: torch.Tensor, device: torch.devi
 	return 1.0 / max(std, 1e-8)
 
 
+def _frame_game(val_ds: AllAsciiFramesDataset, i: int) -> str:
+	shard_path, _ = val_ds._loc(i)
+	return shard_path.relative_to(val_ds.root).parts[0]
+
+
+def pick_val_frames_per_game(val_ds: AllAsciiFramesDataset, games: list[str]) -> dict[str, torch.Tensor]:
+	"""Return ``{game: padded_canvas_ids_long [H, W]}`` for the first val frame found per game."""
+	found: dict[str, torch.Tensor] = {}
+	wanted = set(games)
+	for i in range(len(val_ds)):
+		game = _frame_game(val_ds, i)
+		if game in wanted and game not in found:
+			found[game] = val_ds[i]
+			if len(found) == len(wanted):
+				break
+	return found
+
+
+def start_renderers(gvgai_root: Path, games: list[str]) -> dict[str, GvgaiRenderer]:
+	"""Best-effort: start one :class:`GvgaiRenderer` per game; skip games whose JVM fails to boot."""
+	renderers: dict[str, GvgaiRenderer] = {}
+	for game in games:
+		renderer = GvgaiRenderer(gvgai_root=gvgai_root, game=game)
+		try:
+			renderer.start()
+		except Exception as err:
+			print(f"[render] skipping {game}: {err.__class__.__name__}: {err}")
+			continue
+		renderers[game] = renderer
+	return renderers
+
+
+def close_renderers(renderers: dict[str, GvgaiRenderer]) -> None:
+	for renderer in renderers.values():
+		try:
+			renderer.close()
+		except Exception:
+			pass
+
+
+def _render_or_placeholder(renderer: GvgaiRenderer, grid: np.ndarray) -> np.ndarray:
+	"""Render ``grid``; on failure return a red-tinted placeholder sized to the game's screen."""
+	try:
+		return renderer.render(grid)
+	except Exception as err:
+		print(f"[render] {renderer.game} render failed: {err.__class__.__name__}: {err}")
+		height = renderer.screen_h or 64
+		width = renderer.screen_w or 128
+		placeholder = np.zeros((height, width, 3), dtype=np.uint8)
+		placeholder[..., 0] = RENDER_FAILURE_TINT_RED
+		return placeholder
+
+
+@torch.no_grad()
+def log_rgb_reconstruction(
+	vae: ASCIIVAE,
+	renderers: dict[str, GvgaiRenderer],
+	samples: dict[str, torch.Tensor],
+	writer: SummaryWriter,
+	step: int,
+	device: torch.device,
+) -> None:
+	"""Render one ``[original | reconstruction]`` row per game and log the vertical stack."""
+	if not renderers:
+		return
+	vae.train(False)
+	panels: list[np.ndarray] = []
+	for game, renderer in renderers.items():
+		ids = samples[game].to(device).unsqueeze(0)
+		logits, _, _ = vae(ids)
+		pred_ids = ASCIIVAE.logits_to_ids(logits).squeeze(0).to("cpu").numpy().astype(np.uint8)
+		orig_ids = ids.squeeze(0).to("cpu").numpy().astype(np.uint8)
+		rgb_orig = _render_or_placeholder(renderer, orig_ids)
+		rgb_pred = _render_or_placeholder(renderer, pred_ids)
+		panels.append(np.concatenate([rgb_orig, rgb_pred], axis=1))
+	if not panels:
+		return
+	max_w = max(panel.shape[1] for panel in panels)
+	padded = [
+		np.pad(panel, ((0, 0), (0, max_w - panel.shape[1]), (0, 0)), constant_values=0)
+		for panel in panels
+	]
+	stacked = np.concatenate(padded, axis=0)
+	writer.add_image("val/rgb_reconstruction", stacked, step, dataformats="HWC")
+
+
 def main() -> None:
 	args = parse_args()
 	torch.manual_seed(args.seed)
@@ -198,6 +295,20 @@ def main() -> None:
 		vae.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=args.weight_decay,
 	)
 	print(f"train={len(train_ds):,}  val={len(val_ds):,}  device={device}\nTensorBoard: {log_dir.resolve()}")
+
+	render_samples: dict[str, torch.Tensor] = {}
+	renderers: dict[str, GvgaiRenderer] = {}
+	if args.render_rgb:
+		requested_games = [g.strip() for g in args.render_games.split(",") if g.strip()]
+		render_samples = pick_val_frames_per_game(val_ds, requested_games)
+		missing = [g for g in requested_games if g not in render_samples]
+		if missing:
+			print(f"[render] no val frames found for: {missing}")
+		renderers = start_renderers(Path(args.gvgai_root), list(render_samples.keys()))
+		if renderers:
+			print(f"[render] TensorBoard RGB panels enabled for: {sorted(renderers.keys())}")
+		else:
+			print("[render] RGB logging disabled (no renderers started)")
 
 	step = 0
 	eval_val(vae, val_ids, device, writer, step, args.kl_weight)
@@ -246,6 +357,8 @@ def main() -> None:
 			if args.save_every > 0 and step % args.save_every == 0:
 				Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 				torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
+				log_rgb_reconstruction(vae, renderers, render_samples, writer, step, device)
+				vae.train(True)
 
 			refreshed = False
 			if args.refresh_every > 0 and step % args.refresh_every == 0:
@@ -271,6 +384,8 @@ def main() -> None:
 
 	Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 	torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
+	log_rgb_reconstruction(vae, renderers, render_samples, writer, step, device)
+	close_renderers(renderers)
 	writer.close()
 	print(f"Saved ASCIIVAE -> {(Path(args.output_dir) / 'vae.pt').resolve()}")
 
