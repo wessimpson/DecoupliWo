@@ -11,14 +11,23 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 ROOT = pathlib.Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.pong_common import EVENTS, GAME_TO_ID, ID_TO_EVENT, ID_TO_GAME, ID_TO_RULE, ID_TO_SOURCE, RULE_TO_ID, load_shards
-from models.object_losses import LossWeights, compute_object_centric_losses, event_prediction_loss, relative_slot_loss, rollout_slot_loss
+from models.object_losses import (
+    LossWeights,
+    compute_object_centric_losses,
+    event_prediction_loss,
+    kinematic_consistency_loss,
+    masked_acceleration_loss,
+    masked_delta_loss,
+    relative_slot_loss,
+    rollout_slot_loss,
+)
 from models.rule_conditioned_gnn import PongObjectConstants, RuleConditionedPongGNN
 
 
@@ -32,6 +41,7 @@ class PongTransitionDataset(Dataset):
         rule_ablation: str = "none",
         seed: int = 0,
         rollout_horizon: int = 1,
+        include_counterfactuals: bool = False,
     ):
         data = load_shards(root, split)
         game_id = data.get("game_id", np.zeros_like(data["rule_id"], dtype=np.int64))
@@ -69,6 +79,10 @@ class PongTransitionDataset(Dataset):
         self.next_object_mask = torch.as_tensor(data["next_object_mask"][keep], dtype=torch.float32)
         self.rollout_horizon = max(1, int(rollout_horizon))
         self.rollout_indices, self.rollout_valid = self._build_rollout_index()
+        self.include_counterfactuals = bool(include_counterfactuals)
+        if self.include_counterfactuals:
+            self.counterfactual_indices, self.counterfactual_valid = self._build_counterfactual_index()
+            self.counterfactual_rule_id = torch.arange(len(RULE_TO_ID), dtype=torch.long)
 
     def _build_rollout_index(self) -> tuple[torch.Tensor, torch.Tensor]:
         rows = int(self.action.shape[0])
@@ -109,6 +123,36 @@ class PongTransitionDataset(Dataset):
                 terminal_seen = bool(self.terminated[next_idx] or self.truncated[next_idx])
         return indices, valid
 
+    def _build_counterfactual_index(self) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = int(self.action.shape[0])
+        num_rules = len(RULE_TO_ID)
+        indices = torch.zeros(rows, num_rules, dtype=torch.long)
+        valid = torch.zeros(rows, num_rules, dtype=torch.float32)
+        lookup: dict[tuple[int, int, int, int], int] = {}
+        game_np = self.game_id.numpy()
+        rule_np = self.true_rule_id.numpy()
+        episode_np = self.episode_id.numpy()
+        step_np = self.step.numpy()
+        for idx in range(rows):
+            key = (int(game_np[idx]), int(rule_np[idx]), int(episode_np[idx]), int(step_np[idx]))
+            lookup.setdefault(key, idx)
+        for idx in range(rows):
+            for rule in range(num_rules):
+                next_idx = lookup.get((int(game_np[idx]), int(rule), int(episode_np[idx]), int(step_np[idx])))
+                if next_idx is not None:
+                    indices[idx, rule] = int(next_idx)
+                    valid[idx, rule] = 1.0
+        return indices, valid
+
+    def sampling_weights(self, rare_weight: float = 4.0) -> torch.Tensor:
+        weights = torch.ones(len(self), dtype=torch.float64)
+        rare = (self.event_id != EVENTS.index("step")) & (self.event_id != EVENTS.index("none"))
+        weights[rare] = float(rare_weight)
+        for event_name in ("paddle_hit", "wrapped", "left_wall_bounce", "top_bounce", "bottom_bounce", "miss"):
+            weights[self.event_id == EVENTS.index(event_name)] = max(float(rare_weight), 6.0)
+        weights[self.source_id != 0] = torch.maximum(weights[self.source_id != 0], torch.full_like(weights[self.source_id != 0], float(rare_weight)))
+        return weights
+
     def __len__(self) -> int:
         return int(self.action.shape[0])
 
@@ -136,6 +180,16 @@ class PongTransitionDataset(Dataset):
                     "rollout_next_object_slots": self.next_object_slots[rollout_idx],
                     "rollout_next_object_mask": self.next_object_mask[rollout_idx],
                     "rollout_valid": self.rollout_valid[idx],
+                }
+            )
+        if self.include_counterfactuals:
+            counterfactual_idx = self.counterfactual_indices[idx]
+            item.update(
+                {
+                    "counterfactual_rule_id": self.counterfactual_rule_id,
+                    "counterfactual_next_object_slots": self.next_object_slots[counterfactual_idx],
+                    "counterfactual_next_object_mask": self.next_object_mask[counterfactual_idx],
+                    "counterfactual_valid": self.counterfactual_valid[idx],
                 }
             )
         return item
@@ -167,6 +221,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alpha-rel", type=float, default=0.1, help="Weight for relative object-state loss after --rel-start-epoch.")
     parser.add_argument("--beta-roll", type=float, default=0.1, help="Weight for rollout loss after --rollout-start-epoch.")
     parser.add_argument("--gamma-event", type=float, default=0.05, help="Weight for event classification after --event-start-epoch.")
+    parser.add_argument("--delta-weight", type=float, default=0.5, help="Weight for residual delta loss that anchors predicted motion increments.")
+    parser.add_argument("--kinematic-weight", type=float, default=0.2, help="Weight for free-flight x/y consistency with predicted vx/vy.")
+    parser.add_argument(
+        "--counterfactual-rule-weight",
+        type=float,
+        default=0.0,
+        help="Weight for same-state, different-rule transition supervision when counterfactual rows are available.",
+    )
     parser.add_argument("--rel-start-epoch", type=int, default=2, help="Epoch at which relative-state loss turns on.")
     parser.add_argument("--rollout-start-epoch", type=int, default=10, help="Epoch at which multi-step rollout loss turns on.")
     parser.add_argument("--event-start-epoch", type=int, default=20, help="Epoch at which event prediction loss turns on.")
@@ -176,6 +238,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contrastive-margin", type=float, default=1.0)
     parser.add_argument("--mask-loss-weight", type=float, default=0.1, help="Weight for active-object mask prediction loss.")
     parser.add_argument("--event-weight", type=float, default=2.0, help="Extra weight for rare event transitions.")
+    parser.add_argument("--event-balanced-sampling", action=argparse.BooleanOptionalAction, default=False, help="Oversample rare/contact transitions in training.")
+    parser.add_argument("--rare-sample-weight", type=float, default=6.0, help="Sampling multiplier for rare/contact transitions when balanced sampling is enabled.")
     parser.add_argument("--train-combos", nargs="*", default=None, help="Optional combos to train on, e.g. pong:normal pong:gravity.")
     parser.add_argument("--holdout-combos", nargs="*", default=None, help="Optional combos to exclude from train and report separately, e.g. pong:teleport.")
     parser.add_argument("--rule-ablation", choices=("none", "zero", "shuffle"), default="none", help="Ablation for testing whether rule IDs are actually used.")
@@ -216,6 +280,7 @@ def constants_from_metadata(dataset_root: pathlib.Path) -> PongObjectConstants:
     return PongObjectConstants(
         width=float(cfg.get("width", 640.0)),
         height=float(cfg.get("height", 480.0)),
+        dt=float(cfg.get("dt", 1.0 / 60.0)),
         paddle_width=float(cfg.get("paddle_width", 12.0)),
         paddle_height=float(cfg.get("paddle_height", 88.0)),
         paddle_margin=float(cfg.get("paddle_margin", 24.0)),
@@ -260,6 +325,9 @@ def loss_weights_for_epoch(args: argparse.Namespace, epoch: int) -> LossWeights:
         alpha_rel=float(args.alpha_rel) if epoch >= int(args.rel_start_epoch) else 0.0,
         beta_roll=float(args.beta_roll) if epoch >= int(args.rollout_start_epoch) else 0.0,
         gamma_event=float(args.gamma_event) if epoch >= int(args.event_start_epoch) else 0.0,
+        delta=float(args.delta_weight),
+        kinematic=float(args.kinematic_weight),
+        counterfactual_rule=float(args.counterfactual_rule_weight),
         mask=float(args.mask_loss_weight),
         contrastive=float(args.contrastive_weight),
         event_weight=float(args.event_weight),
@@ -312,9 +380,12 @@ def train_epoch(
     totals: dict[str, float] = {
         "loss": 0.0,
         "state_loss": 0.0,
+        "delta_loss": 0.0,
         "rel_loss": 0.0,
         "rollout_loss": 0.0,
         "event_loss": 0.0,
+        "kinematic_loss": 0.0,
+        "counterfactual_rule_loss": 0.0,
         "contrastive_loss": 0.0,
         "mask_loss": 0.0,
     }
@@ -354,6 +425,8 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
     var_sqerr = []
     mask_losses = []
     rel_losses = []
+    delta_losses = []
+    kinematic_losses = []
     rollout_losses = []
     event_losses = []
     event_accuracies = []
@@ -386,6 +459,24 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
         slot_sq = (slot_err.pow(2).mean(dim=-1) * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
         flat_sq = (out["pred_next"] - batch["next_state"]).pow(2)
         mask_loss = object_mask_loss(out["pred_next_mask_logits"], batch["next_object_mask"], batch["object_mask"])
+        delta_loss = (
+            masked_acceleration_loss(
+                out["pred_normalized_acceleration"],
+                batch["object_slots"],
+                batch["next_object_slots"],
+                batch["next_object_mask"],
+                model,
+            )
+            if "pred_normalized_acceleration" in out
+            else masked_delta_loss(out["pred_next_slots"], batch["object_slots"], batch["next_object_slots"], batch["next_object_mask"], model)
+        )
+        kinematic_loss = kinematic_consistency_loss(
+            out["pred_next_slots"],
+            batch["object_slots"],
+            batch["next_object_mask"],
+            batch["event_id"],
+            model,
+        )
         rel_loss = relative_slot_loss(out["pred_next_slots"], batch["next_object_slots"], batch["next_object_mask"], model)
         roll_loss = rollout_slot_loss(model, batch)
         event_loss = event_prediction_loss(out["pred_event_logits"], batch["event_id"])
@@ -397,6 +488,8 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
         flat_sqerr.append(flat_sq.mean(dim=-1).detach().cpu())
         var_sqerr.append(flat_sq.detach().cpu())
         mask_losses.append(mask_loss.detach().cpu())
+        delta_losses.append(delta_loss.detach().cpu())
+        kinematic_losses.append(kinematic_loss.detach().cpu())
         rel_losses.append(rel_loss.detach().cpu())
         rollout_losses.append(roll_loss.detach().cpu())
         event_losses.append(event_loss.detach().cpu())
@@ -425,6 +518,8 @@ def evaluate(model: RuleConditionedPongGNN, loader: DataLoader, device: torch.de
         "val_rmse": float(torch.sqrt(all_flat_sq.mean()).item()),
         "val_mask_loss": float(torch.stack(mask_losses).mean().item()),
         "val_mask_accuracy": float(torch.stack(mask_accuracies).mean().item()),
+        "val_delta_loss": float(torch.stack(delta_losses).mean().item()),
+        "val_kinematic_loss": float(torch.stack(kinematic_losses).mean().item()),
         "val_rel_loss": float(torch.stack(rel_losses).mean().item()),
         "val_rollout_loss": float(torch.stack(rollout_losses).mean().item()),
         "val_event_loss": float(torch.stack(event_losses).mean().item()),
@@ -488,6 +583,7 @@ def main() -> int:
         rule_ablation=args.rule_ablation,
         seed=args.seed,
         rollout_horizon=args.rollout_horizon,
+        include_counterfactuals=float(args.counterfactual_rule_weight) > 0.0,
     )
     val_data = PongTransitionDataset(dataset_root, "val", rule_ablation=args.rule_ablation, seed=args.seed, rollout_horizon=args.rollout_horizon)
     holdout_data = (
@@ -502,7 +598,23 @@ def main() -> int:
         if holdout_combos
         else None
     )
-    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=device.type == "cuda")
+    train_sampler = None
+    shuffle_train = True
+    if args.event_balanced_sampling:
+        train_sampler = WeightedRandomSampler(
+            train_data.sampling_weights(args.rare_sample_weight),
+            num_samples=len(train_data),
+            replacement=True,
+        )
+        shuffle_train = False
+    train_loader = DataLoader(
+        train_data,
+        batch_size=args.batch_size,
+        shuffle=shuffle_train,
+        sampler=train_sampler,
+        num_workers=args.num_workers,
+        pin_memory=device.type == "cuda",
+    )
     val_loader = DataLoader(val_data, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=device.type == "cuda")
     holdout_loader = (
         DataLoader(holdout_data, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=device.type == "cuda")
@@ -540,9 +652,15 @@ def main() -> int:
     )
     print(
         f"loss schedule: rel@{args.rel_start_epoch} roll@{args.rollout_start_epoch} "
-        f"event@{args.event_start_epoch} rollout_horizon={args.rollout_horizon} noise_std={args.noise_std}"
+        f"event@{args.event_start_epoch} delta={args.delta_weight} kinematic={args.kinematic_weight} "
+        f"counterfactual_rule={args.counterfactual_rule_weight} rollout_horizon={args.rollout_horizon} noise_std={args.noise_std}"
     )
+    print(f"event_balanced_sampling={args.event_balanced_sampling} rare_sample_weight={args.rare_sample_weight}")
     print(f"train rows={len(train_data)} val rows={len(val_data)}")
+    if train_data.include_counterfactuals:
+        valid_cf = int(train_data.counterfactual_valid.sum().item())
+        total_cf = int(train_data.counterfactual_valid.numel())
+        print(f"counterfactual rule targets={valid_cf}/{total_cf}")
     if holdout_data is not None:
         print(f"holdout rows={len(holdout_data)} combos={args.holdout_combos}")
     if args.resume:
@@ -571,6 +689,9 @@ def main() -> int:
             "weight_alpha_rel": epoch_weights.alpha_rel,
             "weight_beta_roll": epoch_weights.beta_roll,
             "weight_gamma_event": epoch_weights.gamma_event,
+            "weight_delta": epoch_weights.delta,
+            "weight_kinematic": epoch_weights.kinematic,
+            "weight_counterfactual_rule": epoch_weights.counterfactual_rule,
             **train_metrics,
             **val_metrics,
         }
@@ -578,10 +699,12 @@ def main() -> int:
             handle.write(json.dumps(metrics, sort_keys=True) + "\n")
         print(
             f"[{epoch:04d}] loss={metrics['loss']:.6f} state={metrics['state_loss']:.6f} "
-            f"rel={metrics['rel_loss']:.6f} roll={metrics['rollout_loss']:.6f} "
-            f"event={metrics['event_loss']:.6f} mask={metrics['mask_loss']:.6f} "
+            f"delta={metrics['delta_loss']:.6f} rel={metrics['rel_loss']:.6f} roll={metrics['rollout_loss']:.6f} "
+            f"event={metrics['event_loss']:.6f} kin={metrics['kinematic_loss']:.6f} "
+            f"cf={metrics['counterfactual_rule_loss']:.6f} mask={metrics['mask_loss']:.6f} "
             f"contrast={metrics['contrastive_loss']:.6f} val_slot_rmse={metrics['val_slot_rmse']:.4f} "
-            f"val_roll={metrics['val_rollout_loss']:.6f} val_event_acc={metrics['val_event_accuracy']:.3f}"
+            f"val_roll={metrics['val_rollout_loss']:.6f} val_kin={metrics['val_kinematic_loss']:.6f} "
+            f"val_event_acc={metrics['val_event_accuracy']:.3f}"
         )
         save_checkpoint(output / "latest.pt", model, optimizer, args, epoch, metrics)
         if float(val_metrics["val_mse"]) < best:

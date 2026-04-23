@@ -12,6 +12,7 @@ from data.pong_common import (
     MAX_OBJECTS,
     OBJECT_TYPES,
     OBJECT_TYPE_TO_ID,
+    RULE_TO_ID,
     SLOT_DIM,
     PongSlotConfig,
 )
@@ -22,6 +23,7 @@ from models.object_graph import ObjectGraphBuilder
 class PongObjectConstants:
     width: float = 640.0
     height: float = 480.0
+    dt: float = 1.0 / 60.0
     paddle_width: float = 12.0
     paddle_height: float = 88.0
     paddle_margin: float = 24.0
@@ -86,6 +88,11 @@ class PongStateNormalizer(nn.Module):
         self.constants = constants
         self.register_buffer("scales", torch.tensor(constants.scales, dtype=torch.float32))
         self.register_buffer("slot_scales", torch.tensor(constants.slot_scales, dtype=torch.float32))
+        dt = max(float(constants.dt), 1e-6)
+        self.register_buffer(
+            "acceleration_scales",
+            torch.tensor((constants.max_ball_speed / dt, constants.max_ball_speed / dt), dtype=torch.float32),
+        )
 
     def normalize(self, state: torch.Tensor) -> torch.Tensor:
         return state.to(torch.float32) / self.scales.to(state.device)
@@ -102,6 +109,12 @@ class PongStateNormalizer(nn.Module):
         out = slots.to(torch.float32).clone()
         out[..., :6] = out[..., :6] * self.slot_scales.to(slots.device)
         return out
+
+    def normalize_acceleration(self, acceleration: torch.Tensor) -> torch.Tensor:
+        return acceleration.to(torch.float32) / self.acceleration_scales.to(acceleration.device)
+
+    def denormalize_acceleration(self, acceleration: torch.Tensor) -> torch.Tensor:
+        return acceleration.to(torch.float32) * self.acceleration_scales.to(acceleration.device)
 
 
 class RuleConditionedPongGNN(nn.Module):
@@ -143,6 +156,7 @@ class RuleConditionedPongGNN(nn.Module):
         self.edge_mode = edge_mode
         self.edge_distance_threshold = float(edge_distance_threshold)
         self.num_events = int(num_events)
+        self.boundary_feature_dim = 4
         self.constants = constants or PongObjectConstants()
         self.max_objects = int(self.constants.max_objects)
         self.normalizer = PongStateNormalizer(self.constants)
@@ -155,13 +169,32 @@ class RuleConditionedPongGNN(nn.Module):
 
         self.rule_embedding = nn.Embedding(self.num_rules, self.rule_dim)
         self.type_embedding = nn.Embedding(self.num_object_types, self.type_dim)
-        self.node_encoder = mlp(node_numeric_dim + type_dim + action_dim + 1, hidden_dim, latent_dim, layers=mlp_layers)
-        edge_in_dim = 2 * latent_dim + self.graph_builder.edge_feature_dim + 2 * type_dim + action_dim + rule_dim
-        self.edge_mlp = mlp(edge_in_dim, hidden_dim, latent_dim, layers=mlp_layers)
-        self.node_mlp = mlp(latent_dim + latent_dim + action_dim + rule_dim, hidden_dim, latent_dim, layers=mlp_layers)
-        self.decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, node_numeric_dim, layers=mlp_layers)
+        self.node_encoder = mlp(
+            node_numeric_dim + type_dim + self.boundary_feature_dim + action_dim + 1,
+            hidden_dim,
+            latent_dim,
+            layers=mlp_layers,
+        )
+        edge_encoder_in_dim = self.graph_builder.edge_feature_dim + 2 * type_dim + action_dim + rule_dim
+        self.edge_encoder = mlp(edge_encoder_in_dim, hidden_dim, latent_dim, layers=mlp_layers)
+        self.processor_edge_mlps = nn.ModuleList(
+            [
+                mlp(3 * latent_dim + action_dim + rule_dim, hidden_dim, latent_dim, layers=mlp_layers)
+                for _ in range(self.message_passing_steps)
+            ]
+        )
+        self.processor_node_mlps = nn.ModuleList(
+            [
+                mlp(2 * latent_dim + action_dim + rule_dim, hidden_dim, latent_dim, layers=mlp_layers)
+                for _ in range(self.message_passing_steps)
+            ]
+        )
+        self.acceleration_decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, 2, layers=mlp_layers)
+        self.position_correction_decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, 2, layers=mlp_layers)
         self.mask_decoder = mlp(latent_dim + rule_dim + type_dim, hidden_dim, 1, layers=mlp_layers)
         self.event_head = mlp(latent_dim + rule_dim + action_dim, hidden_dim, self.num_events, layers=mlp_layers)
+        self.register_buffer("max_acceleration_norm", torch.tensor((1.5, 1.5), dtype=torch.float32), persistent=False)
+        self.register_buffer("max_position_correction_norm", torch.tensor((1.2, 1.2), dtype=torch.float32), persistent=False)
 
     def state_to_slots(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         state = state.to(torch.float32)
@@ -203,6 +236,93 @@ class RuleConditionedPongGNN(nn.Module):
             out[:, 5] = torch.where(breakout, slots[:, 1, 2], slots[:, 1, 3])
         return out
 
+    def update_mask(self, slots: torch.Tensor, game_id: torch.Tensor | None = None) -> torch.Tensor:
+        type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
+        mask = torch.zeros(*slots.shape[:2], 6, dtype=slots.dtype, device=slots.device)
+        ball = type_ids == OBJECT_TYPE_TO_ID["ball"]
+        paddle = type_ids == OBJECT_TYPE_TO_ID["paddle"]
+        mask[..., 0:4] = ball[..., None].to(slots.dtype)
+        if game_id is None:
+            pong = torch.ones(slots.shape[0], dtype=torch.bool, device=slots.device)
+        else:
+            pong = game_id.to(slots.device) != GAME_TO_ID["breakout"]
+        pong_paddle = paddle & pong[:, None]
+        breakout_paddle = paddle & ~pong[:, None]
+        mask[..., 1] = torch.where(pong_paddle, torch.ones_like(mask[..., 1]), mask[..., 1])
+        mask[..., 3] = torch.where(pong_paddle, torch.ones_like(mask[..., 3]), mask[..., 3])
+        mask[..., 0] = torch.where(breakout_paddle, torch.ones_like(mask[..., 0]), mask[..., 0])
+        mask[..., 2] = torch.where(breakout_paddle, torch.ones_like(mask[..., 2]), mask[..., 2])
+        return mask
+
+    def apply_structural_constraints(
+        self,
+        pred_slots: torch.Tensor,
+        slots: torch.Tensor,
+        action: torch.Tensor,
+        object_mask: torch.Tensor,
+        game_id: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
+        ball = type_ids == OBJECT_TYPE_TO_ID["ball"]
+        paddle = type_ids == OBJECT_TYPE_TO_ID["paddle"]
+        block = type_ids == OBJECT_TYPE_TO_ID["block"]
+
+        motion = torch.where(block[..., None], slots[..., 0:4], pred_slots[..., 0:4])
+
+        max_component_speed = float(self.constants.max_ball_speed) * 1.25
+        velocity = torch.where(
+            ball[..., None],
+            motion[..., 2:4].clamp(-max_component_speed, max_component_speed),
+            motion[..., 2:4],
+        )
+        motion = torch.cat([motion[..., 0:2], velocity], dim=-1)
+
+        if game_id is None:
+            pong = torch.ones(slots.shape[0], dtype=torch.bool, device=slots.device)
+        else:
+            pong = game_id.to(slots.device) != GAME_TO_ID["breakout"]
+        action_id = action.argmax(dim=-1) if action.ndim == 2 else action.to(torch.long)
+        direction = torch.zeros_like(action_id, dtype=slots.dtype)
+        direction = torch.where(action_id == 1, torch.full_like(direction, -1.0), direction)
+        direction = torch.where(action_id == 2, torch.full_like(direction, 1.0), direction)
+        step = direction[:, None] * float(self.constants.paddle_speed) * float(self.constants.dt)
+        dt = max(float(self.constants.dt), 1e-6)
+
+        old_x = slots[..., 0]
+        old_y = slots[..., 1]
+        width = slots[..., 4].clamp_min(1.0)
+        height = slots[..., 5].clamp_min(1.0)
+
+        pong_paddle = paddle & pong[:, None]
+        new_y = (old_y + step).clamp(0.0, float(self.constants.height))
+        new_y = torch.minimum(new_y, (float(self.constants.height) - height).clamp_min(0.0))
+        pong_values = torch.stack(
+            [
+                torch.full_like(old_x, float(self.constants.paddle_x)),
+                new_y,
+                torch.zeros_like(old_x),
+                (new_y - old_y) / dt,
+            ],
+            dim=-1,
+        )
+
+        breakout_paddle = paddle & ~pong[:, None]
+        new_x = (old_x + step).clamp(0.0, float(self.constants.width))
+        new_x = torch.minimum(new_x, (float(self.constants.width) - width).clamp_min(0.0))
+        breakout_values = torch.stack(
+            [
+                new_x,
+                old_y,
+                (new_x - old_x) / dt,
+                torch.zeros_like(old_x),
+            ],
+            dim=-1,
+        )
+        motion = torch.where(pong_paddle[..., None], pong_values, motion)
+        motion = torch.where(breakout_paddle[..., None], breakout_values, motion)
+        constrained = torch.cat([motion, slots[..., 4:6], slots[..., 6:7]], dim=-1)
+        return constrained * object_mask[..., None].to(constrained.dtype)
+
     def action_one_hot(self, action: torch.Tensor) -> torch.Tensor:
         if action.ndim == 2:
             return action.to(torch.float32)
@@ -214,17 +334,25 @@ class RuleConditionedPongGNN(nn.Module):
         paddle_mask = (type_ids == OBJECT_TYPE_TO_ID["paddle"]).to(torch.float32) * object_mask.to(torch.float32)
         return one_hot[:, None, :].expand(-1, slots.shape[1], -1) * paddle_mask[..., None]
 
+    def boundary_node_features(self, slots: torch.Tensor) -> torch.Tensor:
+        pos = self.normalizer.normalize_slots(slots)[..., 0:2]
+        dist_to_lower = pos
+        dist_to_upper = 1.0 - pos
+        radius = max(float(self.edge_distance_threshold), 1e-6)
+        return torch.clamp(torch.cat([dist_to_lower, dist_to_upper], dim=-1) / radius, -1.0, 1.0)
+
     def encode_slots(self, slots: torch.Tensor, object_mask: torch.Tensor, action: torch.Tensor | None = None) -> torch.Tensor:
         slots = slots.to(torch.float32)
         object_mask = object_mask.to(torch.float32)
         normalized = self.normalizer.normalize_slots(slots)
         type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
         type_emb = self.type_embedding(type_ids)
+        boundary_features = self.boundary_node_features(slots)
         if action is None:
             action_nodes = torch.zeros(slots.shape[0], slots.shape[1], self.action_dim, dtype=slots.dtype, device=slots.device)
         else:
             action_nodes = self.action_to_nodes(action, slots, object_mask)
-        node_in = torch.cat([normalized[..., :6], type_emb, action_nodes, object_mask[..., None]], dim=-1)
+        node_in = torch.cat([normalized[..., :6], boundary_features, type_emb, action_nodes, object_mask[..., None]], dim=-1)
         return self.node_encoder(node_in) * object_mask[..., None]
 
     def encode_state(self, normalized_state: torch.Tensor) -> torch.Tensor:
@@ -266,21 +394,25 @@ class RuleConditionedPongGNN(nn.Module):
             graph_features = graph.edge_features.to(z.dtype)
             type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long).to(z.device)
         type_emb = self.type_embedding(type_ids)
+        src_type = type_emb[:, None, :, :].expand(batch, nodes, nodes, self.type_dim)
+        dst_type = type_emb[:, :, None, :].expand(batch, nodes, nodes, self.type_dim)
+        action_edges = global_action[:, None, None, :].expand(batch, nodes, nodes, self.action_dim)
+        rule_edges = rule[:, None, None, :].expand(batch, nodes, nodes, self.rule_dim)
+        encoded_edges = self.edge_encoder(torch.cat([graph_features, src_type, dst_type, action_edges, rule_edges], dim=-1))
+        encoded_edges = encoded_edges * graph_mask[..., None]
 
         current = z
-        for _ in range(self.message_passing_steps):
+        current_edges = encoded_edges
+        for edge_mlp, node_mlp in zip(self.processor_edge_mlps, self.processor_node_mlps):
             src = current[:, None, :, :].expand(batch, nodes, nodes, self.latent_dim)
             dst = current[:, :, None, :].expand(batch, nodes, nodes, self.latent_dim)
-            src_type = type_emb[:, None, :, :].expand(batch, nodes, nodes, self.type_dim)
-            dst_type = type_emb[:, :, None, :].expand(batch, nodes, nodes, self.type_dim)
-            action_edges = global_action[:, None, None, :].expand(batch, nodes, nodes, self.action_dim)
-            rule_edges = rule[:, None, None, :].expand(batch, nodes, nodes, self.rule_dim)
-            edge_in = torch.cat([src, dst, graph_features, src_type, dst_type, action_edges, rule_edges], dim=-1)
-            messages = self.edge_mlp(edge_in) * graph_mask[..., None]
-            message_tensor = messages.sum(dim=2)
+            edge_in = torch.cat([src, dst, current_edges, action_edges, rule_edges], dim=-1)
+            edge_update = edge_mlp(edge_in) * graph_mask[..., None]
+            current_edges = current_edges + edge_update
+            message_tensor = current_edges.sum(dim=2)
             rule_nodes = rule[:, None, :].expand(batch, nodes, self.rule_dim)
             node_in = torch.cat([current, message_tensor, node_actions, rule_nodes], dim=-1)
-            current = (current + self.node_mlp(node_in)) * object_mask[..., None]
+            current = (current + node_mlp(node_in)) * object_mask[..., None]
         return current
 
     def decode_next_slots(
@@ -289,24 +421,39 @@ class RuleConditionedPongGNN(nn.Module):
         slots: torch.Tensor,
         object_mask: torch.Tensor,
         rule_id: torch.Tensor,
+        action: torch.Tensor,
+        game_id: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         rule = self.rule_embedding(rule_id.to(torch.int64))
         type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
         type_emb = self.type_embedding(type_ids)
+        ball = (type_ids == OBJECT_TYPE_TO_ID["ball"]).to(slots.dtype)[..., None]
         rule_nodes = rule[:, None, :].expand(slots.shape[0], slots.shape[1], self.rule_dim)
         decoder_in = torch.cat([z_next, rule_nodes, type_emb], dim=-1)
-        delta_norm = self.decoder(decoder_in)
+        acceleration_norm = torch.tanh(self.acceleration_decoder(decoder_in))
+        acceleration_norm = acceleration_norm * self.max_acceleration_norm.to(acceleration_norm.device, acceleration_norm.dtype)
+        position_correction_norm = torch.tanh(self.position_correction_decoder(decoder_in))
+        position_correction_norm = position_correction_norm * self.max_position_correction_norm.to(position_correction_norm.device, position_correction_norm.dtype)
         mask_logits = self.mask_decoder(decoder_in).squeeze(-1)
         mask_logits[:, 0:2] = 20.0
         inactive = object_mask <= 0.0
         mask_logits = mask_logits.masked_fill(inactive, -20.0)
-        normalized = self.normalizer.normalize_slots(slots)
-        pred_norm = normalized.clone()
-        pred_norm[..., :6] = normalized[..., :6] + delta_norm * object_mask[..., None]
-        pred_norm[..., 6] = slots[..., 6]
-        pred_slots = self.normalizer.denormalize_slots(pred_norm)
-        pred_slots[..., 6] = slots[..., 6]
-        return pred_slots * object_mask[..., None], mask_logits
+        acceleration = self.normalizer.denormalize_acceleration(acceleration_norm)
+        dt = float(self.constants.dt)
+        current_pos = slots[..., 0:2]
+        current_vel = slots[..., 2:4]
+        next_vel = torch.where(ball > 0.0, current_vel + acceleration * dt, current_vel)
+        next_pos = torch.where(ball > 0.0, current_pos + next_vel * dt, current_pos)
+
+        teleport_rule = (rule_id == RULE_TO_ID["teleport"]).to(slots.dtype)[:, None, None]
+        position_correction = position_correction_norm * self.normalizer.slot_scales.to(slots.device, slots.dtype)[None, None, 0:2]
+        next_pos = next_pos + position_correction * ball * teleport_rule
+
+        pred_slots = slots.clone()
+        pred_slots[..., 0:2] = next_pos
+        pred_slots[..., 2:4] = next_vel
+        pred_slots = self.apply_structural_constraints(pred_slots, slots, action, object_mask, game_id)
+        return pred_slots, mask_logits, acceleration_norm
 
     def predict_events(self, z_next: torch.Tensor, action: torch.Tensor, rule_id: torch.Tensor, object_mask: torch.Tensor) -> torch.Tensor:
         mask = object_mask.to(z_next.device).to(z_next.dtype)
@@ -334,13 +481,22 @@ class RuleConditionedPongGNN(nn.Module):
 
         z = self.encode_slots(object_slots, object_mask, action)
         z_next = self.transition_latents(z, action, rule_id, object_slots, object_mask)
-        pred_next_slots, pred_next_mask_logits = self.decode_next_slots(z_next, object_slots, object_mask, rule_id)
+        pred_next_slots, pred_next_mask_logits, pred_normalized_acceleration = self.decode_next_slots(
+            z_next,
+            object_slots,
+            object_mask,
+            rule_id,
+            action,
+            game_id,
+        )
         pred_event_logits = self.predict_events(z_next, action, rule_id, object_mask)
         pred_next_normalized_slots = self.normalizer.normalize_slots(pred_next_slots)
         pred_next = self.slots_to_state(pred_next_slots, game_id)
         return {
             "pred_next_normalized_slots": pred_next_normalized_slots,
             "pred_next_slots": pred_next_slots,
+            "pred_normalized_acceleration": pred_normalized_acceleration,
+            "pred_acceleration": self.normalizer.denormalize_acceleration(pred_normalized_acceleration),
             "pred_next_mask_logits": pred_next_mask_logits,
             "pred_next_mask_prob": torch.sigmoid(pred_next_mask_logits),
             "pred_event_logits": pred_event_logits,
