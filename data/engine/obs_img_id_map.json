@@ -1,0 +1,14 @@
+{
+  "id_to_img": {
+    "0": "__empty__",
+    "1": "oryx/wall1",
+    "2": "oryx/space1",
+    "3": "oryx/alien3"
+  },
+  "img_to_id": {
+    "__empty__": 0,
+    "oryx/wall1": 1,
+    "oryx/space1": 2,
+    "oryx/alien3": 3
+  }
+}

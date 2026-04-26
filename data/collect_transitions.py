@@ -2,7 +2,7 @@
 Collect transitions from the SB3 PPO agent on Atari-style envs.
 
 Layout matches GVGAI headless runs from ``RunDataCollectionAgent`` (Java): each shard directory
-contains ``obs.npy``, ``action.npy``, ``n_actions.npy``, ``player_x.npy``, ``player_y.npy``.
+contains ``obs.npy``, ``action.npy``, ``restarted.npy``, ``n_actions.npy``, ``player_x.npy``, ``player_y.npy``.
 This script writes under ``data/transitions/train/<env>/``. GVGAI ``RunDataCollectionAgent`` writes the
 same shard layout to ``data/transitions/train/<game_stem>/``.
 ``obs.npy`` here is stacked RGB uint8; GVGAI uses a fixed grid encoding uint8 ``[N,H,W,3]``.
@@ -80,16 +80,18 @@ def save_shard(
 	obs_buf: List[np.ndarray],
 	action_buf: List[np.ndarray],
 	player_xy_buf: List[Tuple[Optional[float], Optional[float]]],
+	restarted_buf: List[bool],
 ) -> None:
 	"""
 	Save one shard as uncompressed .npy files in:
-	data/transitions/train/<env>/shard_XXXXX/{obs.npy, action.npy, n_actions.npy, player_x.npy, player_y.npy}
+	data/transitions/train/<env>/shard_XXXXX/{obs.npy, action.npy, restarted.npy, n_actions.npy, player_x.npy, player_y.npy}
 	"""
 	root = output_dir / env_name / f"shard_{global_shard_id:05d}"
 	root.mkdir(parents=True, exist_ok=True)
 	# main arrays
 	np.save(root / "obs.npy", np.asarray(obs_buf, dtype=np.uint8))
 	np.save(root / "action.npy", np.asarray(action_buf, dtype=np.int64).reshape(-1))
+	np.save(root / "restarted.npy", np.asarray(restarted_buf, dtype=np.int64).reshape(-1))
 	np.save(root / "n_actions.npy", np.array(NUM_ACTIONS, dtype=np.int64))
 	# optional metadata
 	player_x = np.array([p[0] if p is not None else np.nan for p in player_xy_buf], dtype=np.float32)
@@ -120,6 +122,9 @@ def collect_transitions(
 	obs_bufs: List[List[np.ndarray]] = [[] for _ in range(n_envs)]
 	action_bufs: List[List[np.ndarray]] = [[] for _ in range(n_envs)]
 	player_xy_bufs: List[List[Tuple[Optional[float], Optional[float]]]] = [[] for _ in range(n_envs)]
+	restarted_bufs: List[List[bool]] = [[] for _ in range(n_envs)]
+	# Mark first recorded frame after env reset/death/clear.
+	next_frame_is_restarted: List[bool] = [True for _ in range(n_envs)]
 	global_shard_id = 0
 	# Policy timing: same as before (one tick per vec step batch, +n_envs per iteration).
 	frame_counter = 0
@@ -163,6 +168,7 @@ def collect_transitions(
 					info_e = infos[e] if len(infos) > e else {}
 					player_xy = info_e.get("player_xy", (None, None))
 					player_xy_bufs[e].append(player_xy)
+					restarted_bufs[e].append(next_frame_is_restarted[e])
 
 				saved_total += n_envs
 				pbar.update(n_envs)
@@ -177,20 +183,39 @@ def collect_transitions(
 					for e, d in enumerate(dones):
 						if d:
 							last_action[e] = -1  # sentinel; will be replaced on next decision interval
+			for e, d in enumerate(dones):
+				next_frame_is_restarted[e] = bool(d)
 
 			# Save per-env when that env's buffer reaches chunk_size
 			for e in range(n_envs):
 				if len(obs_bufs[e]) >= chunk_size:
-					save_shard(TRANSITIONS_DIR / "train", env_name, global_shard_id, obs_bufs[e], action_bufs[e], player_xy_bufs[e])
+					save_shard(
+						TRANSITIONS_DIR / "train",
+						env_name,
+						global_shard_id,
+						obs_bufs[e],
+						action_bufs[e],
+						player_xy_bufs[e],
+						restarted_bufs[e],
+					)
 					global_shard_id += 1
 					obs_bufs[e].clear()
 					action_bufs[e].clear()
 					player_xy_bufs[e].clear()
+					restarted_bufs[e].clear()
 	finally:
 		# Flush remaining
 		for e in range(n_envs):
 			if action_bufs[e]:
-				save_shard(TRANSITIONS_DIR / "train", env_name, global_shard_id, obs_bufs[e], action_bufs[e], player_xy_bufs[e])
+				save_shard(
+					TRANSITIONS_DIR / "train",
+					env_name,
+					global_shard_id,
+					obs_bufs[e],
+					action_bufs[e],
+					player_xy_bufs[e],
+					restarted_bufs[e],
+				)
 				global_shard_id += 1
 		vec.close()
 		pbar.close()

@@ -1,4 +1,4 @@
-"""Compact UNet2D denoiser: stacked history + noisy next frame; cross-attn conditioned on single action a_t."""
+"""Compact UNet2D denoiser: stacked history + noisy next frame; cross-attn on action + rule tokens (seq len 2)."""
 
 from __future__ import annotations
 
@@ -20,12 +20,21 @@ class Diffuser(nn.Module):
 		history_len: int,
 		prediction_type: Literal["epsilon", "sample", "v_prediction"] = "v_prediction",
 		pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
-		cond_drop_prob: float = 0.1,
-		cfg_scale: float = 1.5,
+		cfg_both_drop_prob: float = 0.10,
+		cfg_action_drop_prob: float = 0.05,
+		cfg_rule_drop_prob: float = 0.05,
+		cfg_scale_action: float = 1.5,
+		cfg_scale_rule: float = 1.5,
 	) -> None:
 		super().__init__()
-		self.cond_drop_prob = float(cond_drop_prob)
-		self.cfg_scale = float(cfg_scale)
+		self.cfg_both_drop_prob = float(cfg_both_drop_prob)
+		self.cfg_action_drop_prob = float(cfg_action_drop_prob)
+		self.cfg_rule_drop_prob = float(cfg_rule_drop_prob)
+		p_sum = self.cfg_both_drop_prob + self.cfg_action_drop_prob + self.cfg_rule_drop_prob
+		if p_sum > 1.0:
+			raise ValueError(f"cfg_*_drop_prob sum is {p_sum}, must be <= 1.0")
+		self.cfg_scale_action = float(cfg_scale_action)
+		self.cfg_scale_rule = float(cfg_scale_rule)
 		self.latent_channels = latent_channels
 		self.cross_attention_dim = cross_attention_dim
 		self.history_len = int(history_len)
@@ -62,6 +71,11 @@ class Diffuser(nn.Module):
 		with torch.no_grad():
 			self.action_embedding.weight[self.null_action_index].zero_()
 
+		self.num_rules = 4
+		# One-hot [B, 4] → rule token [B, D]; bias=False so zeros → no rule signal (CFG / dropout).
+		self.rule_projection = nn.Linear(self.num_rules, cross_attention_dim, bias=False)
+		nn.init.normal_(self.rule_projection.weight, std=0.02)
+
 		self.noise_scheduler = DDIMScheduler.from_pretrained(
 			pretrained_model_name_or_path, subfolder="scheduler",
 		)
@@ -72,11 +86,20 @@ class Diffuser(nn.Module):
 		noisy_latents: torch.Tensor,
 		timesteps: torch.Tensor,
 		action: torch.Tensor,
+		rule_onehot: torch.Tensor | None = None,
 	) -> torch.Tensor:
 		"""Stacked-frame denoise: predict noise / v for the next frame (4-channel UNet output).
 
 		``action`` indices are env actions ``0 .. num_actions-1``, or ``null_action_index`` (= ``num_actions``)
-		for unconditional / CFG. Training: ``cond_drop_prob`` replaces some rows with the null index.
+		for unconditional / CFG.
+
+		Training: one ``u ~ U(0,1)`` per row sets dropout mode (non-overlapping intervals):
+		``cfg_both_drop_prob`` → null action + zero rule; ``cfg_action_drop_prob`` → null action, keep rule;
+		``cfg_rule_drop_prob`` → zero rule, keep action.
+
+		``rule_onehot`` [B, 4] float: normal [1,0,0,0], rules_fast [0,1,0,0], multishot [0,0,1,0],
+		ricochet [0,0,0,1]. If None, uses normal for every row. Cross-attention sees two tokens:
+		``[..., 0, :]`` = action embedding, ``[..., 1, :]`` = rule projection.
 		"""
 		B, F, C, H, W = noisy_latents.shape
 		assert F == self.num_latent_frames, f"Expected F={self.num_latent_frames}, got {F}"
@@ -84,11 +107,29 @@ class Diffuser(nn.Module):
 
 		x = noisy_latents.reshape(B, F * C, H, W).contiguous()
 		a = action
-		p = self.cond_drop_prob
-		if p > 0 and self.training:
-			drop = torch.rand(B, device=a.device, dtype=torch.float32) < p
-			a = torch.where(drop, torch.full_like(a, self.null_action_index), a)
-		enc = self.action_embedding(a).unsqueeze(1)
+		dev, dt = a.device, self.action_embedding.weight.dtype
+		if rule_onehot is None:
+			roh = torch.zeros(B, self.num_rules, device=dev, dtype=dt)
+			roh[:, 0] = 1.0
+		else:
+			roh = rule_onehot.to(device=dev, dtype=dt)
+			if roh.shape != (B, self.num_rules):
+				raise ValueError(f"rule_onehot expected [B,{self.num_rules}], got {tuple(roh.shape)}")
+
+		p0 = self.cfg_both_drop_prob
+		p1 = p0 + self.cfg_action_drop_prob
+		p2 = p1 + self.cfg_rule_drop_prob
+		if self.training and p2 > 0:
+			u = torch.rand(B, device=a.device, dtype=torch.float32)
+			drop_both = u < p0
+			drop_action_only = (u >= p0) & (u < p1)
+			drop_rule_only = (u >= p1) & (u < p2)
+			null_a = torch.full_like(a, self.null_action_index)
+			a = torch.where(drop_both | drop_action_only, null_a, a)
+			roh = torch.where((drop_both | drop_rule_only).unsqueeze(1), torch.zeros_like(roh), roh)
+		action_enc = self.action_embedding(a)
+		rule_enc = self.rule_projection(roh)
+		enc = torch.stack([action_enc, rule_enc], dim=1)
 
 		out = self.unet(
 			x, timesteps, encoder_hidden_states=enc, return_dict=False,

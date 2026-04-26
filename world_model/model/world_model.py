@@ -9,6 +9,7 @@ Inference:   pass the action that leaves the last history state (one step contro
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import torch
@@ -28,6 +29,11 @@ class WorldModel(nn.Module):
 		history_len: int = 2,
 		gradient_checkpointing: bool = False,
 		pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
+		cfg_both_drop_prob: float = 0.10,
+		cfg_action_drop_prob: float = 0.05,
+		cfg_rule_drop_prob: float = 0.05,
+		cfg_scale_action: float = 1.5,
+		cfg_scale_rule: float = 1.5,
 	) -> None:
 		super().__init__()
 		self.history_len = history_len
@@ -44,6 +50,11 @@ class WorldModel(nn.Module):
 			history_len=history_len,
 			prediction_type=prediction_type,
 			pretrained_model_name_or_path=pretrained_model_name_or_path,
+			cfg_both_drop_prob=cfg_both_drop_prob,
+			cfg_action_drop_prob=cfg_action_drop_prob,
+			cfg_rule_drop_prob=cfg_rule_drop_prob,
+			cfg_scale_action=cfg_scale_action,
+			cfg_scale_rule=cfg_scale_rule,
 		)
 		if gradient_checkpointing:
 			self.diffuser.unet.enable_gradient_checkpointing()
@@ -85,6 +96,7 @@ class WorldModel(nn.Module):
 		noise: torch.Tensor,
 		delta_hist: torch.Tensor | None = None,
 		gamma: float = 0.0,
+		rule_onehot: torch.Tensor | None = None,
 	) -> tuple[torch.Tensor, torch.Tensor]:
 		"""
 		z_hist:           [B, K, C, h, w] clean history latents (frames …, t-1)
@@ -94,6 +106,7 @@ class WorldModel(nn.Module):
 		noise:            [B, C, h, w]
 		delta_hist:       [B, K, C, h, w] | None
 		gamma:            corruption scale
+		rule_onehot:      [B, 4] float one-hot (normal / rules_fast / multishot / ricochet); None → normal.
 
 		Returns (model_pred, target) both [B, C, h, w]. Target matches scheduler's prediction_type
 		(epsilon → noise, v_prediction → velocity, sample → z_tgt).
@@ -111,8 +124,9 @@ class WorldModel(nn.Module):
 
 		x = torch.cat([z_hist, noisy_tgt.unsqueeze(1)], dim=1)  # [B, K+1, C, h, w]
 		a_t = history_actions[:, -1].to(device)
+		roh = None if rule_onehot is None else rule_onehot.to(device=device, dtype=self.diffuser.action_embedding.weight.dtype)
 
-		model_pred = self.diffuser(x, timesteps, a_t)
+		model_pred = self.diffuser(x, timesteps, a_t, roh)
 
 		pt = sched.config.prediction_type
 		if pt == "v_prediction":
@@ -134,10 +148,17 @@ class WorldModel(nn.Module):
 		num_inference_steps: int = 30,
 		delta_hist: torch.Tensor | None = None,
 		gamma: float = 0.0,
+		rule_onehot: torch.Tensor | None = None,
 	) -> torch.Tensor:
 		"""Generate next latent frame [B, 1, C, h, w].
 
 		``transition_action`` [B] is the env action from the last history frame (a[t-1] for target t).
+		``rule_onehot`` [B, 4] optional; None means normal rules.
+
+		Classifier-free guidance is **additive**: unconditional ``pred_00`` + ``cfg_scale_action * (pred_aa - pred_0a)``
+		(action guidance) + ``cfg_scale_rule * (pred_aa - pred_a0)`` (rule guidance), with ``pred_aa`` full cond,
+		``pred_0a`` null action / rule on, ``pred_a0`` rule off / action on. If both scales are 0, only ``pred_00``;
+		if both are 1, a single ``pred_aa`` forward is used so sampling matches full joint conditioning.
 		"""
 		B, K, C, h, w = z_hist.shape
 		device = z_hist.device
@@ -150,6 +171,13 @@ class WorldModel(nn.Module):
 
 		z_hist = z_hist.to(dtype=dtype)
 		a_t = transition_action.to(device=device, dtype=torch.long)
+		dt_rule = self.diffuser.action_embedding.weight.dtype
+		if rule_onehot is None:
+			roh = torch.zeros(B, self.diffuser.num_rules, device=device, dtype=dt_rule)
+			roh[:, 0] = 1.0
+		else:
+			roh = rule_onehot.to(device=device, dtype=dt_rule)
+		roh_u = torch.zeros(B, self.diffuser.num_rules, device=device, dtype=dt_rule)
 
 		latents = torch.randn(B, C, h, w, device=device, dtype=dtype)
 		sched = self.diffuser.noise_scheduler
@@ -159,14 +187,23 @@ class WorldModel(nn.Module):
 		ts = sched.timesteps
 		if isinstance(ts, torch.Tensor):
 			ts = ts.to(device=device)
-		sc = self.diffuser.cfg_scale
+		sc_a = self.diffuser.cfg_scale_action
+		sc_r = self.diffuser.cfg_scale_rule
 		for t in ts:
 			x = torch.cat([z_hist, latents.unsqueeze(1)], dim=1)
 			t_batch = t.unsqueeze(0).expand(B).contiguous()
 			null_a = torch.full_like(a_t, self.diffuser.null_action_index)
-			pred_c = self.diffuser(x, t_batch, a_t)
-			pred_u = self.diffuser(x, t_batch, null_a)
-			pred = pred_u + sc * (pred_c - pred_u)
+			# Additive CFG: ``pred_00`` + action guidance + rule guidance (fast paths at corners).
+			if math.isclose(sc_a, 0.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 0.0, rel_tol=0.0, abs_tol=1e-6):
+				pred = self.diffuser(x, t_batch, null_a, roh_u)
+			elif math.isclose(sc_a, 1.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 1.0, rel_tol=0.0, abs_tol=1e-6):
+				pred = self.diffuser(x, t_batch, a_t, roh)
+			else:
+				pred_aa = self.diffuser(x, t_batch, a_t, roh)
+				pred_0a = self.diffuser(x, t_batch, null_a, roh)
+				pred_a0 = self.diffuser(x, t_batch, a_t, roh_u)
+				pred_00 = self.diffuser(x, t_batch, null_a, roh_u)
+				pred = pred_00 + sc_a * (pred_aa - pred_0a) + sc_r * (pred_aa - pred_a0)
 			latents = sched.step(
 				pred,
 				t,
@@ -184,6 +221,7 @@ class WorldModel(nn.Module):
 		out_dir.mkdir(parents=True, exist_ok=True)
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
 		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
+		torch.save(self.diffuser.rule_projection.state_dict(), out_dir / "rule_projection.pt")
 		sched_dir = out_dir / "noise_scheduler"
 		sched_dir.mkdir(parents=True, exist_ok=True)
 		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))

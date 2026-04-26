@@ -9,8 +9,8 @@ from PIL import Image
 
 
 DEFAULT_TRANSITIONS_ROOT = Path("data") / "transitions"
-DEFAULT_ENV = "test"
-DEFAULT_SPLIT = "aliens_rules_multishot"
+DEFAULT_ENV = "train"
+DEFAULT_SPLIT = "aliens_rules_fast"
 
 GVGAI_ACTION_LABELS = [
 	"ACTION_NIL",
