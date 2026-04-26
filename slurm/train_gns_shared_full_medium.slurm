@@ -16,7 +16,8 @@ cd "$ROOT"
 mkdir -p /scratch/sjb8193/game_wm/logs/slurm
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-export PYTHON="${PYTHON:-python}"
+export CONDA_ENV_PREFIX="${CONDA_ENV_PREFIX:-/scratch/sjb8193/penv}"
+export PYTHON="${PYTHON:-$CONDA_ENV_PREFIX/bin/python}"
 export SEED="${SEED:-0}"
 export DATASET="${DATASET:-$ROOT/data/transitions/gns_shared/pong_breakout_seed${SEED}}"
 export OUTPUT="${OUTPUT:-$ROOT/runs/gns_shared_full_medium_seed${SEED}}"
