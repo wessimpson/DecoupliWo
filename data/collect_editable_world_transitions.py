@@ -64,6 +64,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--counterfactual-base-mode", choices=MODES, default="normal")
     parser.add_argument("--rare-events", action="store_true", help="Append targeted rare/diverse states after rollout collection.")
     parser.add_argument("--rare-samples-per-source", type=int, default=2000)
+    parser.add_argument(
+        "--rare-rollout-steps",
+        type=int,
+        default=1,
+        help="Number of consecutive steps to save from each rare/counterfactual start. Use >=8 for history-window simulators.",
+    )
     parser.add_argument("--rare-sources", nargs="+", choices=SOURCES[1:], default=None, help="Rare sources to sample. Defaults to all supported sources per game.")
     parser.add_argument("--rare-counterfactual", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--val-fraction", type=float, default=0.1)
@@ -467,29 +473,36 @@ def collect_rare_for_game(
                     env = rule_envs[mode]
                     env.set_state(clone_for_mode(game, base_state))
                     state_obs = env.state_to_observation()
-                    slots, mask = state_slots(game, env)
-                    next_obs, reward, terminated, truncated, info = env.step(action)
-                    next_slots, next_mask = state_slots(game, env)
-                    event_name = str(info.get("event", "none"))
-                    event_counts[event_name] = event_counts.get(event_name, 0) + 1
-                    writer.append(
-                        state_obs,
-                        action,
-                        next_obs,
-                        reward,
-                        terminated,
-                        truncated,
-                        RULE_TO_ID[mode],
-                        event_id(info),
-                        episode_id,
-                        sample_idx,
-                        source_id=SOURCE_TO_ID[source],
-                        game_id=GAME_TO_ID[game],
-                        object_slots=slots,
-                        next_object_slots=next_slots,
-                        object_mask=mask,
-                        next_object_mask=next_mask,
-                    )
+                    current_action = action
+                    policy = policy_for_episode(args, episode_id)
+                    for rollout_step in range(max(int(args.rare_rollout_steps), 1)):
+                        slots, mask = state_slots(game, env)
+                        next_obs, reward, terminated, truncated, info = env.step(current_action)
+                        next_slots, next_mask = state_slots(game, env)
+                        event_name = str(info.get("event", "none"))
+                        event_counts[event_name] = event_counts.get(event_name, 0) + 1
+                        writer.append(
+                            state_obs,
+                            current_action,
+                            next_obs,
+                            reward,
+                            terminated,
+                            truncated,
+                            RULE_TO_ID[mode],
+                            event_id(info),
+                            episode_id,
+                            rollout_step,
+                            source_id=SOURCE_TO_ID[source],
+                            game_id=GAME_TO_ID[game],
+                            object_slots=slots,
+                            next_object_slots=next_slots,
+                            object_mask=mask,
+                            next_object_mask=next_mask,
+                        )
+                        state_obs = next_obs
+                        if terminated or truncated:
+                            break
+                        current_action = choose_action(game, policy, state_obs, env, rng)
                 source_counts[source] += 1
                 episode_id += 1
     finally:
