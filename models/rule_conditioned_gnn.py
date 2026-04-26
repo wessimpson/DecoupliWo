@@ -139,6 +139,7 @@ class RuleConditionedPongGNN(nn.Module):
         hidden_dim: int = 128,
         message_passing_steps: int = 2,
         mlp_layers: int = 2,
+        history_steps: int = 6,
         constants: PongObjectConstants | None = None,
         edge_mode: str = "hybrid",
         edge_distance_threshold: float = 0.35,
@@ -153,10 +154,12 @@ class RuleConditionedPongGNN(nn.Module):
         self.rule_dim = int(rule_dim)
         self.type_dim = int(type_dim)
         self.message_passing_steps = int(message_passing_steps)
+        self.history_steps = max(int(history_steps), 2)
         self.edge_mode = edge_mode
         self.edge_distance_threshold = float(edge_distance_threshold)
         self.num_events = int(num_events)
         self.boundary_feature_dim = 4
+        self.history_feature_dim = 2 * (self.history_steps - 1)
         self.constants = constants or PongObjectConstants()
         self.max_objects = int(self.constants.max_objects)
         self.normalizer = PongStateNormalizer(self.constants)
@@ -170,7 +173,7 @@ class RuleConditionedPongGNN(nn.Module):
         self.rule_embedding = nn.Embedding(self.num_rules, self.rule_dim)
         self.type_embedding = nn.Embedding(self.num_object_types, self.type_dim)
         self.node_encoder = mlp(
-            node_numeric_dim + type_dim + self.boundary_feature_dim + action_dim + 1,
+            self.history_feature_dim + type_dim + self.boundary_feature_dim + action_dim + 1,
             hidden_dim,
             latent_dim,
             layers=mlp_layers,
@@ -341,19 +344,57 @@ class RuleConditionedPongGNN(nn.Module):
         radius = max(float(self.edge_distance_threshold), 1e-6)
         return torch.clamp(torch.cat([dist_to_lower, dist_to_upper], dim=-1) / radius, -1.0, 1.0)
 
-    def encode_slots(self, slots: torch.Tensor, object_mask: torch.Tensor, action: torch.Tensor | None = None) -> torch.Tensor:
+    def expand_history(self, slots: torch.Tensor, object_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            slots[:, None, ...].expand(-1, self.history_steps, -1, -1).contiguous(),
+            object_mask[:, None, ...].expand(-1, self.history_steps, -1).contiguous(),
+        )
+
+    def history_features(
+        self,
+        slot_history: torch.Tensor,
+        mask_history: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        slot_history = slot_history.to(torch.float32)
+        mask_history = mask_history.to(torch.float32)
+        normalized_history = self.normalizer.normalize_slots(slot_history)
+        position_history = normalized_history[..., 0:2]
+        velocity_sequence = position_history[:, 1:] - position_history[:, :-1]
+        velocity_features = velocity_sequence.permute(0, 2, 1, 3).reshape(
+            slot_history.shape[0],
+            slot_history.shape[2],
+            self.history_feature_dim,
+        )
+        current_slots = slot_history[:, -1]
+        current_mask = mask_history[:, -1]
+        velocity_features = velocity_features * current_mask[..., None]
+        return velocity_features, current_slots, current_mask
+
+    def encode_slots(
+        self,
+        slots: torch.Tensor,
+        object_mask: torch.Tensor,
+        action: torch.Tensor | None = None,
+        slot_history: torch.Tensor | None = None,
+        object_mask_history: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         slots = slots.to(torch.float32)
         object_mask = object_mask.to(torch.float32)
-        normalized = self.normalizer.normalize_slots(slots)
-        type_ids = slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
+        if slot_history is None or object_mask_history is None:
+            slot_history, object_mask_history = self.expand_history(slots, object_mask)
+        else:
+            slot_history = slot_history.to(torch.float32)
+            object_mask_history = object_mask_history.to(torch.float32)
+        history_features, current_slots, current_mask = self.history_features(slot_history, object_mask_history)
+        type_ids = current_slots[..., 6].round().clamp(0, self.num_object_types - 1).to(torch.long)
         type_emb = self.type_embedding(type_ids)
-        boundary_features = self.boundary_node_features(slots)
+        boundary_features = self.boundary_node_features(current_slots)
         if action is None:
             action_nodes = torch.zeros(slots.shape[0], slots.shape[1], self.action_dim, dtype=slots.dtype, device=slots.device)
         else:
-            action_nodes = self.action_to_nodes(action, slots, object_mask)
-        node_in = torch.cat([normalized[..., :6], boundary_features, type_emb, action_nodes, object_mask[..., None]], dim=-1)
-        return self.node_encoder(node_in) * object_mask[..., None]
+            action_nodes = self.action_to_nodes(action, current_slots, current_mask)
+        node_in = torch.cat([history_features, boundary_features, type_emb, action_nodes, current_mask[..., None]], dim=-1)
+        return self.node_encoder(node_in) * current_mask[..., None]
 
     def encode_state(self, normalized_state: torch.Tensor) -> torch.Tensor:
         raw_state = self.normalizer.denormalize(normalized_state)
@@ -470,6 +511,8 @@ class RuleConditionedPongGNN(nn.Module):
         normalized: bool = False,
         object_slots: torch.Tensor | None = None,
         object_mask: torch.Tensor | None = None,
+        slot_history: torch.Tensor | None = None,
+        object_mask_history: torch.Tensor | None = None,
         game_id: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         if object_slots is None or object_mask is None:
@@ -478,8 +521,15 @@ class RuleConditionedPongGNN(nn.Module):
         else:
             object_slots = object_slots.to(torch.float32)
             object_mask = object_mask.to(torch.float32)
+        if slot_history is None or object_mask_history is None:
+            slot_history, object_mask_history = self.expand_history(object_slots, object_mask)
+        else:
+            slot_history = slot_history.to(torch.float32)
+            object_mask_history = object_mask_history.to(torch.float32)
+            object_slots = slot_history[:, -1]
+            object_mask = object_mask_history[:, -1]
 
-        z = self.encode_slots(object_slots, object_mask, action)
+        z = self.encode_slots(object_slots, object_mask, action, slot_history, object_mask_history)
         z_next = self.transition_latents(z, action, rule_id, object_slots, object_mask)
         pred_next_slots, pred_next_mask_logits, pred_normalized_acceleration = self.decode_next_slots(
             z_next,
@@ -507,6 +557,8 @@ class RuleConditionedPongGNN(nn.Module):
             "z_next_pred": z_next,
             "object_slots": object_slots,
             "object_mask": object_mask,
+            "slot_history": slot_history,
+            "object_mask_history": object_mask_history,
         }
 
     def contrastive_loss(

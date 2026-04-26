@@ -47,11 +47,13 @@ def build_model(checkpoint: dict, device: torch.device) -> RuleConditionedPongGN
     args = checkpoint.get("args", {})
     constants = PongObjectConstants(**checkpoint.get("constants", {}))
     model = RuleConditionedPongGNN(
+        num_rules=int(args.get("num_rules", len(RULE_TO_ID))),
         latent_dim=int(args.get("latent_dim", 64)),
         rule_dim=int(args.get("rule_dim", 16)),
         type_dim=int(args.get("type_dim", 8)),
         hidden_dim=int(args.get("hidden_dim", 128)),
         message_passing_steps=int(args.get("message_passing_steps", 2)),
+        history_steps=int(args.get("history_length", 6)),
         constants=constants,
         edge_mode=str(args.get("edge_mode", "hybrid")),
         edge_distance_threshold=float(args.get("edge_distance_threshold", 0.35)),
@@ -69,13 +71,43 @@ def effective_rule_id(rule_id: int, rule_ablation: str) -> int:
     return int(rule_id)
 
 
+def update_history(history: torch.Tensor, next_state: np.ndarray, model: RuleConditionedPongGNN, device: torch.device) -> torch.Tensor:
+    next_state_batch = torch.as_tensor(next_state, dtype=torch.float32, device=device).unsqueeze(0)
+    next_slots, _ = model.state_to_slots(next_state_batch)
+    return torch.cat([history[:, 1:], next_slots[:, None]], dim=1)
+
+
 @torch.no_grad()
-def predict_next(model: RuleConditionedPongGNN, state: np.ndarray, action: int, rule_id: int, device: torch.device) -> np.ndarray:
+def predict_next(
+    model: RuleConditionedPongGNN,
+    state: np.ndarray,
+    action: int,
+    rule_id: int,
+    device: torch.device,
+    history_slots: torch.Tensor | None = None,
+) -> tuple[np.ndarray, torch.Tensor]:
     batch_state = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
     batch_action = torch.as_tensor([action], dtype=torch.long, device=device)
     batch_rule = torch.as_tensor([rule_id], dtype=torch.long, device=device)
-    out = model(batch_state, batch_action, batch_rule, normalized=False)
-    return out["pred_next"][0].detach().cpu().numpy()
+    if history_slots is None:
+        slots, mask = model.state_to_slots(batch_state)
+        history_slots, history_mask = model.expand_history(slots, mask)
+    else:
+        history_slots = history_slots.to(device)
+        history_mask = torch.ones(history_slots.shape[:3], dtype=history_slots.dtype, device=device)
+    out = model(
+        batch_state,
+        batch_action,
+        batch_rule,
+        normalized=False,
+        object_slots=history_slots[:, -1],
+        object_mask=history_mask[:, -1],
+        slot_history=history_slots,
+        object_mask_history=history_mask,
+    )
+    pred_next = out["pred_next"][0].detach().cpu().numpy()
+    next_history = update_history(history_slots, pred_next, model, device)
+    return pred_next, next_history
 
 
 def rollout_eval(
@@ -96,10 +128,18 @@ def rollout_eval(
         for _ in range(int(episodes)):
             obs, _ = env.reset()
             pred_state = obs.copy()
+            pred_history = None
             for step in range(int(horizon)):
                 action = choose_policy_action(policy, obs, env, rng)
                 true_next, _, terminated, truncated, _ = env.step(action)
-                pred_state = predict_next(model, pred_state, action, effective_rule_id(RULE_TO_ID[mode], rule_ablation), device)
+                pred_state, pred_history = predict_next(
+                    model,
+                    pred_state,
+                    action,
+                    effective_rule_id(RULE_TO_ID[mode], rule_ablation),
+                    device,
+                    pred_history,
+                )
                 per_step_errors[step].append(float(np.mean((pred_state - true_next) ** 2)))
                 obs = true_next
                 if terminated or truncated:
@@ -122,6 +162,8 @@ def counterfactual_eval(
     rule_ablation: str,
     modes: list[str],
 ) -> dict[str, float]:
+    if len(modes) <= 1:
+        return {}
     rng = random.Random(seed)
     base_env = make_env("normal", seed=seed)
     rule_envs = {mode: make_env(mode, seed=seed + 100 + RULE_TO_ID[mode]) for mode in modes}
@@ -142,7 +184,7 @@ def counterfactual_eval(
                 env.set_state(copy_state_for_mode(base_state))
                 state_obs = env.state_to_observation()
                 true_next, _, _, _, _ = env.step(action)
-                pred_next = predict_next(model, state_obs, action, effective_rule_id(RULE_TO_ID[mode], rule_ablation), device)
+                pred_next, _ = predict_next(model, state_obs, action, effective_rule_id(RULE_TO_ID[mode], rule_ablation), device)
                 true_nexts.append(true_next)
                 pred_nexts.append(pred_next)
                 errors[mode].append(float(np.mean((pred_next - true_next) ** 2)))
@@ -168,12 +210,31 @@ def main() -> int:
     checkpoint_path = pathlib.Path(args.checkpoint).expanduser().resolve()
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model = build_model(checkpoint, device)
-    rule_ablation = args.rule_ablation or checkpoint.get("args", {}).get("rule_ablation", "none")
+    checkpoint_args = checkpoint.get("args", {})
+    rule_ablation = args.rule_ablation or checkpoint_args.get("rule_ablation", "none")
+    single_rule_mode = checkpoint_args.get("single_rule_mode")
+    checkpoint_train_combos = checkpoint_args.get("train_combos")
+    eval_modes = list(args.eval_modes)
+    if single_rule_mode and eval_modes == list(MODES):
+        eval_modes = [str(single_rule_mode)]
+    rule_id_map = checkpoint_args.get("rule_id_map")
+    eval_combos = parse_combos(checkpoint_train_combos)
 
     metrics: dict[str, float | str] = {"checkpoint_epoch": float(checkpoint.get("epoch", -1)), "rule_ablation": rule_ablation}
+    if single_rule_mode:
+        metrics["single_rule_mode"] = str(single_rule_mode)
     if args.dataset:
         dataset_root = pathlib.Path(args.dataset).expanduser().resolve()
-        val_data = PongTransitionDataset(dataset_root, "val", rule_ablation=rule_ablation, seed=args.seed, rollout_horizon=args.rollout_horizon)
+        val_data = PongTransitionDataset(
+            dataset_root,
+            "val",
+            combos=eval_combos,
+            rule_ablation=rule_ablation,
+            seed=args.seed,
+            rollout_horizon=args.rollout_horizon,
+            history_length=int(checkpoint_args.get("history_length", 6)),
+            rule_id_map=rule_id_map,
+        )
         val_loader = DataLoader(val_data, batch_size=args.batch_size, shuffle=False)
         metrics.update(evaluate(model, val_loader, device))
         holdout_combos = parse_combos(args.holdout_combos)
@@ -185,11 +246,13 @@ def main() -> int:
                 rule_ablation=rule_ablation,
                 seed=args.seed,
                 rollout_horizon=args.rollout_horizon,
+                history_length=int(checkpoint_args.get("history_length", 6)),
+                rule_id_map=rule_id_map,
             )
             holdout_loader = DataLoader(holdout_data, batch_size=args.batch_size, shuffle=False)
             metrics.update({f"holdout/{key}": value for key, value in evaluate(model, holdout_loader, device).items()})
-    metrics.update(rollout_eval(model, device, args.rollout_episodes, args.rollout_horizon, args.policy, args.seed, rule_ablation, args.eval_modes))
-    metrics.update(counterfactual_eval(model, device, args.rollout_episodes * args.rollout_horizon, args.policy, args.seed, rule_ablation, args.eval_modes))
+    metrics.update(rollout_eval(model, device, args.rollout_episodes, args.rollout_horizon, args.policy, args.seed, rule_ablation, eval_modes))
+    metrics.update(counterfactual_eval(model, device, args.rollout_episodes * args.rollout_horizon, args.policy, args.seed, rule_ablation, eval_modes))
 
     print(json.dumps(metrics, indent=2, sort_keys=True))
     if args.output:

@@ -59,6 +59,23 @@ class ObjectWorldModelTests(unittest.TestCase):
         self.assertIn("rel_loss", losses)
         self.assertTrue(torch.isfinite(losses["loss"]))
 
+    def test_single_rule_model_forward_uses_dense_rule_ids(self) -> None:
+        model = RuleConditionedPongGNN(num_rules=1, latent_dim=16, hidden_dim=32, rule_dim=8, type_dim=4, message_passing_steps=2)
+        state = torch.tensor([[100.0, 120.0, 240.0, 30.0, 160.0, 0.0]], dtype=torch.float32)
+        slots, mask = model.state_to_slots(state)
+
+        out = model(
+            state,
+            torch.tensor([0], dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            object_slots=slots,
+            object_mask=mask,
+            game_id=torch.tensor([0], dtype=torch.long),
+        )
+
+        self.assertEqual(out["pred_next_slots"].shape, slots.shape)
+        self.assertTrue(torch.isfinite(out["pred_next"]).all())
+
 
 if __name__ == "__main__":
     unittest.main()

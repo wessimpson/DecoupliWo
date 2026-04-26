@@ -14,11 +14,13 @@ LR="${LR:-2e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-5}"
 DEVICE="${DEVICE:-auto}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
+HISTORY_LENGTH="${HISTORY_LENGTH:-6}"
 CONTRASTIVE_WEIGHT="${CONTRASTIVE_WEIGHT:-0.02}"
 MASK_LOSS_WEIGHT="${MASK_LOSS_WEIGHT:-0.1}"
 EVENT_WEIGHT="${EVENT_WEIGHT:-3.0}"
 TRAIN_COMBOS="${TRAIN_COMBOS:-pong:normal}"
 HOLDOUT_COMBOS="${HOLDOUT_COMBOS:-}"
+SINGLE_RULE_MODE="${SINGLE_RULE_MODE:-normal}"
 SEED="${SEED:-0}"
 
 cmd=(
@@ -30,6 +32,7 @@ cmd=(
   --batch-size "$BATCH_SIZE"
   --lr "$LR"
   --weight-decay "$WEIGHT_DECAY"
+  --history-length "$HISTORY_LENGTH"
   --contrastive-weight "$CONTRASTIVE_WEIGHT"
   --mask-loss-weight "$MASK_LOSS_WEIGHT"
   --event-weight "$EVENT_WEIGHT"
@@ -37,6 +40,10 @@ cmd=(
   --num-workers "$NUM_WORKERS"
   --seed "$SEED"
 )
+
+if [[ -n "$SINGLE_RULE_MODE" ]]; then
+  cmd+=(--single-rule-mode "$SINGLE_RULE_MODE")
+fi
 
 if [[ -n "$TRAIN_COMBOS" ]]; then
   read -r -a combo_args <<< "$TRAIN_COMBOS"

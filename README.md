@@ -44,6 +44,17 @@ Run the smallest end-to-end sanity check with only one environment and one rule,
 
 This collects only Pong normal transitions, trains a small model, evaluates only normal mode with `--eval-modes normal`, and runs headless model playback.
 
+For a dedicated single-rule OODP run, use `--single-rule-mode normal`. This
+forces `pong:normal` train/validation filtering, remaps rule ids densely so the
+checkpoint is truly single-rule, and disables counterfactual-rule supervision
+and logging for that run.
+
+The single-rule path is now intentionally closer to DeepMind
+`learning_to_simulate`: short history windows (`--history-length`, default `6`)
+are converted into velocity-history node features, training noise is injected as
+a random walk over past positions, and the main objective becomes
+acceleration-first dynamics prediction rather than multi-head rule supervision.
+
 Collect broad counterfactual transitions. This stores the same state/action under all three rule variants:
 
 ```bash
@@ -162,6 +173,17 @@ Train the rule-conditioned GNN dynamics model:
   --model-size large \
   --epochs 100 \
   --batch-size 1024 \
+  --device auto
+```
+
+For normal-only single-rule training:
+
+```bash
+/home/soyuj/miniconda3/envs/gvgai_jpype/bin/python train_pong_world_model.py \
+  --dataset data/transitions/debug/pong_normal_large_seed0 \
+  --output runs/pong_normal_single_rule_seed0 \
+  --model-size large \
+  --single-rule-mode normal \
   --device auto
 ```
 

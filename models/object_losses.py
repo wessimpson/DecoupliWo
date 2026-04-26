@@ -185,6 +185,8 @@ def rollout_slot_loss(model: Any, batch: dict[str, torch.Tensor], row_weights: t
 
     current_slots = batch["object_slots"]
     current_mask = batch["object_mask"]
+    current_history = batch.get("history_object_slots")
+    current_history_mask = batch.get("history_object_mask")
     device = current_slots.device
     dummy_state = batch["state"]
     total = torch.zeros((), dtype=torch.float32, device=device)
@@ -198,6 +200,8 @@ def rollout_slot_loss(model: Any, batch: dict[str, torch.Tensor], row_weights: t
             normalized=False,
             object_slots=current_slots,
             object_mask=current_mask,
+            slot_history=current_history,
+            object_mask_history=current_history_mask,
             game_id=batch.get("game_id"),
         )
         step_valid = valid[:, step]
@@ -207,6 +211,9 @@ def rollout_slot_loss(model: Any, batch: dict[str, torch.Tensor], row_weights: t
             count = count + 1.0
         current_slots = out["pred_next_slots"]
         current_mask = target_masks[:, step]
+        if current_history is not None and current_history_mask is not None:
+            current_history = torch.cat([current_history[:, 1:], current_slots[:, None]], dim=1)
+            current_history_mask = torch.cat([current_history_mask[:, 1:], current_mask[:, None]], dim=1)
 
     return total / count.clamp_min(1.0)
 
@@ -229,7 +236,32 @@ def counterfactual_rule_loss(model: Any, batch: dict[str, torch.Tensor], row_wei
     game_ids = batch["game_id"][:, None].expand(-1, num_rules).reshape(batch_size * num_rules)
     dummy_state = batch["state"][:, None].expand(-1, num_rules, -1).reshape(batch_size * num_rules, batch["state"].shape[-1])
 
-    out = model(dummy_state, actions, rules, normalized=False, object_slots=slots, object_mask=masks, game_id=game_ids)
+    slot_history = batch.get("history_object_slots")
+    mask_history = batch.get("history_object_mask")
+    if slot_history is not None and mask_history is not None:
+        slot_history = slot_history[:, None].expand(-1, num_rules, -1, -1, -1).reshape(
+            batch_size * num_rules,
+            slot_history.shape[1],
+            slot_history.shape[2],
+            slot_history.shape[3],
+        )
+        mask_history = mask_history[:, None].expand(-1, num_rules, -1, -1).reshape(
+            batch_size * num_rules,
+            mask_history.shape[1],
+            mask_history.shape[2],
+        )
+
+    out = model(
+        dummy_state,
+        actions,
+        rules,
+        normalized=False,
+        object_slots=slots,
+        object_mask=masks,
+        slot_history=slot_history,
+        object_mask_history=mask_history,
+        game_id=game_ids,
+    )
     flat_targets = targets.reshape(batch_size * num_rules, *targets.shape[2:])
     flat_target_masks = target_masks.reshape(batch_size * num_rules, target_masks.shape[-1])
     flat_valid = valid.reshape(batch_size * num_rules)
