@@ -42,6 +42,12 @@ public class ShootAvatar extends OrientedAvatar
      */
     public boolean alignShotToOrientation = true;
 
+    /** If true, USE fires every comma-separated weapon in {@code stype} in one tick (default: first only). */
+    public boolean fireAllWeapons = false;
+
+    /** Horizontal spacing between simultaneous shots when {@link #fireAllWeapons} is true; 0 = same cell. */
+    public int spreadPixels = 10;
+
     public ShootAvatar(){}
 
     public ShootAvatar(Vector2d position, Dimension size, SpriteContent cnt)
@@ -82,10 +88,19 @@ public class ShootAvatar extends OrientedAvatar
     public void updateUse(Game game)
     {
         if(Utils.processUseKey(getKeyHandler().getMask(), getPlayerID())) {
-            for (int i = 0; i < itype.length; i++) {
-                if (hasAmmo(i)) {
+            if (fireAllWeapons) {
+                for (int i = 0; i < itype.length; i++) {
+                    if (!hasAmmo(i))
+                        return;
+                }
+                for (int i = 0; i < itype.length; i++)
                     shoot(game, i);
-                    break; // remove this to shoot all types of bullets at once; if here, shoots the first priority one only
+            } else {
+                for (int i = 0; i < itype.length; i++) {
+                    if (hasAmmo(i)) {
+                        shoot(game, i);
+                        break; // shoots the first priority weapon only
+                    }
                 }
             }
         }
@@ -103,6 +118,11 @@ public class ShootAvatar extends OrientedAvatar
             spawn = new Vector2d(this.rect.x, this.rect.y);
         }
 
+        if (fireAllWeapons && spreadPixels != 0 && itype != null && itype.length > 1) {
+            double mid = (itype.length - 1) / 2.0;
+            spawn.x += (int) Math.round((idx - mid) * spreadPixels);
+        }
+
         VGDLSprite newOne = game.addSprite(itype[idx], spawn);
 
         if(newOne != null)
@@ -117,21 +137,40 @@ public class ShootAvatar extends OrientedAvatar
         }
     }
 
+    /**
+     * Maps a weapon index to an ammo row when {@code ammo} lists fewer types than {@code stype}
+     * (e.g. one {@code bullet} pool for a triple shot): all weapons use slot 0.
+     */
+    protected int ammoSlotForWeaponIndex(int idx) {
+        if (ammo == null || ammos == null || ammos.length == 0)
+            return 0;
+        if (idx >= 0 && idx < ammos.length)
+            return idx;
+        return 0;
+    }
+
     protected boolean hasAmmo(int idx) {
-        if (ammo == null || idx >= ammos.length)
-            return true; //no ammo defined, I can shoot.
+        if (ammo == null)
+            return true;
 
-        //If I have ammo, I must have enough resource of ammo type to be able to shoot.
-        return resources.containsKey(ammoId[idx]) && resources.get(ammoId[idx]) > 0;
+        int slot = ammoSlotForWeaponIndex(idx);
+        if (slot < 0 || slot >= ammoId.length)
+            return false;
 
+        return resources.containsKey(ammoId[slot]) && resources.get(ammoId[slot]) > 0;
     }
 
     protected void reduceAmmo(int idx)
     {
-        if(ammo != null && idx < ammos.length && resources.containsKey(ammoId[idx]))
-        {
-            resources.put(ammoId[idx], resources.get(ammoId[idx]) - 1);
-        }
+        if (ammo == null)
+            return;
+        // One shared ammo string for multishot: subtract once (first projectile only).
+        if (fireAllWeapons && ammos != null && ammos.length == 1 && idx > 0)
+            return;
+
+        int slot = ammoSlotForWeaponIndex(idx);
+        if (slot < ammoId.length && resources.containsKey(ammoId[slot]))
+            resources.put(ammoId[slot], resources.get(ammoId[slot]) - 1);
     }
 
     public void postProcess()
@@ -179,6 +218,8 @@ public class ShootAvatar extends OrientedAvatar
         targetSprite.ammoId= this.ammoId.clone();
         targetSprite.ammos = this.ammos.clone();
         targetSprite.alignShotToOrientation = this.alignShotToOrientation;
+        targetSprite.fireAllWeapons = this.fireAllWeapons;
+        targetSprite.spreadPixels = this.spreadPixels;
 
         super.copyTo(targetSprite);
     }

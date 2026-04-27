@@ -921,7 +921,9 @@ public abstract class Game {
 			// Determine the time to adjust framerate.
 			long then = System.currentTimeMillis();
 
-			this.gameCycle(); // Execute a game cycle.
+			int skip = Math.max(1, CompetitionParameters.FRAME_SKIP);
+			for (int s = 0; s < skip && !isEnded && !wi.windowClosed; s++)
+				this.gameCycle();
 
 			// Get the remaining time to keep fps.
 			long now = System.currentTimeMillis();
@@ -999,7 +1001,9 @@ public abstract class Game {
 			// Determine the time to adjust framerate.
 			long then = System.currentTimeMillis();
 
-			this.gameCycle(); // Execute a game cycle.
+			int skip = Math.max(1, CompetitionParameters.FRAME_SKIP);
+			for (int s = 0; s < skip && !isEnded && !wi.windowClosed; s++)
+				this.gameCycle();
 
 			// Get the remaining time to keep fps.
 			long now = System.currentTimeMillis();
@@ -2199,6 +2203,10 @@ public abstract class Game {
 	 */
 	public int[] getSpriteOrder() {
 		return spriteOrder;
+	}
+
+	public SpriteGroup[] getSpriteGroups() {
+		return spriteGroups;
 	}
 
 	/**

@@ -119,6 +119,13 @@ public class CompetitionParameters
      */
     public static int LONG_DELAY = 25;
 
+    /**
+     * Simulation ticks executed per GUI refresh in {@code Game.playGame} / {@code playOnlineGame}.
+     * Default {@code 1} matches the original one-cycle-per-frame behavior. Larger values make the
+     * visible run advance faster while the agent is still invoked every simulation tick.
+     */
+    public static int FRAME_SKIP = 1;
+
 
     /**
      * Max time a game can run

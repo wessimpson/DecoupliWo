@@ -1,5 +1,8 @@
 package tracks.singlePlayer;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Random;
 
 import core.logging.Logger;
@@ -25,20 +28,30 @@ public class Test {
         String sampleRHEAController = "tracks.singlePlayer.advanced.sampleRHEA.Agent";
 		String sampleOLETSController = "tracks.singlePlayer.advanced.olets.Agent";
 
-		//Load available games
-		String spGamesCollection =  "examples/all_games_sp.csv";
-		String[][] games = Utils.readGames(spGamesCollection);
-
 		//Game settings
 		boolean visuals = true;
 		int seed = new Random().nextInt();
 
 		// Game and level to play
-		int gameIdx = 0;
-		int levelIdx = 0; // level names from 0 to 4 (game_lvlN.txt).
-		String gameName = games[gameIdx][1];
-		String game = games[gameIdx][0];
-		String level1 = game.replace(gameName, gameName + "_lvl" + levelIdx);
+		String game;
+		String level1;
+		if (args != null && args.length >= 2) {
+			// e.g. java ... tracks.singlePlayer.Test examples/gridphysics/aliens_rules_ricochet.txt examples/gridphysics/aliens_lvl0.txt
+			game = args[0];
+			level1 = args[1];
+		} else if (args != null && args.length == 1) {
+			game = args[0];
+			level1 = defaultLevelForOneArgGame(game);
+		} else {
+			//Load available games
+			String spGamesCollection = "examples/all_games_sp.csv";
+			String[][] games = Utils.readGames(spGamesCollection);
+			int gameIdx = 0;
+			int levelIdx = 0; // level names from 0 to 4 (game_lvlN.txt).
+			String gameName = games[gameIdx][1];
+			game = games[gameIdx][0];
+			level1 = game.replace(gameName, gameName + "_lvl" + levelIdx);
+		}
 
 		String recordActionsFile = null;// "actions_" + games[gameIdx] + "_lvl"
 						// + levelIdx + "_" + seed + ".txt";
@@ -86,4 +99,45 @@ public class Test {
 
 
     }
+
+	/**
+	 * When only the game file is passed, pick a stock level whose {@code LevelMapping}
+	 * matches that game family (under {@code examples/gridphysics/}). Aliens variants
+	 * share aliens tiles; chopper / waves use their own level alphabets — do not load
+	 * {@code aliens_lvl0.txt} for those or every cell logs "not defined" and the game breaks.
+	 */
+	public static String defaultLevelForOneArgGame(String gamePath) {
+		String g = gamePath.replace('\\', '/').toLowerCase();
+		// Prefer sibling "<game>_lvl0.txt" when present (works for data_collection variants).
+		if (gamePath != null && gamePath.toLowerCase().endsWith(".txt")) {
+			Path game = Paths.get(gamePath);
+			Path parent = game.getParent();
+			String file = game.getFileName() != null ? game.getFileName().toString() : "";
+			if (!file.isEmpty()) {
+				String stem = file.substring(0, file.length() - 4);
+				Path sibling = (parent == null ? Paths.get(stem + "_lvl0.txt") : parent.resolve(stem + "_lvl0.txt"));
+				if (Files.exists(sibling))
+					return sibling.toString().replace('\\', '/');
+				int rulesIdx = stem.indexOf("_rules_");
+				if (rulesIdx > 0) {
+					String baseStem = stem.substring(0, rulesIdx);
+					Path baseSibling = (parent == null ? Paths.get(baseStem + "_lvl0.txt")
+							: parent.resolve(baseStem + "_lvl0.txt"));
+					if (Files.exists(baseSibling))
+						return baseSibling.toString().replace('\\', '/');
+				}
+			}
+		}
+		if (g.contains("chopper"))
+			return "examples/gridphysics/chopper_lvl0.txt";
+		if (g.contains("waves"))
+			return "examples/gridphysics/waves_lvl0.txt";
+		if (g.contains("aliens"))
+			return "examples/gridphysics/aliens_lvl0.txt";
+		if (g.contains("eggomania"))
+			return "examples/gridphysics/eggomania_lvl0.txt";
+		if (g.contains("ikaruga"))
+			return "examples/gridphysics/ikaruga_lvl0.txt";
+		return "examples/gridphysics/aliens_lvl0.txt";
+	}
 }

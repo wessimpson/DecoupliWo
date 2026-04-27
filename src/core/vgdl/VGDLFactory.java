@@ -27,6 +27,7 @@ import ontology.sprites.npc.Walker;
 import ontology.sprites.npc.WalkerJumper;
 import ontology.sprites.npc.*;
 import ontology.sprites.producer.*;
+import tools.Direction;
 import tools.Vector2d;
 
 /**
@@ -368,6 +369,20 @@ public class VGDLFactory
             String value = content.parameters.get(parameter);
             if (fieldMap.containsKey(parameter))
             {
+                Field destField = fieldMap.get(parameter);
+                if (destField.getType() == Direction.class && value.contains(",")) {
+                    String[] parts = value.split(",");
+                    if (parts.length == 2) {
+                        try {
+                            double dx = Double.parseDouble(parts[0].trim());
+                            double dy = Double.parseDouble(parts[1].trim());
+                            destField.set(obj, new Direction(dx, dy));
+                            continue;
+                        } catch (Exception ignored) {
+                            // fall through to generic parsing
+                        }
+                    }
+                }
 
                 try {
                     cfield = Types.processField(value);

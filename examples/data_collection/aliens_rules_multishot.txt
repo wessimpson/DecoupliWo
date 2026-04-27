@@ -1,13 +1,14 @@
-# Space Invaders (aliens) — training variant B: faster bombs and slightly faster aliens, lower per-tick bomb drop chance (compensates difficulty); same win rules and action set as aliens.txt
 BasicGame square_size=32
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
         base    > Immovable    color=WHITE img=oryx/planet
-        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 alignShotToOrientation=False rotateInPlace=False img=oryx/spaceship1
+        avatar  > ShootAvatar color=YELLOW stype=samL,samC,samR speed=1.0 alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=oryx/spaceship1
         missile > Missile
-            sam  > orientation=UP    color=BLUE singleton=True speed=1.0 img=oryx/bullet1
-            bomb > orientation=DOWN  color=RED  speed=0.56 img=oryx/bullet2
-        alien   > Bomber       stype=bomb   prob=0.009  cooldown=3 speed=0.84
+            samL > orientation=-0.7071,-0.7071 color=BLUE speed=1 img=oryx/bullet1 shrinkfactor=3.0
+            samC > orientation=UP    color=BLUE speed=1 img=oryx/bullet1 shrinkfactor=3.0
+            samR > orientation=0.7071,-0.7071 color=BLUE speed=1 img=oryx/bullet1 shrinkfactor=3.0
+            bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
+        alien   > Bomber       stype=bomb   prob=0.01  cooldown=3 speed=0.8
             alienGreen > img=oryx/alien3
             alienBlue > img=oryx/alien1
         portal  > invisible=True hidden=True
@@ -32,9 +33,9 @@ BasicGame square_size=32
         missile EOS  > killSprite
 
         base bomb > killBoth
-        base sam > killBoth scoreChange=1
+        base samL samC samR > killBoth scoreChange=1
 
         base   alien > killSprite
         avatar alien > killSprite scoreChange=-1
         avatar bomb  > killSprite scoreChange=-1
-        alien  sam   > killSprite scoreChange=2
+        alien samL samC samR > killSprite scoreChange=2

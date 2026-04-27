@@ -1,0 +1,65 @@
+# Waves: triple player shot per USE — center along +x, flanks at ±45° from that axis. Same layout and shield rules as waves.txt; requires ShootAvatar.fireAllWeapons and orientation x,y (VGDLFactory).
+BasicGame
+
+    SpriteSet
+
+        background > Immovable img=oryx/space1 hidden=True
+        asteroid > Immovable img=oryx/planet
+
+        missile > Missile
+            rock > orientation=LEFT speed=0.95 color=BLUE img=oryx/orb3
+            samL > orientation=0.7071,-0.7071 color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            samC > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            samR > orientation=0.7071,0.7071 color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.75 img=newset/laser2_1
+
+        portal  >
+            portalSlow  > SpawnPoint   stype=alien  cooldown=10 prob=0.05 img=newset/whirlpool2 portal=True
+            rockPortal  > SpawnPoint   stype=rock  cooldown=10 prob=0.2 img=newset/whirlpool1 portal=True
+
+        shield > Resource color=GOLD limit=4 img=oryx/shield2
+
+        avatar  > ShootAvatar color=YELLOW stype=samL,samC,samR speed=1.0 alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=oryx/spaceship1
+        alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
+
+    LevelMapping
+        1 > background portalSlow
+        2 > background rockPortal
+        A > background avatar shield
+        s > background asteroid
+        . > background
+
+    TerminationSet
+        SpriteCounter      stype=avatar             limit=0 win=False
+        Timeout limit=1000 win=True
+
+    InteractionSet
+        avatar  EOS  > stepBack
+        avatar asteroid portalSlow rockPortal > stepBack
+        alien   EOS  > killSprite
+        missile EOS  > killSprite
+
+        alien samL > killBoth scoreChange=2
+        alien samC > killBoth scoreChange=2
+        alien samR > killBoth scoreChange=2
+
+        samL laser > transformTo stype=shield killSecond=True
+        samC laser > transformTo stype=shield killSecond=True
+        samR laser > transformTo stype=shield killSecond=True
+
+        avatar shield > changeResource resource=shield value=1 killResource=True
+
+        avatar rock > killIfHasLess resource=shield limit=0
+        avatar rock > changeResource resource=shield value=-1 killResource=True
+
+        avatar alien > killIfHasLess resource=shield limit=0
+        avatar alien > changeResource resource=shield value=-1 killResource=True
+
+        avatar laser > killIfHasLess resource=shield limit=0
+        avatar laser > changeResource resource=shield value=-1 killResource=True
+
+        asteroid samL samC samR laser > killSprite
+        rock asteroid > killSprite
+        alien asteroid > killSprite
+        laser asteroid > killSprite
+        avatar asteroid > stepBack
