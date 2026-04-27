@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from torch.autograd import Function
 
 from world_model.model.net import Diffuser, VAE
 from world_model.model.net.vae import DEFAULT_VAE_PT
@@ -60,9 +61,18 @@ class WorldModel(nn.Module):
 			self.diffuser.unet.enable_gradient_checkpointing()
 
 		self.num_train_timesteps = int(self.diffuser.noise_scheduler.config.num_train_timesteps)
+		# Keep a named alias for compatibility; this is now the shared per-frame encoder
+		# used by the diffusion path itself.
+		self.state_encoder = self.diffuser.frame_state_encoder
+		self.rule_adversary = nn.Sequential(
+			nn.Linear(cross_attention_dim, 256),
+			nn.SiLU(),
+			nn.Linear(256, self.diffuser.num_rules),
+		)
 
 	def trainable_parameters(self):
 		yield from self.diffuser.parameters()
+		yield from self.rule_adversary.parameters()
 
 	def enable_gradient_checkpointing(self) -> None:
 		self.diffuser.unet.enable_gradient_checkpointing()
@@ -97,7 +107,8 @@ class WorldModel(nn.Module):
 		delta_hist: torch.Tensor | None = None,
 		gamma: float = 0.0,
 		rule_onehot: torch.Tensor | None = None,
-	) -> tuple[torch.Tensor, torch.Tensor]:
+		return_state: bool = False,
+	) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 		"""
 		z_hist:           [B, K, C, h, w] clean history latents (frames …, t-1)
 		z_tgt:            [B, C, h, w] clean frame at t (from a[t-1]: obs[t-1]→obs[t])
@@ -125,8 +136,9 @@ class WorldModel(nn.Module):
 		x = torch.cat([z_hist, noisy_tgt.unsqueeze(1)], dim=1)  # [B, K+1, C, h, w]
 		a_t = history_actions[:, -1].to(device)
 		roh = None if rule_onehot is None else rule_onehot.to(device=device, dtype=self.diffuser.action_embedding.weight.dtype)
+		h_state = self._state_features(z_hist)
 
-		model_pred = self.diffuser(x, timesteps, a_t, roh)
+		model_pred = self.diffuser(x, timesteps, a_t, roh, state_token=h_state)
 
 		pt = sched.config.prediction_type
 		if pt == "v_prediction":
@@ -135,7 +147,28 @@ class WorldModel(nn.Module):
 			target = z_tgt
 		else:
 			target = noise
+		if return_state:
+			return model_pred, target, h_state
 		return model_pred, target
+
+	def _state_features(self, z_hist: torch.Tensor) -> torch.Tensor:
+		"""Encode history latents into a compact state feature [B, D]."""
+		return self.diffuser.state_token_from_history(z_hist)
+
+	def adversarial_rule_logits(self, z_hist: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
+		"""Predict rule from state features through gradient reversal.
+
+		The rule adversary learns to classify rule from state; via gradient reversal,
+		the state encoder is pushed to hide rule-specific cues.
+		"""
+		h_state = self._state_features(z_hist)
+		h_rev = _GradReverse.apply(h_state, float(adv_lambda))
+		return self.rule_adversary(h_rev)
+
+	def adversarial_rule_logits_from_state(self, h_state: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
+		"""Predict rule logits from a precomputed state feature [B, D] with GRL."""
+		h_rev = _GradReverse.apply(h_state, float(adv_lambda))
+		return self.rule_adversary(h_rev)
 
 	# ── Inference ─────────────────────────────────────────────────
 
@@ -194,15 +227,16 @@ class WorldModel(nn.Module):
 			t_batch = t.unsqueeze(0).expand(B).contiguous()
 			null_a = torch.full_like(a_t, self.diffuser.null_action_index)
 			# Additive CFG: ``pred_00`` + action guidance + rule guidance (fast paths at corners).
+			h_state = self._state_features(z_hist)
 			if math.isclose(sc_a, 0.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 0.0, rel_tol=0.0, abs_tol=1e-6):
-				pred = self.diffuser(x, t_batch, null_a, roh_u)
+				pred = self.diffuser(x, t_batch, null_a, roh_u, state_token=h_state)
 			elif math.isclose(sc_a, 1.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 1.0, rel_tol=0.0, abs_tol=1e-6):
-				pred = self.diffuser(x, t_batch, a_t, roh)
+				pred = self.diffuser(x, t_batch, a_t, roh, state_token=h_state)
 			else:
-				pred_aa = self.diffuser(x, t_batch, a_t, roh)
-				pred_0a = self.diffuser(x, t_batch, null_a, roh)
-				pred_a0 = self.diffuser(x, t_batch, a_t, roh_u)
-				pred_00 = self.diffuser(x, t_batch, null_a, roh_u)
+				pred_aa = self.diffuser(x, t_batch, a_t, roh, state_token=h_state)
+				pred_0a = self.diffuser(x, t_batch, null_a, roh, state_token=h_state)
+				pred_a0 = self.diffuser(x, t_batch, a_t, roh_u, state_token=h_state)
+				pred_00 = self.diffuser(x, t_batch, null_a, roh_u, state_token=h_state)
 				pred = pred_00 + sc_a * (pred_aa - pred_0a) + sc_r * (pred_aa - pred_a0)
 			latents = sched.step(
 				pred,
@@ -216,15 +250,31 @@ class WorldModel(nn.Module):
 	# ── Save / load ──────────────────────────────────────────────
 
 	def save_diffuser(self, out_dir: Path) -> None:
-		"""Persist UNet weights, action embedding, and DDIM scheduler config."""
+		"""Persist dynamics weights and DDIM scheduler config."""
 		out_dir = Path(out_dir)
 		out_dir.mkdir(parents=True, exist_ok=True)
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
 		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
 		torch.save(self.diffuser.rule_projection.state_dict(), out_dir / "rule_projection.pt")
+		torch.save(self.diffuser.frame_state_encoder.state_dict(), out_dir / "frame_state_encoder.pt")
+		torch.save(self.diffuser.state_token_projection.state_dict(), out_dir / "state_token_projection.pt")
+		# Back-compat alias file name for previously added state encoder.
+		torch.save(self.state_encoder.state_dict(), out_dir / "state_encoder.pt")
+		torch.save(self.rule_adversary.state_dict(), out_dir / "rule_adversary.pt")
 		sched_dir = out_dir / "noise_scheduler"
 		sched_dir.mkdir(parents=True, exist_ok=True)
 		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))
+
+
+class _GradReverse(Function):
+	@staticmethod
+	def forward(ctx, x: torch.Tensor, lambd: float) -> torch.Tensor:
+		ctx.lambd = float(lambd)
+		return x.view_as(x)
+
+	@staticmethod
+	def backward(ctx, grad_output: torch.Tensor):
+		return grad_output.neg() * ctx.lambd, None
 
 
 

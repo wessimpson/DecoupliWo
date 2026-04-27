@@ -98,6 +98,19 @@ def load_world_model(
 	else:
 		with torch.no_grad():
 			wm.diffuser.rule_projection.weight.zero_()
+	frame_state_path = ckpt_dir / "frame_state_encoder.pt"
+	if frame_state_path.is_file():
+		wm.diffuser.frame_state_encoder.load_state_dict(_load_sd(frame_state_path, device))
+	state_proj_path = ckpt_dir / "state_token_projection.pt"
+	if state_proj_path.is_file():
+		wm.diffuser.state_token_projection.load_state_dict(_load_sd(state_proj_path, device))
+	state_enc_path = ckpt_dir / "state_encoder.pt"
+	if state_enc_path.is_file():
+		# Legacy alias (same module as frame_state_encoder).
+		wm.state_encoder.load_state_dict(_load_sd(state_enc_path, device))
+	rule_adv_path = ckpt_dir / "rule_adversary.pt"
+	if rule_adv_path.is_file():
+		wm.rule_adversary.load_state_dict(_load_sd(rule_adv_path, device))
 	for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
 		legacy = ckpt_dir / legacy_name
 		if legacy.is_file():
@@ -302,14 +315,14 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env" / "step_0880215"))
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "step_0150000"))
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
 		default="world_model/checkpoints/vae/vae.pt",
 		help="Path to vae.pt (empty = default world_model/checkpoints/vae/vae.pt)",
 	)
-	p.add_argument("--env", type=str, default="jaws")
+	p.add_argument("--env", type=str, default="defender")
 	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=4, help="History length K (same as training).")

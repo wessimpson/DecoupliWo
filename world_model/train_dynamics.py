@@ -50,6 +50,8 @@ PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 DEFAULT_CHECKPOINT_DIR_RULES = Path("world_model") / "checkpoints" / "dit_encoded_rules"
 DEFAULT_CHECKPOINT_DIR_ALL_ENV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env"
+DEFAULT_CHECKPOINT_DIR_RULES_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_adv"
+DEFAULT_CHECKPOINT_DIR_ALL_ENV_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv"
 
 
 def psnr_neg1_to_01(pred: torch.Tensor, tgt: torch.Tensor) -> float:
@@ -99,21 +101,21 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--lr", type=float, default=5e-5)
 	p.add_argument("--lr_scheduler", type=str, default="constant_with_warmup")
 	p.add_argument("--lr_warmup_steps", type=int, default=500)
-	p.add_argument("--log_dir", type=str, default="runs/world_model_dynamics")
+	p.add_argument("--log_dir", type=str, default="runs/world_model_dynamics_adv")
 	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--gradient_checkpointing", action="store_true")
 	p.add_argument("--gamma", type=float, default=0.1)
 	p.add_argument("--gamma_warmup_steps", type=int, default=500)
 	p.add_argument("--error_buffer_cap", type=int, default=5_000)
-	p.add_argument("--validation_every", type=int, default=100_000)
+	p.add_argument("--validation_every", type=int, default=10_000)
 	p.add_argument(
 		"--checkpoint_dir",
 		type=str,
 		default=None,
-		help="Checkpoint root. Default: dit_encoded_rules_all_env when training all envs (--env omitted); "
-		f"else {DEFAULT_CHECKPOINT_DIR_RULES}.",
+		help="Checkpoint root. Default: *_adv folder for this training variant "
+		"(all envs -> dit_encoded_rules_all_env_adv; single env -> dit_encoded_rules_adv).",
 	)
-	p.add_argument("--save_every", type=int, default=100_000)
+	p.add_argument("--save_every", type=int, default=10_000)
 	p.add_argument("--max_grad_norm", type=float, default=1.0)
 	p.add_argument(
 		"--val_samples",
@@ -165,6 +167,24 @@ def parse_args() -> argparse.Namespace:
 		type=float,
 		default=1.5,
 		help="Inference / val generate: CFG scale for rule (nested with action).",
+	)
+	p.add_argument(
+		"--adv_weight",
+		type=float,
+		default=0.01,
+		help="Weight for adversarial rule-invariance loss on state features.",
+	)
+	p.add_argument(
+		"--adv_lambda",
+		type=float,
+		default=1.0,
+		help="Gradient-reversal scale for adversarial rule classifier.",
+	)
+	p.add_argument(
+		"--adv_warmup_steps",
+		type=int,
+		default=2000,
+		help="Linear warmup steps for adversarial term (0 = no warmup).",
 	)
 	return p.parse_args()
 
@@ -305,7 +325,9 @@ def main() -> None:
 		if args.env == "":
 			args.env = None
 	if args.checkpoint_dir is None:
-		args.checkpoint_dir = str(DEFAULT_CHECKPOINT_DIR_ALL_ENV if args.env is None else DEFAULT_CHECKPOINT_DIR_RULES)
+		args.checkpoint_dir = str(
+			DEFAULT_CHECKPOINT_DIR_ALL_ENV_ADV if args.env is None else DEFAULT_CHECKPOINT_DIR_RULES_ADV
+		)
 	else:
 		args.checkpoint_dir = str(Path(args.checkpoint_dir))
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -469,6 +491,8 @@ def main() -> None:
 	global_step = 0
 	last_gamma_eff = 0.0
 	last_loss: float | None = None
+	last_diff_loss: float | None = None
+	last_adv_loss: float | None = None
 	pbar = tqdm(total=total_steps, desc="Training", unit="step", dynamic_ncols=True)
 
 	while global_step < total_steps:
@@ -621,19 +645,31 @@ def main() -> None:
 			Wg = args.gamma_warmup_steps
 			gamma_eff = float(args.gamma) if Wg <= 0 else float(args.gamma) * min(1.0, global_step / float(Wg))
 			last_gamma_eff = gamma_eff
+			Wa = args.adv_warmup_steps
+			adv_scale = 1.0 if Wa <= 0 else min(1.0, global_step / float(Wa))
+			adv_weight_eff = float(args.adv_weight) * adv_scale
+			adv_lambda_eff = float(args.adv_lambda) * adv_scale
 
 			delta_hist = error_buffer.sample_like(z_hist) if error_buffer.ready() else None
 			timesteps = torch.randint(0, world_model.num_train_timesteps, (B,), device=device).long()
 			noise = torch.randn_like(z_tgt, dtype=world_model.diffuser.unet.dtype)
+			rule_ids = rule_oh.argmax(dim=1)
 
 			with autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-				model_pred, target = world_model.diffusion_forward(
+				model_pred, target, h_state = world_model.diffusion_forward(
 					z_hist, z_tgt, hist_actions, timesteps, noise,
 					delta_hist=delta_hist, gamma=gamma_eff,
 					rule_onehot=rule_oh,
+					return_state=True,
 				)
-				loss = F.mse_loss(model_pred.float(), target.float())
+				diff_loss = F.mse_loss(model_pred.float(), target.float())
+				# Adversary uses the same state feature that conditions diffusion.
+				adv_logits = world_model.adversarial_rule_logits_from_state(h_state, adv_lambda=adv_lambda_eff)
+				adv_loss = F.cross_entropy(adv_logits.float(), rule_ids)
+				loss = diff_loss + adv_weight_eff * adv_loss
 			last_loss = loss.item()
+			last_diff_loss = diff_loss.item()
+			last_adv_loss = adv_loss.item()
 
 			if scaler.is_enabled():
 				scaler.scale(loss).backward()
@@ -667,10 +703,20 @@ def main() -> None:
 			scheduler.step()
 			global_step += 1
 			pbar.update(1)
-			pbar.set_postfix(loss=f"{loss.item():.4f}", gamma=f"{last_gamma_eff:.4f}", buf=len(error_buffer))
+			pbar.set_postfix(
+				loss=f"{loss.item():.4f}",
+				diff=f"{(last_diff_loss if last_diff_loss is not None else float('nan')):.4f}",
+				adv=f"{(last_adv_loss if last_adv_loss is not None else float('nan')):.4f}",
+				gamma=f"{last_gamma_eff:.4f}",
+				buf=len(error_buffer),
+			)
 
 			if global_step > 0 and global_step % 20 == 0:
 				writer.add_scalar("train/loss", loss.item(), global_step)
+				writer.add_scalar("train/diff_loss", diff_loss.item(), global_step)
+				writer.add_scalar("train/adv_loss", adv_loss.item(), global_step)
+				writer.add_scalar("train/adv_weight_eff", adv_weight_eff, global_step)
+				writer.add_scalar("train/adv_lambda_eff", adv_lambda_eff, global_step)
 				writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
 
 			if global_step > 0 and args.save_every > 0 and global_step % args.save_every == 0:

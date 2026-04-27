@@ -40,6 +40,15 @@ class Diffuser(nn.Module):
 		self.history_len = int(history_len)
 		self.num_latent_frames = self.history_len + 1
 		stacked_in = self.num_latent_frames * latent_channels
+		# Shared frame-wise encoder applied to every latent frame (history + noisy target)
+		# before concatenation into UNet input channels.
+		self.frame_state_encoder = nn.Sequential(
+			nn.Conv2d(latent_channels, latent_channels, kernel_size=3, padding=1),
+			nn.SiLU(),
+			nn.Conv2d(latent_channels, latent_channels, kernel_size=3, padding=1),
+			nn.SiLU(),
+		)
+		self.state_token_projection = nn.Linear(latent_channels, cross_attention_dim)
 
 		unet = UNet2DConditionModel(
 			sample_size=None,
@@ -87,6 +96,7 @@ class Diffuser(nn.Module):
 		timesteps: torch.Tensor,
 		action: torch.Tensor,
 		rule_onehot: torch.Tensor | None = None,
+		state_token: torch.Tensor | None = None,
 	) -> torch.Tensor:
 		"""Stacked-frame denoise: predict noise / v for the next frame (4-channel UNet output).
 
@@ -98,14 +108,19 @@ class Diffuser(nn.Module):
 		``cfg_rule_drop_prob`` → zero rule, keep action.
 
 		``rule_onehot`` [B, 4] float: normal [1,0,0,0], rules_fast [0,1,0,0], multishot [0,0,1,0],
-		ricochet [0,0,0,1]. If None, uses normal for every row. Cross-attention sees two tokens:
-		``[..., 0, :]`` = action embedding, ``[..., 1, :]`` = rule projection.
+		ricochet [0,0,0,1]. If None, uses normal for every row.
+
+		``state_token`` [B, D] optional state feature projected upstream; if absent, a zero token is used.
+		Cross-attention sees three tokens:
+		``[..., 0, :]`` = action embedding, ``[..., 1, :]`` = rule projection, ``[..., 2, :]`` = state token.
 		"""
 		B, F, C, H, W = noisy_latents.shape
 		assert F == self.num_latent_frames, f"Expected F={self.num_latent_frames}, got {F}"
 		assert C == self.latent_channels, f"Expected C={self.latent_channels}, got {C}"
 
-		x = noisy_latents.reshape(B, F * C, H, W).contiguous()
+		# Shared state encoder over each frame: x1..xK and x_{K+1}_noisy.
+		h_frames = self.encode_frame_stack(noisy_latents)
+		x = h_frames.reshape(B, F * C, H, W).contiguous()
 		a = action
 		dev, dt = a.device, self.action_embedding.weight.dtype
 		if rule_onehot is None:
@@ -129,9 +144,42 @@ class Diffuser(nn.Module):
 			roh = torch.where((drop_both | drop_rule_only).unsqueeze(1), torch.zeros_like(roh), roh)
 		action_enc = self.action_embedding(a)
 		rule_enc = self.rule_projection(roh)
-		enc = torch.stack([action_enc, rule_enc], dim=1)
+		if state_token is None:
+			state_enc = self.state_token_from_encoded_stack(h_frames).to(device=dev, dtype=dt)
+		else:
+			state_enc = state_token.to(device=dev, dtype=dt)
+			if state_enc.shape != (B, self.cross_attention_dim):
+				raise ValueError(
+					f"state_token expected [B,{self.cross_attention_dim}], got {tuple(state_enc.shape)}"
+				)
+		enc = torch.stack([action_enc, rule_enc, state_enc], dim=1)
 
 		out = self.unet(
 			x, timesteps, encoder_hidden_states=enc, return_dict=False,
 		)[0]
 		return out
+
+	def encode_frame_stack(self, latents: torch.Tensor) -> torch.Tensor:
+		"""Apply shared frame encoder to `[B,F,C,H,W]` -> encoded `[B,F,C,H,W]`."""
+		B, F, C, H, W = latents.shape
+		if C != self.latent_channels:
+			raise ValueError(f"Expected latent C={self.latent_channels}, got {C}")
+		z = latents.reshape(B * F, C, H, W).contiguous()
+		h = self.frame_state_encoder(z)
+		return h.reshape(B, F, C, H, W).contiguous()
+
+	def state_token_from_encoded_stack(self, encoded_stack: torch.Tensor) -> torch.Tensor:
+		"""Make `[B,D]` state token from encoded history frames in `[B,F,C,H,W]`."""
+		if encoded_stack.shape[1] < 2:
+			raise ValueError("encoded_stack needs at least one history frame and one target/noisy frame")
+		h_hist = encoded_stack[:, :-1]  # history only
+		v = h_hist.mean(dim=(1, 3, 4))
+		return self.state_token_projection(v)
+
+	def state_token_from_history(self, z_hist: torch.Tensor) -> torch.Tensor:
+		"""Encode `[B,K,C,H,W]` history and project to a `[B,D]` state token."""
+		if z_hist.shape[1] != self.history_len:
+			raise ValueError(f"Expected history_len={self.history_len}, got {z_hist.shape[1]}")
+		enc = self.encode_frame_stack(z_hist)
+		v = enc.mean(dim=(1, 3, 4))
+		return self.state_token_projection(v)
