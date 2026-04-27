@@ -197,11 +197,28 @@ def flat_state_to_game_state(pred: np.ndarray, env: PongEnv, action: int, clamp:
     )
 
 
-def model_step(model, env: PongEnv, action: int, rule_id: int, device: torch.device, clamp: bool, out_margin: float) -> np.ndarray:
+def initialize_history(model, env: PongEnv, device: torch.device) -> torch.Tensor:
     state = env.state_to_observation()
-    pred = predict_next(model, state, int(action), int(rule_id), device)
+    batch_state = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+    slots, mask = model.state_to_slots(batch_state)
+    history_slots, _ = model.expand_history(slots, mask)
+    return history_slots
+
+
+def model_step(
+    model,
+    env: PongEnv,
+    action: int,
+    rule_id: int,
+    device: torch.device,
+    history: torch.Tensor | None,
+    clamp: bool,
+    out_margin: float,
+) -> tuple[np.ndarray, torch.Tensor]:
+    state = env.state_to_observation()
+    pred, history = predict_next(model, state, int(action), int(rule_id), device, history)
     env.set_state(flat_state_to_game_state(pred, env, int(action), clamp=clamp, out_margin=out_margin))
-    return pred
+    return pred, history
 
 
 def load_world_model(checkpoint_path: pathlib.Path, device: torch.device):
@@ -236,12 +253,14 @@ def run_headless(args: argparse.Namespace, model, device: torch.device) -> int:
     env = build_env(args, args.mode, render_mode=None)
     rng = np.random.default_rng(args.seed)
     reset_with_start(env, args, seed=args.seed, rng=rng)
+    history = initialize_history(model, env, device)
     rule_id = RULE_TO_ID[args.mode]
     try:
         for _ in range(int(args.headless_steps)):
-            model_step(model, env, ACTION_STAY, rule_id, device, clamp=not args.no_clamp, out_margin=args.out_margin)
+            _, history = model_step(model, env, ACTION_STAY, rule_id, device, history, clamp=not args.no_clamp, out_margin=args.out_margin)
             if env.is_done:
                 reset_with_start(env, args, rng=rng)
+                history = initialize_history(model, env, device)
         print(f"Ran {args.headless_steps} headless world-model steps in mode={args.mode}.")
     finally:
         env.close()
@@ -261,6 +280,7 @@ def main() -> int:
     env = build_env(args, args.mode, render_mode="human")
     rng = np.random.default_rng(args.seed)
     reset_with_start(env, args, seed=args.seed, rng=rng)
+    history = initialize_history(model, env, device)
     env.render()
     clock = pygame.time.Clock()
     running = True
@@ -281,6 +301,7 @@ def main() -> int:
                         running = False
                     elif event.key == pygame.K_r:
                         reset_with_start(env, args, rng=rng)
+                        history = initialize_history(model, env, device)
                     elif event.key == pygame.K_p:
                         paused = not paused
                     elif event.key == pygame.K_s:
@@ -288,18 +309,22 @@ def main() -> int:
                     elif event.key == pygame.K_1:
                         mode = "normal"
                         switch_mode(env, mode, args, args.seed, rng=rng)
+                        history = initialize_history(model, env, device)
                     elif event.key == pygame.K_2:
                         mode = "gravity"
                         switch_mode(env, mode, args, args.seed, rng=rng)
+                        history = initialize_history(model, env, device)
                     elif event.key == pygame.K_3:
                         mode = "teleport"
                         switch_mode(env, mode, args, args.seed, rng=rng)
+                        history = initialize_history(model, env, device)
 
             action = action_from_keys(pygame)
             if not env.is_done and (not paused or single_step):
-                model_step(model, env, action, RULE_TO_ID[mode], device, clamp=not args.no_clamp, out_margin=args.out_margin)
+                _, history = model_step(model, env, action, RULE_TO_ID[mode], device, history, clamp=not args.no_clamp, out_margin=args.out_margin)
             if args.auto_reset and env.is_done:
                 reset_with_start(env, args, rng=rng)
+                history = initialize_history(model, env, device)
 
             env.render()
             pygame.display.set_caption(

@@ -46,6 +46,18 @@ def choose_device(requested: str) -> torch.device:
 def build_model(checkpoint: dict, device: torch.device) -> RuleConditionedPongGNN:
     args = checkpoint.get("args", {})
     constants = PongObjectConstants(**checkpoint.get("constants", {}))
+    history_length = int(args.get("history_length", 0))
+    if history_length <= 0:
+        state_dict = checkpoint.get("model_state_dict", {})
+        node_weight = state_dict.get("node_encoder.0.weight")
+        if node_weight is not None:
+            input_dim = int(node_weight.shape[1])
+            type_dim = int(args.get("type_dim", 8))
+            # node input = 2 * (history_length - 1) + type_dim + boundary(4) + action(3) + mask(1)
+            inferred_history = ((input_dim - type_dim - 8) // 2) + 1
+            history_length = max(2, int(inferred_history))
+        else:
+            history_length = 6
     model = RuleConditionedPongGNN(
         num_rules=int(args.get("num_rules", len(RULE_TO_ID))),
         latent_dim=int(args.get("latent_dim", 64)),
@@ -53,7 +65,7 @@ def build_model(checkpoint: dict, device: torch.device) -> RuleConditionedPongGN
         type_dim=int(args.get("type_dim", 8)),
         hidden_dim=int(args.get("hidden_dim", 128)),
         message_passing_steps=int(args.get("message_passing_steps", 2)),
-        history_steps=int(args.get("history_length", 6)),
+        history_steps=history_length,
         constants=constants,
         edge_mode=str(args.get("edge_mode", "hybrid")),
         edge_distance_threshold=float(args.get("edge_distance_threshold", 0.35)),
