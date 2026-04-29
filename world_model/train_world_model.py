@@ -62,7 +62,12 @@ def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser(description="Train next-frame temporal world model.")
 	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
-	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"), help="Path to vae.pt (hub architecture + this state dict)")
+	p.add_argument(
+		"--vae_checkpoint",
+		type=str,
+		default="",
+		help="Optional local Wan VAE state dict. Empty uses pretrained Wan-AI/Wan2.1-T2V-1.3B-Diffusers/vae.",
+	)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN, help="History frames K (fixed window).")
 	p.add_argument("--resize", type=int, nargs=2, metavar=("H", "W"), default=None, help="Resize frames to H×W (multiples of 8).")

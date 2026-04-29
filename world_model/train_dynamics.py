@@ -87,7 +87,12 @@ def parse_args() -> argparse.Namespace:
 	)
 	p.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
 	p.add_argument("--encoded_subdir", type=str, default="encoded", help="Under transitions_root, same as encode script.")
-	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"))
+	p.add_argument(
+		"--vae_checkpoint",
+		type=str,
+		default="",
+		help="Optional local Wan VAE state dict. Empty uses pretrained Wan-AI/Wan2.1-T2V-1.3B-Diffusers/vae.",
+	)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN)
 	p.add_argument(

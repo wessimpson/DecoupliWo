@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from world_model.model.net.vae import DEFAULT_VAE_PT, VAE
+from world_model.model.net.vae import VAE
 
 
 def _pixels_to_hwc_uint8(x: torch.Tensor) -> np.ndarray:
@@ -64,7 +64,12 @@ def parse_args() -> argparse.Namespace:
 		default=0,
 		help="Starting linear row index across selected shard(s) (0 = first row of first shard).",
 	)
-	p.add_argument("--vae_checkpoint", type=str, default=str(DEFAULT_VAE_PT))
+	p.add_argument(
+		"--vae_checkpoint",
+		type=str,
+		default="",
+		help="Optional local Wan VAE state dict. Empty uses pretrained Wan-AI/Wan2.1-T2V-1.3B-Diffusers/vae.",
+	)
 	return p.parse_args()
 
 
@@ -86,7 +91,7 @@ def main() -> None:
 		raise RuntimeError("Empty latent.npy across shards")
 
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	vae = VAE(checkpoint=Path(args.vae_checkpoint))
+	vae = VAE(checkpoint=args.vae_checkpoint.strip() or None)
 	vae.freeze()
 	vae.to(device)
 

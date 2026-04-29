@@ -5,30 +5,46 @@ from typing import Union
 
 import torch
 import torch.nn as nn
-from diffusers import AutoencoderKL
+from diffusers import AutoencoderKLWan
 
-PRETRAINED_REMOTE_ID = "stabilityai/sd-vae-ft-mse"
-DEFAULT_VAE_PT = Path("world_model") / "checkpoints" / "vae" / "vae.pt"
+DEFAULT_WAN_VAE_MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+DEFAULT_VAE_PT = Path("world_model") / "checkpoints" / "vae" / "wan_vae.pt"
+
+
+def build_wan_vae(pretrained_model_name_or_path: str | None = None) -> AutoencoderKLWan:
+	"""Create a Wan VAE, optionally loading pretrained weights from Hugging Face."""
+	if pretrained_model_name_or_path:
+		return AutoencoderKLWan.from_pretrained(
+			pretrained_model_name_or_path,
+			subfolder="vae",
+			torch_dtype=torch.float32,
+		)
+	return AutoencoderKLWan()
 
 
 class VAE(nn.Module):
-	"""Frozen SD VAE: hub architecture + weights from a single ``vae.pt`` file."""
+	"""Frozen Wan VAE: pretrained by default, with optional local state-dict override."""
 
-	def __init__(self, checkpoint: Union[str, Path]) -> None:
+	def __init__(self, checkpoint: Union[str, Path, None] = None) -> None:
 		super().__init__()
-		pt = Path(checkpoint)
-		assert pt.is_file(), f"VAE checkpoint must be an existing .pt file: {pt}"
-		self.autoencoder = AutoencoderKL.from_pretrained(PRETRAINED_REMOTE_ID)
-		self.autoencoder.load_state_dict(torch.load(pt, map_location="cpu", weights_only=True))
-		print(f"[VAE] {PRETRAINED_REMOTE_ID} + {pt}")
+		ckpt = None if checkpoint is None else str(checkpoint).strip()
+		if ckpt:
+			pt = Path(ckpt)
+			assert pt.is_file(), f"Wan VAE checkpoint must be an existing .pt file: {pt}"
+			self.autoencoder = build_wan_vae()
+			self.autoencoder.load_state_dict(torch.load(pt, map_location="cpu", weights_only=True), strict=True)
+			print(f"[VAE] Wan VAE local checkpoint + {pt}")
+		else:
+			self.autoencoder = build_wan_vae(DEFAULT_WAN_VAE_MODEL_ID)
+			print(f"[VAE] Wan VAE pretrained + {DEFAULT_WAN_VAE_MODEL_ID}/vae")
 
 	@property
 	def latent_channels(self) -> int:
-		return int(self.autoencoder.config.latent_channels)
+		return int(self.autoencoder.config.z_dim)
 
 	@property
 	def scaling_factor(self) -> float:
-		return float(self.autoencoder.config.scaling_factor)
+		return 1.0
 
 	def freeze(self) -> None:
 		self.autoencoder.eval()
@@ -38,25 +54,26 @@ class VAE(nn.Module):
 		return next(self.autoencoder.parameters()).dtype
 
 	def encode_pixels(self, pixels: torch.Tensor) -> torch.Tensor:
-		"""[N,3,H,W] in [-1,1] → scaled latents [N,C,h,w]."""
+		"""[N,3,H,W] in [-1,1] -> latents [N,C,h,w]."""
 		x = pixels.to(dtype=self._dtype())
 		with torch.no_grad():
-			return self.autoencoder.encode(x).latent_dist.mode() * self.scaling_factor
+			z5 = self.autoencoder.encode(x.unsqueeze(2)).latent_dist.mode()
+			return z5[:, :, 0].contiguous()
 
 	def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-		"""Scaled latents [N,C,h,w] → pixels [N,3,H,W] in [-1,1]."""
-		z = latents.to(dtype=self._dtype()) / self.scaling_factor
+		"""Latents [N,C,h,w] -> pixels [N,3,H,W] in [-1,1]."""
+		z = latents.to(dtype=self._dtype()).unsqueeze(2)
 		with torch.no_grad():
-			return self.autoencoder.decode(z).sample
+			return self.autoencoder.decode(z).sample[:, :, 0].contiguous()
 
 	def encode_video(self, pixels: torch.Tensor) -> torch.Tensor:
-		"""[B,T,3,H,W] → [B,T,C,h,w] scaled latents."""
+		"""[B,T,3,H,W] -> [B,T,C,h,w] latents."""
 		B, T = pixels.shape[:2]
 		z = self.encode_pixels(pixels.reshape(B * T, *pixels.shape[2:]))
 		return z.reshape(B, T, *z.shape[1:])
 
 	def decode_video(self, latents: torch.Tensor) -> torch.Tensor:
-		"""[B,T,C,h,w] → [B,T,3,H,W]."""
+		"""[B,T,C,h,w] -> [B,T,3,H,W]."""
 		B, T = latents.shape[:2]
 		px = self.decode_latents(latents.reshape(B * T, *latents.shape[2:]))
 		return px.reshape(B, T, *px.shape[1:])
@@ -111,7 +128,7 @@ def main() -> None:
 
 	# ── model ──
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	vae = VAE(checkpoint=DEFAULT_VAE_PT)
+	vae = VAE()
 	vae.freeze()
 	vae.to(device)
 

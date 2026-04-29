@@ -319,8 +319,8 @@ def main() -> None:
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
-		default="world_model/checkpoints/vae/vae.pt",
-		help="Path to vae.pt (empty = default world_model/checkpoints/vae/vae.pt)",
+		default="",
+		help="Optional local Wan VAE state dict. Empty uses pretrained Wan-AI/Wan2.1-T2V-1.3B-Diffusers/vae.",
 	)
 	p.add_argument("--env", type=str, default="defender")
 	p.add_argument("--num_inference_steps", type=int, default=10)

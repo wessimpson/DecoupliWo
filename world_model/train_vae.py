@@ -1,5 +1,5 @@
 """
-Fine-tune stabilityai/sd-vae-ft-mse.
+Train a Wan VAE from scratch.
 Train: data/transitions/train/**/shard_*/obs.npy  |  Val: data/transitions/test/**/shard_*/obs.npy
 Loss: MSE + 0.1*LPIPS + kl_weight*KL.  TensorBoard: runs/vae/<timestamp>/
 
@@ -22,10 +22,12 @@ import lpips
 import numpy as np
 import torch
 import torch.nn.functional as F
-from diffusers import AutoencoderKL
+from diffusers import AutoencoderKLWan
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+
+from world_model.model.net.vae import DEFAULT_VAE_PT, build_wan_vae
 
 LPIPS_W = 0.1
 
@@ -34,8 +36,8 @@ def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser()
 	p.add_argument("--train_dir", type=str, default=str(Path("data") / "transitions" / "train"))
 	p.add_argument("--val_dir", type=str, default=str(Path("data") / "transitions" / "test"))
-	p.add_argument("--pretrained_model_name_or_path", type=str, default="stabilityai/sd-vae-ft-mse")
-	p.add_argument("--output_dir", type=str, default=str(Path("world_model") / "checkpoints" / "vae"))
+	p.add_argument("--output_dir", type=str, default=str(DEFAULT_VAE_PT.parent))
+	p.add_argument("--output_name", type=str, default=DEFAULT_VAE_PT.name)
 	p.add_argument("--batch_size", type=int, default=4)
 	p.add_argument("--epochs", type=int, default=1, help="stop after this many epochs (0 = unlimited, use --max_train_steps)")
 	p.add_argument("--max_train_steps", type=int, default=500_000, help="stop after this many optimizer steps (0 = unlimited, use --epochs)")
@@ -109,10 +111,10 @@ def psnr_batch(x: torch.Tensor, y: torch.Tensor) -> float:
 
 
 def recon_loss(
-	vae: AutoencoderKL, x: torch.Tensor, lpips_fn: torch.nn.Module, kl_w: float
+	vae: AutoencoderKLWan, x: torch.Tensor, lpips_fn: torch.nn.Module, kl_w: float
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-	post = vae.encode(x).latent_dist
-	recon = vae.decode(post.sample()).sample
+	post = vae.encode(x.unsqueeze(2)).latent_dist
+	recon = vae.decode(post.sample()).sample[:, :, 0].contiguous()
 	xf, rf = x.float(), recon.float()
 	mse = F.mse_loss(rf, xf)
 	lp = lpips_fn(xf, rf).mean()
@@ -123,7 +125,7 @@ def recon_loss(
 
 @torch.no_grad()
 def eval_val(
-	vae: AutoencoderKL,
+	vae: AutoencoderKLWan,
 	pixels: torch.Tensor,
 	device: torch.device,
 	writer: SummaryWriter | None,
@@ -136,8 +138,8 @@ def eval_val(
 	vae.eval()
 	x = pixels.to(device=device, dtype=torch.float32)
 	with amp_autocast(device, mixed_precision):
-		post = vae.encode(x).latent_dist
-		recon = vae.decode(post.mode()).sample
+		post = vae.encode(x.unsqueeze(2)).latent_dist
+		recon = vae.decode(post.mode()).sample[:, :, 0].contiguous()
 	xf, rf = x.float(), recon.float()
 	mse = F.mse_loss(rf, xf)
 	lp = lpips_fn(xf, rf).mean()
@@ -222,7 +224,7 @@ def main() -> None:
 	log_dir.parent.mkdir(parents=True, exist_ok=True)
 	writer = SummaryWriter(log_dir=str(log_dir))
 
-	vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path).to(device)
+	vae = build_wan_vae().to(device)
 	vae.train()
 	lpips_fn = lpips.LPIPS(net="alex").to(device)
 	lpips_fn.eval()
@@ -236,7 +238,8 @@ def main() -> None:
 	scaler = torch.amp.GradScaler("cuda", enabled=use_fp16_scaler)
 	print(
 		f"train={len(train_ds):,}  val={len(val_ds):,}  down_scale={args.down_scale}  "
-		f"mixed_precision={mixed_precision}  device={device}\nTensorBoard: {log_dir.resolve()}"
+		f"mixed_precision={mixed_precision}  device={device}  vae=Wan(from scratch)\n"
+		f"TensorBoard: {log_dir.resolve()}"
 	)
 
 	step = 0
@@ -244,8 +247,13 @@ def main() -> None:
 
 	ep = 0
 	steps_per_epoch = len(loader)
-	total_steps = args.epochs * steps_per_epoch
-	if args.max_train_steps > 0:
+	if args.epochs > 0:
+		total_steps = args.epochs * steps_per_epoch
+	elif args.max_train_steps > 0:
+		total_steps = args.max_train_steps
+	else:
+		raise ValueError("Set --epochs > 0 or --max_train_steps > 0.")
+	if args.max_train_steps > 0 and args.epochs > 0:
 		total_steps = min(total_steps, args.max_train_steps)
 
 	pbar = tqdm(total=total_steps)
@@ -294,7 +302,7 @@ def main() -> None:
 			if args.save_every > 0 and step % args.save_every == 0:
 				vae.eval()
 				Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-				torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
+				torch.save(vae.state_dict(), Path(args.output_dir) / args.output_name)
 				vae.train()
 
 			if step >= total_steps:
@@ -304,9 +312,9 @@ def main() -> None:
 	eval_val(vae, val_x, device, writer, step, lpips_fn, args.kl_weight, mixed_precision)
 	Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 	vae.eval()
-	torch.save(vae.state_dict(), Path(args.output_dir) / "vae.pt")
+	torch.save(vae.state_dict(), Path(args.output_dir) / args.output_name)
 	writer.close()
-	print(f"Saved VAE -> {(Path(args.output_dir) / 'vae.pt').resolve()}")
+	print(f"Saved VAE -> {(Path(args.output_dir) / args.output_name).resolve()}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """
 Next-frame temporal world model.
 
-Architecture: frozen SD VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
+Architecture: frozen Wan VAE + SD 1.4-style UNet2D (stacked history + noisy next in channel dim).
 Training:    denoise the next latent frame from history; cross-attn conditioned on a single action a_t
              (the transition action a[K-1]: obs[K-1]→obs[K]).
 Inference:   pass the action that leaves the last history state (one step control).
@@ -17,7 +17,6 @@ import torch.nn as nn
 from torch.autograd import Function
 
 from world_model.model.net import Diffuser, VAE
-from world_model.model.net.vae import DEFAULT_VAE_PT
 
 
 class WorldModel(nn.Module):
@@ -39,8 +38,7 @@ class WorldModel(nn.Module):
 		super().__init__()
 		self.history_len = history_len
 
-		pt = Path(DEFAULT_VAE_PT if vae_checkpoint is None else vae_checkpoint)
-		self.vae = VAE(checkpoint=pt)
+		self.vae = VAE(checkpoint=vae_checkpoint)
 		self.vae.freeze()
 		self.latent_channels = self.vae.latent_channels
 
@@ -322,7 +320,7 @@ if __name__ == "__main__":
 	wm = WorldModel(
 		num_actions=18,
 		cross_attention_dim=768,
-		vae_checkpoint=DEFAULT_VAE_PT,
+		vae_checkpoint=None,
 		prediction_type="v_prediction",
 		history_len=K,
 		pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4",

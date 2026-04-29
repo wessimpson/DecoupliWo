@@ -21,7 +21,7 @@ import torch
 from tqdm.auto import tqdm
 
 from world_model.dataset import obs_array_to_pixels
-from world_model.model.net.vae import DEFAULT_VAE_PT, VAE
+from world_model.model.net.vae import VAE
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,7 +30,12 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--encoded_subdir", type=str, default="encoded", help="Folder under transitions_root for outputs.")
 	p.add_argument("--env", type=str, default=None, help="Environment folder name. If omitted, encode all envs in each split.")
 	p.add_argument("--split", type=str, choices=("train", "test", "both"), default="both")
-	p.add_argument("--vae_checkpoint", type=str, default=str(DEFAULT_VAE_PT))
+	p.add_argument(
+		"--vae_checkpoint",
+		type=str,
+		default="",
+		help="Optional local Wan VAE state dict. Empty uses pretrained Wan-AI/Wan2.1-T2V-1.3B-Diffusers/vae.",
+	)
 	p.add_argument(
 		"--down_scale",
 		type=int,
@@ -108,7 +113,7 @@ def main() -> None:
 	root = Path(args.transitions_root)
 	encoded_base = root / args.encoded_subdir
 
-	vae = VAE(checkpoint=Path(args.vae_checkpoint))
+	vae = VAE(checkpoint=args.vae_checkpoint.strip() or None)
 	vae.freeze()
 	vae.to(device)
 
