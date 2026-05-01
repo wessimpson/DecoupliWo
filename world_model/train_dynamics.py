@@ -385,7 +385,13 @@ def main() -> None:
 		cfg_scale_rule=args.cfg_scale_rule,
 	).to(device)
 	if world_model.latent_channels != C:
-		raise ValueError(f"encoded latent C={C} != model latent_channels={world_model.latent_channels}")
+		raise ValueError(
+			f"encoded latent C={C} != model latent_channels={world_model.latent_channels}. "
+			f"Your encoded shards were created with a different VAE (likely the old SD VAE with C=4). "
+			f"Re-encode your raw shards with the current VAE:\n"
+			f"  python world_model/encode_transition.py --force\n"
+			f"This will detect and replace stale latent.npy files automatically."
+		)
 
 	n_diff = sum(p.numel() for p in world_model.diffuser.parameters())
 	print(f"Diffuser parameters: {n_diff:,}")

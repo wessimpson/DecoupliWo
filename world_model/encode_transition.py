@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
 		help="After div-8 crop, divide H/W by this integer (same rule as train_vae). 1 = no extra resize.",
 	)
 	p.add_argument("--batch_size", type=int, default=32)
+	p.add_argument(
+		"--force",
+		action="store_true",
+		help="Re-encode shards even when a correctly-shaped latent.npy already exists.",
+	)
 	return p.parse_args()
 
 
@@ -61,6 +66,17 @@ def downscaled_hw_div8(h: int, w: int, down_scale: int) -> tuple[int, int]:
 	return H, W
 
 
+def _shard_latent_channels(latent_path: Path) -> int | None:
+	"""Read the channel dimension of an existing latent.npy without loading the full array."""
+	try:
+		lat = np.load(latent_path, mmap_mode="r")
+		if lat.ndim >= 2:
+			return int(lat.shape[1])
+		return None
+	except Exception:
+		return None
+
+
 def _encode_one_split(
 	device: torch.device,
 	vae: VAE,
@@ -68,16 +84,32 @@ def _encode_one_split(
 	dst_env_dir: Path,
 	down_scale: int,
 	batch_size: int,
+	force: bool = False,
 ) -> None:
 	shards = sorted(p for p in src_env_dir.glob("shard_*") if (p / "obs.npy").is_file() and (p / "action.npy").is_file())
 	if not shards:
 		raise FileNotFoundError(f"No shard_* with obs.npy+action.npy under {src_env_dir}")
 
+	expected_C = vae.latent_channels
 	dst_env_dir.mkdir(parents=True, exist_ok=True)
 	shard_desc = f"{src_env_dir.parent.name}/{src_env_dir.name}/shards"
 	for shard in tqdm(shards, desc=shard_desc, dynamic_ncols=True):
 		out_dir = dst_env_dir / shard.name
 		out_dir.mkdir(parents=True, exist_ok=True)
+
+		# ── Check for existing latent.npy ──
+		existing_latent = out_dir / "latent.npy"
+		if existing_latent.is_file() and not force:
+			old_C = _shard_latent_channels(existing_latent)
+			if old_C is not None and old_C == expected_C:
+				print(f"  skip {shard.name}: latent.npy already has C={old_C} (use --force to re-encode)")
+				continue
+			if old_C is not None and old_C != expected_C:
+				print(
+					f"  STALE {shard.name}: existing latent.npy has C={old_C}, "
+					f"expected C={expected_C} (re-encoding)"
+				)
+
 		obs = np.load(shard / "obs.npy", mmap_mode="r")
 		resize_to: tuple[int, int] | None = None
 		if down_scale > 1:
@@ -143,7 +175,7 @@ def main() -> None:
 				print(f"Skip missing {src}")
 				continue
 			print(f"Encoding {sp}/{env_name}")
-			_encode_one_split(device, vae, src, dst, args.down_scale, args.batch_size)
+			_encode_one_split(device, vae, src, dst, args.down_scale, args.batch_size, force=args.force)
 	print("Done.")
 
 
