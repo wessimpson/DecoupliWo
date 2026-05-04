@@ -1,4 +1,4 @@
-# Waves generated composable variant: rules_ricochet
+# Waves direction-only rule variant. First shot reverses enemy direction without changing its image; later shot defeats it.
 BasicGame square_size=32
     SpriteSet
 
@@ -18,8 +18,7 @@ BasicGame square_size=32
 
         avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship1 rotateInPlace=False
         alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
-        ruleAlien > Bomber speed=0.1 orientation=LEFT stype=laser prob=0.01
-            ruleAlien1 > img=oryx/alien3
+        directionAlien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
     
     LevelMapping
         1 > background portalSlow
@@ -35,12 +34,12 @@ BasicGame square_size=32
     InteractionSet
         avatar  EOS  > stepBack
         alien   EOS  > killSprite
-        ruleAlien EOS > killSprite
+        directionAlien EOS > killSprite
         missile EOS  > killSprite
 
-        ruleAlien1 sam > killSprite scoreChange=2
-        sam alien > reverseDirection
-        alien sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
+        directionAlien sam > killSprite scoreChange=2
+        alien sam > reverseDirection
+        alien sam > transformTo stype=directionAlien killSecond=True forceOrientation=True
 
         sam laser > transformTo stype=shield killSecond=True
 
@@ -51,8 +50,8 @@ BasicGame square_size=32
 
         avatar alien > killIfHasLess resource=shield limit=0
         avatar alien > changeResource resource=shield value=-1 killResource=True
-        avatar ruleAlien > killIfHasLess resource=shield limit=0
-        avatar ruleAlien > changeResource resource=shield value=-1 killResource=True
+        avatar directionAlien > killIfHasLess resource=shield limit=0
+        avatar directionAlien > changeResource resource=shield value=-1 killResource=True
 
         avatar laser > killIfHasLess resource=shield limit=0
         avatar laser > changeResource resource=shield value=-1 killResource=True
@@ -60,6 +59,6 @@ BasicGame square_size=32
         asteroid sam laser > killSprite
         rock asteroid > killSprite
         alien asteroid > killSprite
-        ruleAlien asteroid > killSprite
+        directionAlien asteroid > killSprite
         laser asteroid > killSprite
         avatar asteroid > stepBack

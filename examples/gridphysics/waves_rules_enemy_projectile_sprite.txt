@@ -1,4 +1,4 @@
-# Waves generated composable variant: rules_ricochet
+# Waves generated composable variant: rules_enemy_projectile_sprite
 BasicGame square_size=32
     SpriteSet
 
@@ -9,6 +9,7 @@ BasicGame square_size=32
             rock > orientation=LEFT speed=0.95 color=BLUE img=oryx/orb3
             sam  > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.8
             laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.8 img=newset/laser2_1
+            ruleLaser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.8 img=oryx/ghost2
 
         portal  >
             portalSlow  > SpawnPoint   stype=alien  cooldown=10 prob=0.05 img=newset/whirlpool2 portal=True
@@ -38,11 +39,12 @@ BasicGame square_size=32
         ruleAlien EOS > killSprite
         missile EOS  > killSprite
 
-        ruleAlien1 sam > killSprite scoreChange=2
-        sam alien > reverseDirection
-        alien sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
+        alien sam > killSprite scoreChange=2
 
-        sam laser > transformTo stype=shield killSecond=True
+        ruleLaser sam > killSprite scoreChange=1
+        laser sam > transformTo stype=ruleLaser killSecond=True forceOrientation=True
+        avatar ruleLaser > killIfHasLess resource=shield limit=0
+        avatar ruleLaser > changeResource resource=shield value=-1 killResource=True
 
         avatar shield > changeResource resource=shield value=1 killResource=True
 

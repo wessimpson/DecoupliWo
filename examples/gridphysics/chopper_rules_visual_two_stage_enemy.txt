@@ -1,4 +1,4 @@
-# Chopper generated composable variant: rules_ricochet
+# Chopper visual rule variant: two_stage_enemy. Player bombs turn tanks into different sprites before defeat.
 BasicGame square_size=32
     SpriteSet
         layers > Immovable hidden=True
@@ -19,8 +19,9 @@ BasicGame square_size=32
             fastRightCloud  > orientation=RIGHT speed=0.2  color=WHITE
 
         tank   > Bomber stype=sam  prob=0.03  cooldown=5 speed=0.6 img=newset/tank_blueU
-        ruleTank > Bomber stype=sam prob=0.03 cooldown=5 speed=0.6
-            ruleTank1 > img=newset/tank_blueU
+        visualTank > Bomber stype=sam prob=0.03 cooldown=5 speed=0.6
+            visualTankDamaged > img=newset/tank_blueR
+            visualTankCritical > img=newset/tank_blueD
         portal  > SpawnPoint img=oryx/dooropen1 portal=True
             portalBase  > stype=tank  cooldown=40   total=20
             portalAmmo  > stype=supply cooldown=10 prob=0.15
@@ -44,25 +45,25 @@ BasicGame square_size=32
     TerminationSet
         SpriteCounter      stype=avatar               limit=0 win=False
         SpriteCounter      stype=satellite               limit=0 win=False
-        MultiSpriteCounter stype1=portalBase stype2=tank stype3=ruleTank limit=0 win=True
+        MultiSpriteCounter stype1=portalBase stype2=tank stype3=visualTank limit=0 win=True
         
     InteractionSet
         avatar wall EOS > stepBack
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        ruleTank1 bomb > killSprite scoreChange=1
-        bomb tank > reverseDirection
-        tank bomb > transformTo stype=ruleTank1 killSecond=False forceOrientation=True
+        visualTankCritical bomb > killSprite scoreChange=1
+        visualTankDamaged bomb > transformTo stype=visualTankCritical killSecond=True forceOrientation=True
+        tank bomb > transformTo stype=visualTankDamaged killSecond=True forceOrientation=True
         bomb tank wall EOS > killSprite
-        bomb ruleTank wall EOS > killSprite
+        bomb visualTank wall EOS > killSprite
 
         bomb sam > killBoth
 
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack
-        ruleTank wall EOS > reverseDirection
-        ruleTank wall EOS > stepBack
+        visualTank wall EOS > reverseDirection
+        visualTank wall EOS > stepBack
 
         satellite sam > killBoth scoreChange=-1
         satellite wall EOS > stepBack

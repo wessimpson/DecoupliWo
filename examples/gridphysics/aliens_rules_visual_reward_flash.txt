@@ -1,20 +1,20 @@
-# Aliens generated composable variant: rules_ricochet
+# Aliens visual rule variant: reward_flash. Player shots turn enemies into different sprites before defeat.
 BasicGame square_size=32
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
         base    > Immovable    color=WHITE img=oryx/planet
-        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 alignShotToOrientation=False rotateInPlace=False img=oryx/spaceship1
+        avatar  > FlakAvatar   stype=sam img=oryx/spaceship1
         missile > Missile
             sam  > orientation=UP    color=BLUE singleton=True img=oryx/bullet1
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
         alien   > Bomber       stype=bomb   prob=0.01  cooldown=3 speed=0.8
             alienGreen > img=oryx/alien3
             alienBlue > img=oryx/alien1
-        ruleAlien > Bomber stype=bomb prob=0.01 cooldown=3 speed=0.8
-            ruleAlien1 > img=oryx/alien3
+        visualAlien > Bomber stype=bomb prob=0.01 cooldown=3 speed=0.8
+            visualAlienReward > img=oryx/gold1
         portal  > invisible=True hidden=True
-        	portalSlow  > SpawnPoint   stype=alienBlue  cooldown=16 img=portal
-        	portalFast  > SpawnPoint   stype=alienGreen  cooldown=12 img=portal
+        	portalSlow  > SpawnPoint   stype=alienBlue  cooldown=16   total=20 img=portal
+        	portalFast  > SpawnPoint   stype=alienGreen  cooldown=12   total=20 img=portal
 
     LevelMapping
         . > background
@@ -25,25 +25,22 @@ BasicGame square_size=32
 
     TerminationSet
         SpriteCounter      stype=avatar               limit=0 win=False
-        MultiSpriteCounter stype1=portal stype2=alien stype3=ruleAlien limit=0 win=True
+        MultiSpriteCounter stype1=portal stype2=alien stype3=visualAlien limit=0 win=True
 
     InteractionSet
         avatar  EOS  > stepBack
-        avatar base portalSlow portalFast > stepBack
         alien   EOS  > turnAround
-        ruleAlien EOS > turnAround
+        visualAlien EOS > turnAround
         missile EOS  > killSprite
 
         base bomb > killBoth
         base sam > killBoth scoreChange=1
 
         base   alien > killSprite
-        base   ruleAlien > killSprite
+        base   visualAlien > killSprite
         avatar alien > killSprite scoreChange=-1
-        avatar ruleAlien > killSprite scoreChange=-1
+        avatar visualAlien > killSprite scoreChange=-1
         avatar bomb  > killSprite scoreChange=-1
-        ruleAlien1 sam > killSprite scoreChange=2
-        sam alienGreen > reverseDirection
-        alienGreen sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
-        sam alienBlue > reverseDirection
-        alienBlue sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
+        visualAlienReward sam > killSprite scoreChange=2
+        alienGreen sam > transformTo stype=visualAlienReward killSecond=True forceOrientation=True
+        alienBlue sam > transformTo stype=visualAlienReward killSecond=True forceOrientation=True

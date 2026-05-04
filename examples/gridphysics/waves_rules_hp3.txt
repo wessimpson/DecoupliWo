@@ -1,4 +1,4 @@
-# Waves generated composable variant: rules_ricochet
+# Waves generated composable variant: rules_hp3
 BasicGame square_size=32
     SpriteSet
 
@@ -20,6 +20,7 @@ BasicGame square_size=32
         alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
         ruleAlien > Bomber speed=0.1 orientation=LEFT stype=laser prob=0.01
             ruleAlien1 > img=oryx/alien3
+            ruleAlien2 > img=oryx/alien3
     
     LevelMapping
         1 > background portalSlow
@@ -38,9 +39,9 @@ BasicGame square_size=32
         ruleAlien EOS > killSprite
         missile EOS  > killSprite
 
-        ruleAlien1 sam > killSprite scoreChange=2
-        sam alien > reverseDirection
-        alien sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
+        ruleAlien2 sam > killSprite scoreChange=2
+        ruleAlien1 sam > transformTo stype=ruleAlien2 killSecond=True forceOrientation=True
+        alien sam > transformTo stype=ruleAlien1 killSecond=True forceOrientation=True
 
         sam laser > transformTo stype=shield killSecond=True
 

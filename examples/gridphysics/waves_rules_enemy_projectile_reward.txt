@@ -1,4 +1,4 @@
-# Waves generated composable variant: rules_ricochet
+# Waves generated composable variant: rules_enemy_projectile_reward
 BasicGame square_size=32
     SpriteSet
 
@@ -38,9 +38,7 @@ BasicGame square_size=32
         ruleAlien EOS > killSprite
         missile EOS  > killSprite
 
-        ruleAlien1 sam > killSprite scoreChange=2
-        sam alien > reverseDirection
-        alien sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
+        alien sam > killSprite scoreChange=2
 
         sam laser > transformTo stype=shield killSecond=True
 

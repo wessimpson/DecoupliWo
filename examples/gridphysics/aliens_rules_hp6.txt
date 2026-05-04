@@ -1,9 +1,9 @@
-# Aliens generated composable variant: rules_ricochet
+# Aliens generated composable variant: rules_hp6
 BasicGame square_size=32
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
         base    > Immovable    color=WHITE img=oryx/planet
-        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 alignShotToOrientation=False rotateInPlace=False img=oryx/spaceship1
+        avatar  > FlakAvatar   stype=sam img=oryx/spaceship1
         missile > Missile
             sam  > orientation=UP    color=BLUE singleton=True img=oryx/bullet1
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
@@ -12,9 +12,13 @@ BasicGame square_size=32
             alienBlue > img=oryx/alien1
         ruleAlien > Bomber stype=bomb prob=0.01 cooldown=3 speed=0.8
             ruleAlien1 > img=oryx/alien3
+            ruleAlien2 > img=oryx/alien3
+            ruleAlien3 > img=oryx/alien3
+            ruleAlien4 > img=oryx/alien3
+            ruleAlien5 > img=oryx/alien3
         portal  > invisible=True hidden=True
-        	portalSlow  > SpawnPoint   stype=alienBlue  cooldown=16 img=portal
-        	portalFast  > SpawnPoint   stype=alienGreen  cooldown=12 img=portal
+        	portalSlow  > SpawnPoint   stype=alienBlue  cooldown=16   total=20 img=portal
+        	portalFast  > SpawnPoint   stype=alienGreen  cooldown=12   total=20 img=portal
 
     LevelMapping
         . > background
@@ -29,7 +33,6 @@ BasicGame square_size=32
 
     InteractionSet
         avatar  EOS  > stepBack
-        avatar base portalSlow portalFast > stepBack
         alien   EOS  > turnAround
         ruleAlien EOS > turnAround
         missile EOS  > killSprite
@@ -42,8 +45,10 @@ BasicGame square_size=32
         avatar alien > killSprite scoreChange=-1
         avatar ruleAlien > killSprite scoreChange=-1
         avatar bomb  > killSprite scoreChange=-1
-        ruleAlien1 sam > killSprite scoreChange=2
-        sam alienGreen > reverseDirection
-        alienGreen sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
-        sam alienBlue > reverseDirection
-        alienBlue sam > transformTo stype=ruleAlien1 killSecond=False forceOrientation=True
+        ruleAlien5 sam > killSprite scoreChange=2
+        ruleAlien4 sam > transformTo stype=ruleAlien5 killSecond=True forceOrientation=True
+        ruleAlien3 sam > transformTo stype=ruleAlien4 killSecond=True forceOrientation=True
+        ruleAlien2 sam > transformTo stype=ruleAlien3 killSecond=True forceOrientation=True
+        ruleAlien1 sam > transformTo stype=ruleAlien2 killSecond=True forceOrientation=True
+        alienGreen sam > transformTo stype=ruleAlien1 killSecond=True forceOrientation=True
+        alienBlue sam > transformTo stype=ruleAlien1 killSecond=True forceOrientation=True

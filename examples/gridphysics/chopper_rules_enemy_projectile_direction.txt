@@ -1,4 +1,4 @@
-# Chopper generated composable variant: rules_ricochet
+# Chopper generated composable variant: rules_enemy_projectile_direction
 BasicGame square_size=32
     SpriteSet
         layers > Immovable hidden=True
@@ -51,13 +51,12 @@ BasicGame square_size=32
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        ruleTank1 bomb > killSprite scoreChange=1
-        bomb tank > reverseDirection
-        tank bomb > transformTo stype=ruleTank1 killSecond=False forceOrientation=True
+        tank bomb > killSprite scoreChange=1
         bomb tank wall EOS > killSprite
         bomb ruleTank wall EOS > killSprite
 
-        bomb sam > killBoth
+        sam bomb > reverseDirection
+        bomb sam > killSprite scoreChange=1
 
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack
