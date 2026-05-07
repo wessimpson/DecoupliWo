@@ -30,8 +30,14 @@ set -euo pipefail
 #   VALIDATION_EVERY=0           # use this if you only copied encoded/train and no encoded/test
 #   EXTRA_ARGS="--validation_every 5000 --save_every 5000"
 
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "$REPO_ROOT"
+
+if [[ ! -d world_model || ! -f requirements.txt ]]; then
+	echo "REPO_ROOT does not look like the DecoupliWo repo: $REPO_ROOT" >&2
+	echo "Submit from /scratch/sjb8193/DecoupliWo or set REPO_ROOT=/scratch/sjb8193/DecoupliWo." >&2
+	exit 2
+fi
 
 mkdir -p \
 	logs \
