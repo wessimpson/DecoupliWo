@@ -118,9 +118,17 @@ def main() -> None:
 	seq_len = K + 1
 	encoded_root = Path(args.transitions_root) / args.encoded_subdir
 	ds_train, train_dirs = _make_dataset(encoded_root, "train", args.env, seq_len, args.num_actions)
-	ds_test, test_dirs = _make_dataset(encoded_root, "test", args.env, seq_len, args.num_actions)
+	ds_test = None
+	test_dirs: list[Path] = []
+	if args.validation_every > 0:
+		try:
+			ds_test, test_dirs = _make_dataset(encoded_root, "test", args.env, seq_len, args.num_actions)
+		except FileNotFoundError as e:
+			print(f"Warning: validation disabled because encoded test data was not found: {e}")
+			args.validation_every = 0
 	C = int(ds_train[0]["history_latents"].shape[1])
-	print(f"Dataset windows: train={len(ds_train):,} test={len(ds_test):,} latent_C={C}")
+	test_n = 0 if ds_test is None else len(ds_test)
+	print(f"Dataset windows: train={len(ds_train):,} test={test_n:,} latent_C={C}")
 	for p in train_dirs:
 		print(f"  train original dir: {p.name}")
 
@@ -182,7 +190,7 @@ def main() -> None:
 	val_ar_max = max(val_ar_horizons)
 	val_ar_horizons_set = frozenset(val_ar_horizons)
 
-	with torch.no_grad():
+	if ds_test is not None:
 		S = min(int(args.val_samples), len(ds_test))
 		val_items = [ds_test[i] for i in range(S)]
 		val_hist_z = torch.stack([s["history_latents"] for s in val_items])
@@ -205,6 +213,10 @@ def main() -> None:
 		val_ar_hist_act = torch.stack([s["history_actions"] for s in val_ar_items]).long() if val_ar_items else None
 		val_ar_fut = torch.stack([s["future_action_frames"] for s in val_ar_items]).long() if val_ar_items else None
 		val_ar_gt_z = torch.stack([s["gt_future_latents"] for s in val_ar_items]) if val_ar_items else None
+	else:
+		val_hist_z = val_tgt_z = val_hist_act = None
+		val_ar_hist_z = val_ar_hist_act = val_ar_fut = val_ar_gt_z = None
+		val_ar_names = []
 
 	def save_checkpoint(step: int) -> None:
 		d = ckpt_root / f"step_{step:07d}"

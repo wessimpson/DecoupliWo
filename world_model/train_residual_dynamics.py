@@ -120,13 +120,23 @@ def main() -> None:
 	encoded_root = Path(args.transitions_root) / args.encoded_subdir
 
 	variant_train_pairs = encoded_variant_dirs_under_split(encoded_root / "train", env=args.env)
-	variant_test_pairs = encoded_variant_dirs_under_split(encoded_root / "test", env=args.env)
+	variant_test_pairs = None
+	if args.validation_every > 0:
+		try:
+			variant_test_pairs = encoded_variant_dirs_under_split(encoded_root / "test", env=args.env)
+		except FileNotFoundError as e:
+			print(f"Warning: validation disabled because encoded test variants were not found: {e}")
+			args.validation_every = 0
 	try:
 		normal_train_dirs = encoded_original_dirs_under_split(encoded_root / "train", env=args.env)
-		normal_test_dirs = encoded_original_dirs_under_split(encoded_root / "test", env=args.env)
 	except FileNotFoundError:
 		normal_train_dirs = []
-		normal_test_dirs = []
+	normal_test_dirs = []
+	if args.validation_every > 0:
+		try:
+			normal_test_dirs = encoded_original_dirs_under_split(encoded_root / "test", env=args.env)
+		except FileNotFoundError:
+			normal_test_dirs = []
 	normal_pairs = [(p, correction_rule_tuple_from_env_name(p.name)) for p in normal_train_dirs]
 	normal_test_pairs = [(p, correction_rule_tuple_from_env_name(p.name)) for p in normal_test_dirs]
 
@@ -141,12 +151,13 @@ def main() -> None:
 		raise ValueError("--normal_anchor_ratio leaves no variant samples in a batch")
 
 	ds_variant = _make_mixed_dataset(variant_train_pairs, seq_len, args.num_actions)
-	ds_variant_test = _make_mixed_dataset(variant_test_pairs, seq_len, args.num_actions)
+	ds_variant_test = _make_mixed_dataset(variant_test_pairs, seq_len, args.num_actions) if variant_test_pairs is not None else None
 	ds_normal = _make_mixed_dataset(normal_pairs, seq_len, args.num_actions) if n_anchor > 0 else None
-	ds_normal_test = _make_mixed_dataset(normal_test_pairs, seq_len, args.num_actions) if normal_test_pairs else None
+	ds_normal_test = _make_mixed_dataset(normal_test_pairs, seq_len, args.num_actions) if normal_test_pairs and args.validation_every > 0 else None
 	C = int(ds_variant[0]["history_latents"].shape[1])
+	variant_test_n = 0 if ds_variant_test is None else len(ds_variant_test)
 	print(
-		f"Dataset windows: variants_train={len(ds_variant):,} variants_test={len(ds_variant_test):,} "
+		f"Dataset windows: variants_train={len(ds_variant):,} variants_test={variant_test_n:,} "
 		f"latent_C={C} anchor_batch={n_anchor}/{args.batch_size}",
 	)
 	for p, rv in variant_train_pairs:
@@ -221,7 +232,7 @@ def main() -> None:
 	ckpt_root = Path(args.checkpoint_dir)
 	ckpt_root.mkdir(parents=True, exist_ok=True)
 
-	with torch.no_grad():
+	if ds_variant_test is not None:
 		Sv = min(int(args.val_samples), len(ds_variant_test))
 		val_items = [ds_variant_test[i] for i in range(Sv)]
 		if ds_normal_test is not None and n_anchor > 0:
@@ -231,6 +242,8 @@ def main() -> None:
 		val_tgt_z = torch.stack([s["target_latent"] for s in val_items])
 		val_hist_act = torch.stack([s["history_actions"] for s in val_items]).long()
 		val_rule_oh = torch.stack([s["rule_onehot"] for s in val_items]).float()
+	else:
+		val_hist_z = val_tgt_z = val_hist_act = val_rule_oh = None
 
 	def save_checkpoint(step: int) -> None:
 		d = ckpt_root / f"step_{step:07d}"

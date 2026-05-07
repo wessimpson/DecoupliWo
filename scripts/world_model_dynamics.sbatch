@@ -24,8 +24,10 @@ set -euo pipefail
 # Common overrides:
 #   ENV_NAME=aliens              # optional; omit for all eligible folders
 #   TRANSITIONS_ROOT=/path/data/transitions
+#   ENCODED_SUBDIR=encoded       # training reads $TRANSITIONS_ROOT/$ENCODED_SUBDIR/train
 #   VAE_CHECKPOINT=/path/world_model/checkpoints/vae/vae.pt
 #   BATCH_SIZE=8 MAX_TRAIN_STEPS=50000 NUM_WORKERS=16
+#   VALIDATION_EVERY=0           # use this if you only copied encoded/train and no encoded/test
 #   EXTRA_ARGS="--validation_every 5000 --save_every 5000"
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
