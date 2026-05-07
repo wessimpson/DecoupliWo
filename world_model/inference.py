@@ -4,119 +4,52 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 import torch
 from matplotlib.patches import Rectangle
 
 from world_model.dataset import IMG_TRANSFORMS, crop_hw_div8
-from world_model.dataset import NUM_RULE_TYPES
-from world_model.model.world_model import WorldModel
-
-
-def _load_sd(path: Path, device: torch.device) -> dict:
-	return torch.load(path, map_location=device, weights_only=True)
-
-
-def _read_trainer_args(ckpt_dir: Path) -> dict[str, Any]:
-	p = ckpt_dir / "trainer_state.pt"
-	if not p.is_file():
-		return {}
-	blob = torch.load(p, map_location="cpu", weights_only=False)
-	return dict(blob.get("args") or {})
-
-
-def _coalesce(meta: dict[str, Any], key: str, override: Any, fallback: Any) -> Any:
-	if override is not None:
-		return override
-	if key in meta and meta[key] is not None:
-		return meta[key]
-	return fallback
-
-
-def _cfg_scale_from_meta(meta: dict[str, Any], key_new: str, key_legacy: str, override: float | None, default: float) -> float:
-	if override is not None:
-		return float(override)
-	if key_new in meta and meta[key_new] is not None:
-		return float(meta[key_new])
-	if key_legacy in meta and meta[key_legacy] is not None:
-		return float(meta[key_legacy])
-	return float(default)
+from world_model.dataset import NUM_CORRECTION_RULE_TYPES, correction_rule_tensor_from_name
+from world_model.model.checkpoint import load_residual_world_model, load_world_model_checkpoint
+from world_model.model.world_model import ResidualWorldModel, WorldModel
 
 
 def load_world_model(
-	ckpt_dir: Path,
+	base_ckpt_dir: Path,
 	num_actions: int,
 	history_len: int,
 	vae_checkpoint: str | Path | None = None,
 	pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
+	residual_ckpt_dir: str | Path | None = None,
 	cfg_scale_action: float | None = None,
 	cfg_scale_rule: float | None = None,
-) -> WorldModel:
-	"""Load weights from ``ckpt_dir`` (same layout as :meth:`WorldModel.save_diffuser`).
-
-	If ``trainer_state.pt`` exists, ``vae_checkpoint`` defaults from saved args when omitted.
-	"""
-	ckpt_dir = Path(ckpt_dir)
-	meta = _read_trainer_args(ckpt_dir)
-
-	vae_eff = _coalesce(meta, "vae_checkpoint", vae_checkpoint, None)
-	c_sa = _cfg_scale_from_meta(meta, "cfg_scale_action", "cfg_scale", cfg_scale_action, 1.5)
-	c_sr = _cfg_scale_from_meta(meta, "cfg_scale_rule", "cfg_scale", cfg_scale_rule, 1.5)
-	wm = WorldModel(
-		num_actions=num_actions,
-		cross_attention_dim=768,
-		vae_checkpoint=vae_eff,
-		prediction_type="v_prediction",
-		history_len=history_len,
-		pretrained_model_name_or_path=pretrained_model_name_or_path,
-		cfg_scale_action=c_sa,
-		cfg_scale_rule=c_sr,
-	)
+) -> WorldModel | ResidualWorldModel:
+	"""Load base-only or base+residual inference model."""
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	wm = wm.to(device)
-
-	unet_path = ckpt_dir / "unet.pt"
-	if not unet_path.is_file():
-		raise FileNotFoundError(f"Missing UNet weights: {unet_path}")
-	try:
-		wm.diffuser.unet.load_state_dict(_load_sd(unet_path, device), strict=True)
-	except RuntimeError as e:
-		raise RuntimeError(
-			f"UNet load failed from {unet_path}. "
-			f"Ensure unet.pt matches this architecture (full SD1.4 UNet2D + widened conv_in)."
-		) from e
-	emb_path = ckpt_dir / "action_embedding.pt"
-	if not emb_path.exists():
-		emb_path = ckpt_dir / "future_action_embedding.pt"
-	if emb_path.exists():
-		wm.diffuser.action_embedding.load_state_dict(_load_sd(emb_path, device))
-	rule_path = ckpt_dir / "rule_projection.pt"
-	if rule_path.is_file():
-		wm.diffuser.rule_projection.load_state_dict(_load_sd(rule_path, device))
+	if residual_ckpt_dir:
+		wm = load_residual_world_model(
+			base_ckpt_dir,
+			residual_ckpt_dir,
+			num_actions=num_actions,
+			history_len=history_len,
+			vae_checkpoint=vae_checkpoint,
+			device=device,
+			cfg_scale_action=cfg_scale_action,
+			cfg_scale_rule=cfg_scale_rule,
+		)
 	else:
-		with torch.no_grad():
-			wm.diffuser.rule_projection.weight.zero_()
-	frame_state_path = ckpt_dir / "frame_state_encoder.pt"
-	if frame_state_path.is_file():
-		wm.diffuser.frame_state_encoder.load_state_dict(_load_sd(frame_state_path, device))
-	state_proj_path = ckpt_dir / "state_token_projection.pt"
-	if state_proj_path.is_file():
-		wm.diffuser.state_token_projection.load_state_dict(_load_sd(state_proj_path, device))
-	state_enc_path = ckpt_dir / "state_encoder.pt"
-	if state_enc_path.is_file():
-		# Legacy alias (same module as frame_state_encoder).
-		wm.state_encoder.load_state_dict(_load_sd(state_enc_path, device))
-	rule_adv_path = ckpt_dir / "rule_adversary.pt"
-	if rule_adv_path.is_file():
-		wm.rule_adversary.load_state_dict(_load_sd(rule_adv_path, device))
-	for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
-		legacy = ckpt_dir / legacy_name
-		if legacy.is_file():
-			raise RuntimeError(
-				f"Checkpoint has legacy {legacy_name} (MLP action head). Retrain with the current embedding-only diffuser."
-			)
+		wm = load_world_model_checkpoint(
+			base_ckpt_dir,
+			num_actions=num_actions,
+			history_len=history_len,
+			vae_checkpoint=vae_checkpoint,
+			pretrained_model_name_or_path=pretrained_model_name_or_path,
+			num_rules=0,
+			cfg_scale_action=cfg_scale_action,
+			device=device,
+		)
 	return wm
 
 
@@ -126,16 +59,11 @@ def _tensor_to_imshow01(t: torch.Tensor) -> np.ndarray:
 
 
 def _rule_vec(name: str) -> torch.Tensor:
-	"""[1, NUM_RULE_TYPES] float rule vector: one-hot or combined presets."""
-	n = str(name).lower().strip()
-	v = torch.zeros(1, NUM_RULE_TYPES, dtype=torch.float32)
-	if n in {"multishot+ricochet", "rule3+rule4", "combo34", "5"}:
-		v[0, 2] = 1.0
-		v[0, 3] = 1.0
-		return v
-	idx = {"normal": 0, "fast": 1, "rules_fast": 1, "multishot": 2, "ricochet": 3}.get(n, 0)
-	v[0, idx] = 1.0
-	return v
+	"""[1, 3] correction vector: zero is original/no correction."""
+	v = correction_rule_tensor_from_name(name)
+	if v.numel() != NUM_CORRECTION_RULE_TYPES:
+		raise ValueError(f"expected {NUM_CORRECTION_RULE_TYPES} correction dims, got {v.numel()}")
+	return v.view(1, -1)
 
 
 RULE_LABELS = ("normal", "fast", "multishot", "ricochet", "multishot+ricochet")
@@ -149,13 +77,14 @@ RULE_KEY_TO_LABEL = {
 
 
 def run_autoregressive(
-	ckpt_dir: str,
+	base_ckpt_dir: str,
 	env: str = "aliens",
 	num_actions: int = 7,
 	history_len: int = 2,
 	num_inference_steps: int = 30,
 	bootstrap_start_idx: int = 0,
 	vae_checkpoint: Optional[str] = None,
+	residual_ckpt_dir: Optional[str] = None,
 	rule: str = "normal",
 	cfg_scale_action: float | None = None,
 	cfg_scale_rule: float | None = None,
@@ -170,8 +99,9 @@ def run_autoregressive(
 		current_rule = "normal"
 	rule_oh = _rule_vec(current_rule).to(device)
 	wm = load_world_model(
-		Path(ckpt_dir), num_actions, K,
+		Path(base_ckpt_dir), num_actions, K,
 		vae_checkpoint=vae_checkpoint,
+		residual_ckpt_dir=residual_ckpt_dir,
 		cfg_scale_action=cfg_scale_action,
 		cfg_scale_rule=cfg_scale_rule,
 	)
@@ -315,7 +245,24 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "step_0150000"))
+	p.add_argument(
+		"--base_ckpt_dir",
+		type=str,
+		default=str(Path("world_model") / "checkpoints" / "original_dynamics" / "step_0150000"),
+		help="Original-mode dynamics checkpoint directory.",
+	)
+	p.add_argument(
+		"--residual_ckpt_dir",
+		type=str,
+		default="",
+		help="Optional residual correction checkpoint directory. Empty = base-only inference.",
+	)
+	p.add_argument(
+		"--ckpt_dir",
+		type=str,
+		default="",
+		help="Deprecated alias for --base_ckpt_dir.",
+	)
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
@@ -351,18 +298,17 @@ def main() -> None:
 		help="Override rule CFG scale (default: trainer_state.cfg_scale_rule or legacy cfg_scale, else 1.5).",
 	)
 	args = p.parse_args()
+	if args.ckpt_dir.strip():
+		args.base_ckpt_dir = args.ckpt_dir.strip()
 	rule_name = str(args.rule).strip().lower()
 	if rule_name not in RULE_LABELS:
 		rule_name = "normal"
-	print("Select initial rule condition: 1=normal, 2=fast, 3=multishot, 4=ricochet, 5=rule3+rule4")
-	choice = input("Rule [1-5]: ").strip()
-	if choice not in RULE_KEY_TO_LABEL:
-		raise ValueError("please select proper rule id")
-	rule_name = RULE_KEY_TO_LABEL[choice]
+	print("Rule hotkeys: 1=normal, 2=fast, 3=multishot, 4=ricochet, 5=multishot+ricochet")
 	run_autoregressive(
-		ckpt_dir=args.ckpt_dir,
+		base_ckpt_dir=args.base_ckpt_dir,
 		env=args.env,
 		vae_checkpoint=args.vae_checkpoint.strip() or None,
+		residual_ckpt_dir=args.residual_ckpt_dir.strip() or None,
 		num_actions=args.num_actions,
 		num_inference_steps=args.num_inference_steps,
 		history_len=args.context_len,

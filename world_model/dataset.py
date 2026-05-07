@@ -385,12 +385,21 @@ class EncodedRolloutVideoDataset(Dataset):
 		return preprocess_contiguous_latent_ar(sample, history_len, num_future_frames)
 
 
-# Rule one-hot order: normal, rules_fast, multishot, ricochet (matches sibling dir names under encoded/{split}/).
+# Legacy rule one-hot order: normal, rules_fast, multishot, ricochet.
 NUM_RULE_TYPES = 4
 _RULE_NORMAL = (1.0, 0.0, 0.0, 0.0)
 _RULE_FAST = (0.0, 1.0, 0.0, 0.0)
 _RULE_MULTISHOT = (0.0, 0.0, 1.0, 0.0)
 _RULE_RICOCHET = (0.0, 0.0, 0.0, 1.0)
+
+# Residual correction rule order: rules_fast, multishot, ricochet.
+# The original mode is not a shared rule anymore; it is the all-zero correction.
+NUM_CORRECTION_RULE_TYPES = 3
+_CORRECTION_NORMAL = (0.0, 0.0, 0.0)
+_CORRECTION_FAST = (1.0, 0.0, 0.0)
+_CORRECTION_MULTISHOT = (0.0, 1.0, 0.0)
+_CORRECTION_RICOCHET = (0.0, 0.0, 1.0)
+RULE_VARIANT_SUFFIXES = ("_rules_fast", "_rules_multishot", "_rules_ricochet")
 
 
 def canonical_rule_onehots() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -407,6 +416,124 @@ def rule_onehot_tuple_from_env_name(env: str) -> tuple[float, float, float, floa
 	if env.endswith("_rules_fast"):
 		return _RULE_FAST
 	return _RULE_NORMAL
+
+
+def is_rule_variant_name(env: str) -> bool:
+	"""Whether an encoded folder name denotes a non-original rule variant."""
+	return str(env).endswith(RULE_VARIANT_SUFFIXES)
+
+
+def base_game_from_encoded_folder(folder: str) -> str:
+	"""Strip a rule suffix from an encoded folder name."""
+	name = str(folder)
+	for suffix in RULE_VARIANT_SUFFIXES:
+		if name.endswith(suffix):
+			return name[: -len(suffix)]
+	return name
+
+
+def correction_rule_tuple_from_env_name(env: str) -> tuple[float, float, float]:
+	"""Map encoded folder name to a 3D residual correction vector.
+
+	Original folders map to all zeros. Rule variant folders map to the variant
+	axis only, so the vector encodes the correction rather than "normal".
+	"""
+	name = str(env)
+	if name.endswith("_rules_ricochet"):
+		return _CORRECTION_RICOCHET
+	if name.endswith("_rules_multishot"):
+		return _CORRECTION_MULTISHOT
+	if name.endswith("_rules_fast"):
+		return _CORRECTION_FAST
+	return _CORRECTION_NORMAL
+
+
+def correction_rule_tensor_from_name(name: str) -> torch.Tensor:
+	"""User-facing rule name to 3D correction tensor."""
+	n = str(name).lower().strip()
+	v = torch.zeros(NUM_CORRECTION_RULE_TYPES, dtype=torch.float32)
+	if n in {"fast", "rules_fast"}:
+		v[0] = 1.0
+	elif n == "multishot":
+		v[1] = 1.0
+	elif n == "ricochet":
+		v[2] = 1.0
+	elif n in {"multishot+ricochet", "rule3+rule4", "combo34", "5"}:
+		v[1] = 1.0
+		v[2] = 1.0
+	elif n not in {"", "normal", "original", "base", "0", "1"}:
+		raise ValueError(f"unknown correction rule: {name!r}")
+	return v
+
+
+def canonical_correction_rule_vectors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+	"""Fixed order: normal-zero, rules_fast, multishot, ricochet."""
+	return tuple(
+		torch.tensor(t, dtype=torch.float32)
+		for t in (_CORRECTION_NORMAL, _CORRECTION_FAST, _CORRECTION_MULTISHOT, _CORRECTION_RICOCHET)
+	)
+
+
+def _has_encoded_shards(p: Path) -> bool:
+	return any(
+		sp.is_dir() and (sp / "latent.npy").is_file() and (sp / "action.npy").is_file()
+		for sp in p.glob("shard_*")
+	)
+
+
+def encoded_original_dirs_under_split(encoded_split_dir: str | Path, env: str | None = None) -> list[Path]:
+	"""Original encoded folders under a split.
+
+	If ``env`` is omitted, all immediate non-variant folders are returned. If it
+	is provided, only the base/original folder for that game is returned.
+	"""
+	split_dir = Path(encoded_split_dir)
+	if not split_dir.is_dir():
+		raise FileNotFoundError(f"encoded split dir not found: {split_dir}")
+	out: list[Path] = []
+	if env is not None:
+		base = base_game_from_encoded_folder(str(env).strip())
+		p = split_dir / base
+		if p.is_dir() and _has_encoded_shards(p):
+			out.append(p)
+	else:
+		for p in sorted(split_dir.iterdir()):
+			if p.is_dir() and not is_rule_variant_name(p.name) and _has_encoded_shards(p):
+				out.append(p)
+	if not out:
+		raise FileNotFoundError(f"No original encoded dirs under {split_dir} for env={env!r}")
+	return out
+
+
+def encoded_variant_dirs_under_split(
+	encoded_split_dir: str | Path,
+	env: str | None = None,
+) -> list[tuple[Path, tuple[float, float, float]]]:
+	"""Rule-variant encoded folders with 3D correction vectors."""
+	split_dir = Path(encoded_split_dir)
+	if not split_dir.is_dir():
+		raise FileNotFoundError(f"encoded split dir not found: {split_dir}")
+	candidates: list[Path] = []
+	if env is not None:
+		name = str(env).strip()
+		if is_rule_variant_name(name):
+			candidates = [split_dir / name]
+		else:
+			candidates = [
+				split_dir / f"{name}_rules_fast",
+				split_dir / f"{name}_rules_multishot",
+				split_dir / f"{name}_rules_ricochet",
+			]
+	else:
+		candidates = [p for p in sorted(split_dir.iterdir()) if p.is_dir() and is_rule_variant_name(p.name)]
+
+	out: list[tuple[Path, tuple[float, float, float]]] = []
+	for p in candidates:
+		if p.is_dir() and _has_encoded_shards(p):
+			out.append((p, correction_rule_tuple_from_env_name(p.name)))
+	if not out:
+		raise FileNotFoundError(f"No variant encoded dirs under {split_dir} for env={env!r}")
+	return out
 
 
 def encoded_dirs_with_rules(encoded_split_dir: str | Path, env: str) -> list[tuple[Path, tuple[float, float, float, float]]]:
@@ -480,15 +607,15 @@ class EncodedShardRuleMeta:
 	cumulative_windows: int
 	n_actions: int
 	game_name: str
-	rule_onehot: tuple[float, float, float, float]
+	rule_onehot: tuple[float, ...]
 
 
 class MixedEncodedRolloutVideoDataset(Dataset):
-	"""Encoded windows over multiple env dirs, each tagged with a fixed rule one-hot (for dynamics training)."""
+	"""Encoded windows over multiple env dirs, each tagged with a fixed rule vector."""
 
 	def __init__(
 		self,
-		dir_rule_pairs: list[tuple[Path, tuple[float, float, float, float]]],
+		dir_rule_pairs: list[tuple[Path, tuple[float, ...]]],
 		seq_len: int,
 		stride: int = 1,
 		num_actions: int | None = None,

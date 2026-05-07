@@ -1,4 +1,4 @@
-"""Compact UNet2D denoiser: stacked history + noisy next frame; cross-attn on action + rule tokens (seq len 2)."""
+"""Compact UNet2D denoiser over raw VAE latents."""
 
 from __future__ import annotations
 
@@ -10,7 +10,11 @@ from diffusers import DDIMScheduler, UNet2DConditionModel
 
 
 class Diffuser(nn.Module):
-	"""UNet2DConditionModel (compact): latents ``[B, K+1, C, H, W]`` folded to ``[B, (K+1)*C, H, W]``."""
+	"""UNet denoiser: `[B,K+1,C,H,W]` latents folded to `[B,(K+1)*C,H,W]`.
+
+	The base/original model uses only an action token. The residual model also
+	uses a rule-correction token whose zero vector means "no correction".
+	"""
 
 	def __init__(
 		self,
@@ -20,11 +24,13 @@ class Diffuser(nn.Module):
 		history_len: int,
 		prediction_type: Literal["epsilon", "sample", "v_prediction"] = "v_prediction",
 		pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
+		num_rules: int = 0,
 		cfg_both_drop_prob: float = 0.10,
 		cfg_action_drop_prob: float = 0.05,
 		cfg_rule_drop_prob: float = 0.05,
 		cfg_scale_action: float = 1.5,
 		cfg_scale_rule: float = 1.5,
+		zero_init_output: bool = False,
 	) -> None:
 		super().__init__()
 		self.cfg_both_drop_prob = float(cfg_both_drop_prob)
@@ -35,26 +41,20 @@ class Diffuser(nn.Module):
 			raise ValueError(f"cfg_*_drop_prob sum is {p_sum}, must be <= 1.0")
 		self.cfg_scale_action = float(cfg_scale_action)
 		self.cfg_scale_rule = float(cfg_scale_rule)
-		self.latent_channels = latent_channels
-		self.cross_attention_dim = cross_attention_dim
+		self.latent_channels = int(latent_channels)
+		self.cross_attention_dim = int(cross_attention_dim)
 		self.history_len = int(history_len)
 		self.num_latent_frames = self.history_len + 1
-		stacked_in = self.num_latent_frames * latent_channels
-		# Shared frame-wise encoder applied to every latent frame (history + noisy target)
-		# before concatenation into UNet input channels.
-		self.frame_state_encoder = nn.Sequential(
-			nn.Conv2d(latent_channels, latent_channels, kernel_size=3, padding=1),
-			nn.SiLU(),
-			nn.Conv2d(latent_channels, latent_channels, kernel_size=3, padding=1),
-			nn.SiLU(),
-		)
-		self.state_token_projection = nn.Linear(latent_channels, cross_attention_dim)
+		self.num_rules = int(num_rules)
+		if self.num_rules < 0:
+			raise ValueError(f"num_rules must be >= 0, got {self.num_rules}")
+		stacked_in = self.num_latent_frames * self.latent_channels
 
-		unet = UNet2DConditionModel(
+		self.unet = UNet2DConditionModel(
 			sample_size=None,
 			in_channels=stacked_in,
-			out_channels=latent_channels,
-			cross_attention_dim=cross_attention_dim,
+			out_channels=self.latent_channels,
+			cross_attention_dim=self.cross_attention_dim,
 			layers_per_block=1,
 			block_out_channels=(160, 320, 320),
 			down_block_types=(
@@ -71,24 +71,33 @@ class Diffuser(nn.Module):
 			norm_num_groups=32,
 		)
 
-		self.unet = unet
-
 		self.num_actions = int(num_actions)
 		self.null_action_index = self.num_actions
-		self.action_embedding = nn.Embedding(self.num_actions + 1, cross_attention_dim)
+		self.action_embedding = nn.Embedding(self.num_actions + 1, self.cross_attention_dim)
 		nn.init.normal_(self.action_embedding.weight, std=0.02)
 		with torch.no_grad():
 			self.action_embedding.weight[self.null_action_index].zero_()
 
-		self.num_rules = 4
-		# One-hot [B, 4] → rule token [B, D]; bias=False so zeros → no rule signal (CFG / dropout).
-		self.rule_projection = nn.Linear(self.num_rules, cross_attention_dim, bias=False)
-		nn.init.normal_(self.rule_projection.weight, std=0.02)
+		self.rule_projection: nn.Linear | None
+		if self.num_rules > 0:
+			self.rule_projection = nn.Linear(self.num_rules, self.cross_attention_dim, bias=False)
+			nn.init.normal_(self.rule_projection.weight, std=0.02)
+		else:
+			self.rule_projection = None
 
 		self.noise_scheduler = DDIMScheduler.from_pretrained(
 			pretrained_model_name_or_path, subfolder="scheduler",
 		)
 		self.noise_scheduler.register_to_config(prediction_type=prediction_type)
+
+		if zero_init_output:
+			self.zero_initialize_output()
+
+	def zero_initialize_output(self) -> None:
+		"""Make the denoiser predict exact zeros before residual training."""
+		nn.init.zeros_(self.unet.conv_out.weight)
+		if self.unet.conv_out.bias is not None:
+			nn.init.zeros_(self.unet.conv_out.bias)
 
 	def forward(
 		self,
@@ -96,90 +105,59 @@ class Diffuser(nn.Module):
 		timesteps: torch.Tensor,
 		action: torch.Tensor,
 		rule_onehot: torch.Tensor | None = None,
-		state_token: torch.Tensor | None = None,
 	) -> torch.Tensor:
-		"""Stacked-frame denoise: predict noise / v for the next frame (4-channel UNet output).
+		"""Predict noise / v / sample for the next latent frame.
 
-		``action`` indices are env actions ``0 .. num_actions-1``, or ``null_action_index`` (= ``num_actions``)
-		for unconditional / CFG.
-
-		Training: one ``u ~ U(0,1)`` per row sets dropout mode (non-overlapping intervals):
-		``cfg_both_drop_prob`` → null action + zero rule; ``cfg_action_drop_prob`` → null action, keep rule;
-		``cfg_rule_drop_prob`` → zero rule, keep action.
-
-		``rule_onehot`` [B, 4] float: normal [1,0,0,0], rules_fast [0,1,0,0], multishot [0,0,1,0],
-		ricochet [0,0,0,1]. If None, uses normal for every row.
-
-		``state_token`` [B, D] optional state feature projected upstream; if absent, a zero token is used.
-		Cross-attention sees three tokens:
-		``[..., 0, :]`` = action embedding, ``[..., 1, :]`` = rule projection, ``[..., 2, :]`` = state token.
+		``action`` indices are env actions ``0 .. num_actions-1``, or
+		``null_action_index`` for CFG. If ``num_rules > 0``, ``rule_onehot`` is
+		a `[B,num_rules]` correction vector; all zeros means original behavior.
 		"""
 		B, F, C, H, W = noisy_latents.shape
 		assert F == self.num_latent_frames, f"Expected F={self.num_latent_frames}, got {F}"
 		assert C == self.latent_channels, f"Expected C={self.latent_channels}, got {C}"
 
-		# Shared state encoder over each frame: x1..xK and x_{K+1}_noisy.
-		h_frames = self.encode_frame_stack(noisy_latents)
-		x = h_frames.reshape(B, F * C, H, W).contiguous()
-		a = action
+		x = noisy_latents.reshape(B, F * C, H, W).contiguous()
+		a = action.to(device=noisy_latents.device, dtype=torch.long)
 		dev, dt = a.device, self.action_embedding.weight.dtype
-		if rule_onehot is None:
-			roh = torch.zeros(B, self.num_rules, device=dev, dtype=dt)
-			roh[:, 0] = 1.0
-		else:
-			roh = rule_onehot.to(device=dev, dtype=dt)
-			if roh.shape != (B, self.num_rules):
-				raise ValueError(f"rule_onehot expected [B,{self.num_rules}], got {tuple(roh.shape)}")
 
-		p0 = self.cfg_both_drop_prob
-		p1 = p0 + self.cfg_action_drop_prob
-		p2 = p1 + self.cfg_rule_drop_prob
-		if self.training and p2 > 0:
-			u = torch.rand(B, device=a.device, dtype=torch.float32)
-			drop_both = u < p0
-			drop_action_only = (u >= p0) & (u < p1)
-			drop_rule_only = (u >= p1) & (u < p2)
-			null_a = torch.full_like(a, self.null_action_index)
-			a = torch.where(drop_both | drop_action_only, null_a, a)
-			roh = torch.where((drop_both | drop_rule_only).unsqueeze(1), torch.zeros_like(roh), roh)
+		roh: torch.Tensor | None = None
+		if self.num_rules > 0:
+			if rule_onehot is None:
+				roh = torch.zeros(B, self.num_rules, device=dev, dtype=dt)
+			else:
+				roh = rule_onehot.to(device=dev, dtype=dt)
+				if roh.shape != (B, self.num_rules):
+					raise ValueError(f"rule_onehot expected [B,{self.num_rules}], got {tuple(roh.shape)}")
+		elif rule_onehot is not None and rule_onehot.numel() > 0:
+			raise ValueError("rule_onehot was provided, but this Diffuser was built with num_rules=0")
+
+		if self.training:
+			if self.num_rules > 0:
+				p0 = self.cfg_both_drop_prob
+				p1 = p0 + self.cfg_action_drop_prob
+				p2 = p1 + self.cfg_rule_drop_prob
+				if p2 > 0:
+					u = torch.rand(B, device=dev, dtype=torch.float32)
+					drop_both = u < p0
+					drop_action_only = (u >= p0) & (u < p1)
+					drop_rule_only = (u >= p1) & (u < p2)
+					null_a = torch.full_like(a, self.null_action_index)
+					a = torch.where(drop_both | drop_action_only, null_a, a)
+					assert roh is not None
+					roh = torch.where((drop_both | drop_rule_only).unsqueeze(1), torch.zeros_like(roh), roh)
+			else:
+				p_action = self.cfg_both_drop_prob + self.cfg_action_drop_prob
+				if p_action > 0:
+					drop_action = torch.rand(B, device=dev, dtype=torch.float32) < p_action
+					a = torch.where(drop_action, torch.full_like(a, self.null_action_index), a)
+
 		action_enc = self.action_embedding(a)
-		rule_enc = self.rule_projection(roh)
-		if state_token is None:
-			state_enc = self.state_token_from_encoded_stack(h_frames).to(device=dev, dtype=dt)
-		else:
-			state_enc = state_token.to(device=dev, dtype=dt)
-			if state_enc.shape != (B, self.cross_attention_dim):
-				raise ValueError(
-					f"state_token expected [B,{self.cross_attention_dim}], got {tuple(state_enc.shape)}"
-				)
-		enc = torch.stack([action_enc, rule_enc, state_enc], dim=1)
+		tokens = [action_enc]
+		if self.rule_projection is not None:
+			assert roh is not None
+			tokens.append(self.rule_projection(roh))
+		enc = torch.stack(tokens, dim=1)
 
-		out = self.unet(
+		return self.unet(
 			x, timesteps, encoder_hidden_states=enc, return_dict=False,
 		)[0]
-		return out
-
-	def encode_frame_stack(self, latents: torch.Tensor) -> torch.Tensor:
-		"""Apply shared frame encoder to `[B,F,C,H,W]` -> encoded `[B,F,C,H,W]`."""
-		B, F, C, H, W = latents.shape
-		if C != self.latent_channels:
-			raise ValueError(f"Expected latent C={self.latent_channels}, got {C}")
-		z = latents.reshape(B * F, C, H, W).contiguous()
-		h = self.frame_state_encoder(z)
-		return h.reshape(B, F, C, H, W).contiguous()
-
-	def state_token_from_encoded_stack(self, encoded_stack: torch.Tensor) -> torch.Tensor:
-		"""Make `[B,D]` state token from encoded history frames in `[B,F,C,H,W]`."""
-		if encoded_stack.shape[1] < 2:
-			raise ValueError("encoded_stack needs at least one history frame and one target/noisy frame")
-		h_hist = encoded_stack[:, :-1]  # history only
-		v = h_hist.mean(dim=(1, 3, 4))
-		return self.state_token_projection(v)
-
-	def state_token_from_history(self, z_hist: torch.Tensor) -> torch.Tensor:
-		"""Encode `[B,K,C,H,W]` history and project to a `[B,D]` state token."""
-		if z_hist.shape[1] != self.history_len:
-			raise ValueError(f"Expected history_len={self.history_len}, got {z_hist.shape[1]}")
-		enc = self.encode_frame_stack(z_hist)
-		v = enc.mean(dim=(1, 3, 4))
-		return self.state_token_projection(v)
