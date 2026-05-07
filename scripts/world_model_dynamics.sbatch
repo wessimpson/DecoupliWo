@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+module purge 2>/dev/null || true
+unset LD_LIBRARY_PATH
+
 # Before submitting, run once from the repo root:
 #   bash scripts/setup_hpc_venv.sh
 #   mkdir -p logs
@@ -63,6 +66,7 @@ fi
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
+export PYTORCH_NVML_BASED_CUDA_CHECK=1
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 STAGE="${STAGE:-original}"
@@ -92,13 +96,20 @@ MAX_ANALYSIS_SAMPLES="${MAX_ANALYSIS_SAMPLES:-512}"
 echo "repo=$REPO_ROOT"
 echo "stage=$STAGE"
 echo "python=$("$PYTHON_BIN" -c 'import sys; print(sys.executable)')"
-"$PYTHON_BIN" - <<'PY'
+if [[ "${CUDA_PREFLIGHT:-0}" == "1" ]]; then
+	"$PYTHON_BIN" - <<'PY'
 import torch
 print("torch", torch.__version__)
 print("cuda_available", torch.cuda.is_available())
 if torch.cuda.is_available():
 	print("cuda_device", torch.cuda.get_device_name(0))
 PY
+else
+	"$PYTHON_BIN" - <<'PY'
+import torch
+print("torch", torch.__version__)
+PY
+fi
 
 common_args=(
 	--transitions_root "$TRANSITIONS_ROOT"
