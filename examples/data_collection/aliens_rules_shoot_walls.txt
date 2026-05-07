@@ -1,11 +1,12 @@
-# Space Invaders (aliens): player shot kills alien then reverses (bounces) downward; ship can be hit by its own returned shot. Pairs (alien,sam) and (sam,alien) both fire so damage + bounce apply.
+# Variant: Shooting creates destroyable walls
 BasicGame square_size=32
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
         base    > Immovable    color=WHITE img=oryx/planet
-        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 alignShotToOrientation=False rotateInPlace=False img=oryx/spaceship1
+        avatar  > ShootAvatar color=YELLOW stype=wallSeed speed=1.0 alignShotToOrientation=False rotateInPlace=False img=oryx/spaceship1
         missile > Missile
-            sam  > orientation=UP    color=BLUE singleton=True img=oryx/bullet1 shrinkfactor=3.0
+            wallSeed > orientation=UP color=WHITE speed=1.0 img=oryx/wall3
+            sam  > orientation=UP color=BLUE img=oryx/bullet1 shrinkfactor=3.0
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
         alien   > Bomber       stype=bomb   prob=0.01  cooldown=3 speed=0.8
             alienGreen > img=oryx/alien3
@@ -30,6 +31,8 @@ BasicGame square_size=32
         avatar base portalSlow portalFast > stepBack
         alien   EOS  > turnAround
         missile EOS  > killSprite
+        wallSeed avatar > spawnAbove stype=base
+        wallSeed avatar > killSprite
 
         base bomb > killBoth
         base sam > killBoth scoreChange=1
@@ -37,7 +40,5 @@ BasicGame square_size=32
         base   alien > killSprite
         avatar alien > killSprite scoreChange=-1
         avatar bomb  > killSprite scoreChange=-1
-        avatar sam   > stepBack
-
+        sam base > killSprite scoreChange=1
         alien  sam   > killSprite scoreChange=2
-        sam    alien > reverseDirection

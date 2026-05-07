@@ -47,7 +47,7 @@
   .\run_random_data_collection.ps1 aliens
 
 .EXAMPLE
-  .\run_random_data_collection.ps1 waves_rules_fast -TotalTimesteps 200000 -NumEnvs 8
+  .\run_random_data_collection.ps1 waves_rules_multishot -TotalTimesteps 200000 -NumEnvs 8
 #>
 [CmdletBinding(DefaultParameterSetName = "Run")]
 param(
@@ -124,7 +124,14 @@ if ($List) {
     exit $LASTEXITCODE
 }
 
-$javaArgs = @("tracks.singlePlayer.RunDataCollectionAgent", "--game", $Game, "--agent", $Agent, "--num-envs", "$NumEnvs")
+$strongAgent = "tracks.singlePlayer.advanced.olets.Agent"
+$gameStem = [System.IO.Path]::GetFileNameWithoutExtension($Game)
+$resolvedAgent = $Agent
+if (($gameStem -eq "zelda") -and (-not $PSBoundParameters.ContainsKey("Agent"))) {
+    $resolvedAgent = $strongAgent
+}
+
+$javaArgs = @("tracks.singlePlayer.RunDataCollectionAgent", "--game", $Game, "--agent", $resolvedAgent, "--num-envs", "$NumEnvs")
 if ($Level) { $javaArgs += @("--level", $Level) }
 if ($null -ne $TotalTimesteps) { $javaArgs += @("--total-timesteps", "$TotalTimesteps") }
 if ($Visuals) { $javaArgs += "--visuals" }

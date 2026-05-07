@@ -115,9 +115,20 @@ if ($List) {
     exit $LASTEXITCODE
 }
 
-$javaArgs = @("tracks.singlePlayer.RunDataCollectionAgent", "--game", $Game)
+$strongAgent = "tracks.singlePlayer.advanced.olets.Agent"
+$defaultMctsAgent = "tracks.singlePlayer.advanced.sampleMCTS.Agent"
+$gameStem = [System.IO.Path]::GetFileNameWithoutExtension($Game)
+$resolvedAgent = $Agent
+if (-not $resolvedAgent) {
+    if ($gameStem -eq "zelda") {
+        $resolvedAgent = $strongAgent
+    } else {
+        $resolvedAgent = $defaultMctsAgent
+    }
+}
+
+$javaArgs = @("tracks.singlePlayer.RunDataCollectionAgent", "--game", $Game, "--agent", $resolvedAgent)
 if ($Level) { $javaArgs += @("--level", $Level) }
-if ($Agent) { $javaArgs += @("--agent", $Agent) }
 if ($Visuals) { $javaArgs += "--visuals" }
 if ($OutputRoot) { $javaArgs += @("--output-root", $OutputRoot) }
 if ($null -ne $ChunkSize) { $javaArgs += @("--chunk-size", "$ChunkSize") }

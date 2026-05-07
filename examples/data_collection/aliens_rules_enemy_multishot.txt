@@ -1,4 +1,4 @@
-# Space Invaders (aliens): player shot kills alien then reverses (bounces) downward; ship can be hit by its own returned shot. Pairs (alien,sam) and (sam,alien) both fire so damage + bounce apply.
+# Variant: Enemy multishot behavior
 BasicGame square_size=32
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
@@ -7,6 +7,8 @@ BasicGame square_size=32
         missile > Missile
             sam  > orientation=UP    color=BLUE singleton=True img=oryx/bullet1 shrinkfactor=3.0
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
+            bombLeft > orientation=-0.7071,0.7071 color=RED speed=0.5 img=oryx/bullet2
+            bombRight > orientation=0.7071,0.7071 color=RED speed=0.5 img=oryx/bullet2
         alien   > Bomber       stype=bomb   prob=0.01  cooldown=3 speed=0.8
             alienGreen > img=oryx/alien3
             alienBlue > img=oryx/alien1
@@ -30,14 +32,14 @@ BasicGame square_size=32
         avatar base portalSlow portalFast > stepBack
         alien   EOS  > turnAround
         missile EOS  > killSprite
+        bomb background > spawnLeft stype=bombLeft
+        bomb background > spawnRight stype=bombRight
+        bomb background > killSprite
 
         base bomb > killBoth
         base sam > killBoth scoreChange=1
 
         base   alien > killSprite
         avatar alien > killSprite scoreChange=-1
-        avatar bomb  > killSprite scoreChange=-1
-        avatar sam   > stepBack
-
+        avatar bomb bombLeft bombRight > killSprite scoreChange=-1
         alien  sam   > killSprite scoreChange=2
-        sam    alien > reverseDirection

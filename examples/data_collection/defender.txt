@@ -12,7 +12,7 @@ BasicGame key_handler=Pulse square_size=32
             portalSlow  > prob=0.2
             portalFast  > prob=0.5
 
-        portalAmmo  > SpawnPoint stype=supply cooldown=10 prob=0.15 invisible=True
+        portalAmmo  > SpawnPoint stype=supply cooldown=6 prob=0.35 invisible=True
 
         supply > Missile orientation=DOWN speed=0.25 img=oryx/goldsack
         bullet > Resource limit=20
@@ -47,4 +47,4 @@ BasicGame key_handler=Pulse square_size=32
         supply supply > stepBack
         supply wall city > stepBack pixelPerfect=True
 
-        avatar supply > changeResource resource=bullet value=5 killResource=True
+        avatar supply > changeResource resource=bullet value=5 killResource=True scoreChange=1

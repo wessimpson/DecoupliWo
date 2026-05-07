@@ -44,7 +44,6 @@ $games = @(
     "chopper",
     "defender",
     "jaws",
-    "waves_rules_fast",
     "waves_rules_multishot",
     "waves_rules_ricochet",
     "waves"
@@ -71,6 +70,9 @@ foreach ($g in $games) {
         "-Scale", "$Scale",
         "-ChunkSize", "$ChunkSize"
     )
+    if ($g -eq "zelda") {
+        $argList += @("-Agent", "tracks.singlePlayer.advanced.olets.Agent")
+    }
     if ($null -ne $Seed) { $argList += @("-Seed", "$Seed") }
     if ($OutputRoot) { $argList += @("-OutputRoot", $OutputRoot) }
 

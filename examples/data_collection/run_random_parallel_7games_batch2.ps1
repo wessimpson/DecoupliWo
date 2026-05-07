@@ -22,10 +22,8 @@ $ErrorActionPreference = "Stop"
 
 $games = @(
     "aliens",
-    "aliens_rules_fast",
     "aliens_rules_multishot",
     "aliens_rules_ricochet",
-    "chopper_rules_fast",
     "chopper_rules_multishot",
     "chopper_rules_ricochet"
 )
@@ -51,6 +49,9 @@ foreach ($g in $games) {
         "-Scale", "$Scale",
         "-ChunkSize", "$ChunkSize"
     )
+    if ($g -eq "zelda") {
+        $argList += @("-Agent", "tracks.singlePlayer.advanced.olets.Agent")
+    }
     if ($null -ne $Seed) { $argList += @("-Seed", "$Seed") }
     if ($OutputRoot) { $argList += @("-OutputRoot", $OutputRoot) }
 

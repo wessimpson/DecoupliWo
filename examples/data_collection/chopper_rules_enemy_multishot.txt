@@ -1,4 +1,4 @@
-# Chopper: player bomb kills tank then reverses (bounces) upward; pairs (tank,bomb) and (bomb,tank) so damage + bounce apply (mirrors aliens ricochet). Returning bomb is harmless to the helicopter.
+# Variant: Enemy multishot behavior
 BasicGame square_size=32
     SpriteSet
         layers > Immovable hidden=True
@@ -10,6 +10,8 @@ BasicGame square_size=32
         avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb img=newset/helicopter rotateInPlace=False
         missile > Missile
             sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
+            samL > orientation=-0.7071,-0.7071 color=BLUE speed=0.25 img=oryx/bullet1
+            samR > orientation=0.7071,-0.7071 color=BLUE speed=0.25 img=oryx/bullet1
             bomb > orientation=DOWN color=RED speed=0.75 img=newset/bomb singleton=True shrinkfactor=0.5
 
         cloud  > Missile img=newset/cloud2
@@ -46,14 +48,14 @@ BasicGame square_size=32
         
     InteractionSet
         avatar wall EOS > stepBack
-        avatar sam > killSprite
+        avatar sam samL samR > killSprite
         sam avatar wall EOS > killSprite
+        sam stratosphere > spawnLeft stype=samL
+        sam stratosphere > spawnRight stype=samR
+        sam stratosphere > killSprite
 
         tank bomb > killSprite scoreChange=1
-        bomb tank > reverseDirection
-        bomb wall EOS > killSprite
-
-        avatar bomb > stepBack
+        bomb tank wall EOS > killSprite
 
         bomb sam > killBoth
 

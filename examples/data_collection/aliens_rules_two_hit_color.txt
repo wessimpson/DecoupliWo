@@ -1,4 +1,4 @@
-# Space Invaders (aliens): player shot kills alien then reverses (bounces) downward; ship can be hit by its own returned shot. Pairs (alien,sam) and (sam,alien) both fire so damage + bounce apply.
+# Variant: Two-hit color enemy state
 BasicGame square_size=32
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
@@ -8,11 +8,13 @@ BasicGame square_size=32
             sam  > orientation=UP    color=BLUE singleton=True img=oryx/bullet1 shrinkfactor=3.0
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
         alien   > Bomber       stype=bomb   prob=0.01  cooldown=3 speed=0.8
-            alienGreen > img=oryx/alien3
-            alienBlue > img=oryx/alien1
+            alienFresh > img=oryx/alien1
+            alienDamaged > img=oryx/alien3
+        ruleAlien > Bomber stype=bomb prob=0.01 cooldown=3 speed=0.8
+            ruleAlienDamaged > img=oryx/alien3
         portal  > invisible=True hidden=True
-        	portalSlow  > SpawnPoint   stype=alienBlue  cooldown=16   total=20 img=portal
-        	portalFast  > SpawnPoint   stype=alienGreen  cooldown=12   total=20 img=portal
+        	portalSlow  > SpawnPoint   stype=alienFresh  cooldown=16   total=20 img=portal
+        	portalFast  > SpawnPoint   stype=alienFresh  cooldown=12   total=20 img=portal
 
     LevelMapping
         . > background
@@ -23,7 +25,7 @@ BasicGame square_size=32
 
     TerminationSet
         SpriteCounter      stype=avatar               limit=0 win=False
-        MultiSpriteCounter stype1=portal stype2=alien limit=0 win=True
+        MultiSpriteCounter stype1=portal stype2=alien stype3=ruleAlien limit=0 win=True
 
     InteractionSet
         avatar  EOS  > stepBack
@@ -35,9 +37,11 @@ BasicGame square_size=32
         base sam > killBoth scoreChange=1
 
         base   alien > killSprite
+        base   ruleAlien > killSprite
         avatar alien > killSprite scoreChange=-1
+        avatar ruleAlien > killSprite scoreChange=-1
         avatar bomb  > killSprite scoreChange=-1
-        avatar sam   > stepBack
-
-        alien  sam   > killSprite scoreChange=2
-        sam    alien > reverseDirection
+        ruleAlienDamaged sam > killSprite scoreChange=2
+        alienFresh sam > transformTo stype=ruleAlienDamaged scoreChange=1 killSecond=True forceOrientation=True
+        alienDamaged sam > transformTo stype=ruleAlienDamaged scoreChange=1 killSecond=True forceOrientation=True
+        

@@ -1,7 +1,5 @@
-# Waves: player shot kills alien then reverses direction (bounces); mirrors aliens ricochet (horizontal arena).
-# Returning shot bounces but is harmless to the player.
+# Variant: Enemy death explosion effect
 BasicGame square_size=32
-
     SpriteSet
 
         background > Immovable img=oryx/space1 hidden=True
@@ -9,8 +7,10 @@ BasicGame square_size=32
 
         missile > Missile
             rock > orientation=LEFT speed=0.95 color=BLUE img=oryx/orb3
-            sam  > orientation=RIGHT color=BLUE singleton=True speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            sam  > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
             laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.75 img=newset/laser2_1
+            blast > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
+            blastCenter > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
 
         portal  >
             portalSlow  > SpawnPoint   stype=alien  cooldown=10 prob=0.05 img=newset/whirlpool2 portal=True
@@ -18,7 +18,7 @@ BasicGame square_size=32
 
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
-        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship3 rotateInPlace=False alignShotToOrientation=False
+        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship3 rotateInPlace=False
         alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
     
     LevelMapping
@@ -37,10 +37,13 @@ BasicGame square_size=32
         alien   EOS  > killSprite
         missile EOS  > killSprite
 
+        sam alien > spawn stype=blastCenter
+        sam alien > spawnAbove stype=blast
+        sam alien > spawnBelow stype=blast
+        sam alien > spawnLeft stype=blast
+        sam alien > spawnRight stype=blast
         alien sam > killSprite scoreChange=2
-        sam alien > reverseDirection
-
-        avatar sam > stepBack
+        sam alien > killSprite
 
         sam laser > transformTo stype=shield killSecond=True
 
@@ -52,8 +55,8 @@ BasicGame square_size=32
         avatar alien > killIfHasLess resource=shield limit=0
         avatar alien > changeResource resource=shield value=-1 killResource=True
 
-        avatar laser > killIfHasLess resource=shield limit=0
-        avatar laser > changeResource resource=shield value=-1 killResource=True
+        avatar laser blast > killIfHasLess resource=shield limit=0
+        avatar laser blast > changeResource resource=shield value=-1 killResource=True
 
         asteroid sam laser > killSprite
         rock asteroid > killSprite

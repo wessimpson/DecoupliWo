@@ -1,7 +1,5 @@
-# Waves: player shot kills alien then reverses direction (bounces); mirrors aliens ricochet (horizontal arena).
-# Returning shot bounces but is harmless to the player.
+# Variant: Shooting creates destroyable walls
 BasicGame square_size=32
-
     SpriteSet
 
         background > Immovable img=oryx/space1 hidden=True
@@ -9,7 +7,8 @@ BasicGame square_size=32
 
         missile > Missile
             rock > orientation=LEFT speed=0.95 color=BLUE img=oryx/orb3
-            sam  > orientation=RIGHT color=BLUE singleton=True speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            wallShot > orientation=RIGHT color=WHITE speed=0.6 img=oryx/wall3
+            sam  > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
             laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.75 img=newset/laser2_1
 
         portal  >
@@ -18,7 +17,7 @@ BasicGame square_size=32
 
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
-        avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship3 rotateInPlace=False alignShotToOrientation=False
+        avatar  > ShootAvatar color=YELLOW stype=wallShot speed=1.0 img=oryx/spaceship3 rotateInPlace=False
         alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
     
     LevelMapping
@@ -33,15 +32,15 @@ BasicGame square_size=32
         Timeout limit=1000 win=True
         
     InteractionSet
-        avatar  EOS  > stepBack
+        avatar asteroid EOS  > stepBack
         alien   EOS  > killSprite
         missile EOS  > killSprite
+        wallShot background > transformTo stype=asteroid
 
-        alien sam > killSprite scoreChange=2
-        sam alien > reverseDirection
+        alien sam > killBoth scoreChange=2
 
-        avatar sam > stepBack
-
+        laser asteroid > killSprite
+        sam asteroid > killSprite
         sam laser > transformTo stype=shield killSecond=True
 
         avatar shield > changeResource resource=shield value=1 killResource=True

@@ -44,7 +44,6 @@ $ErrorActionPreference = "Stop"
 #     "chopper",
 #     "defender",
 #     "jaws",
-#     "waves_rules_fast",
 #     "waves_rules_multishot",
 #     "waves_rules_ricochet",
 #     "waves"
@@ -52,10 +51,8 @@ $ErrorActionPreference = "Stop"
 
 $games = @(
     "aliens",
-    "aliens_rules_fast",
     "aliens_rules_multishot",
     "aliens_rules_ricochet",
-    "chopper_rules_fast",
     "chopper_rules_multishot",
     "chopper_rules_ricochet"
 )
@@ -66,13 +63,15 @@ if (-not (Test-Path $runner)) {
     Write-Error "Missing runner script: $runner"
 }
 
-$agent = "tracks.singlePlayer.advanced.sampleMCTS.Agent"
+$defaultAgent = "tracks.singlePlayer.advanced.sampleMCTS.Agent"
+$strongAgent = "tracks.singlePlayer.advanced.olets.Agent"
 
 Write-Host "Gvgai root: $GvgaiRoot"
 Write-Host "Launching $($games.Count) MCTS collectors (NumEnvs=1 each), $TotalTimesteps timesteps per game."
 Write-Host ""
 
 foreach ($g in $games) {
+    $agent = if ($g -eq "zelda") { $strongAgent } else { $defaultAgent }
     $argList = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
