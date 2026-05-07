@@ -5,7 +5,7 @@
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
 #SBATCH --gres=gpu:1
 #SBATCH --time=2-00:00:00
@@ -26,7 +26,7 @@ set -euo pipefail
 #   TRANSITIONS_ROOT=/path/data/transitions
 #   ENCODED_SUBDIR=encoded       # training reads $TRANSITIONS_ROOT/$ENCODED_SUBDIR/train
 #   VAE_CHECKPOINT=/path/world_model/checkpoints/vae/vae.pt
-#   BATCH_SIZE=8 MAX_TRAIN_STEPS=50000 NUM_WORKERS=16
+#   BATCH_SIZE=8 MAX_TRAIN_STEPS=50000 NUM_WORKERS=4
 #   VALIDATION_EVERY=0           # use this if you only copied encoded/train and no encoded/test
 #   EXTRA_ARGS="--validation_every 5000 --save_every 5000"
 
