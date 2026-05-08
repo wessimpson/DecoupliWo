@@ -145,6 +145,24 @@ def parse_args() -> argparse.Namespace:
 		help="Ignored: AR val GT RGB is decoded only at --val_ar_horizons (one latent frame per horizon).",
 	)
 	p.add_argument(
+		"--counterfactual_envs",
+		type=str,
+		default="",
+		help="Comma-separated base envs for periodic counterfactual TensorBoard previews, e.g. defender,jaws.",
+	)
+	p.add_argument(
+		"--counterfactual_rule",
+		type=str,
+		default="multishot",
+		help="Rule condition to force for counterfactual previews: normal, fast, multishot, or ricochet.",
+	)
+	p.add_argument(
+		"--counterfactual_samples",
+		type=int,
+		default=1,
+		help="Stock validation windows per counterfactual env to preview at each validation interval.",
+	)
+	p.add_argument(
 		"--cfg_both_drop_prob",
 		type=float,
 		default=0.10,
@@ -276,6 +294,26 @@ def _variant_rule_rank(folder: str, base: str) -> tuple[int, str]:
 	if folder.endswith("_rules_ricochet"):
 		return (3, folder)
 	return (4, folder)
+
+
+def _parse_str_list(s: str) -> tuple[str, ...]:
+	return tuple(p.strip() for p in str(s).split(",") if p.strip())
+
+
+def _rule_onehot_from_name(name: str) -> torch.Tensor:
+	n = str(name).strip().lower()
+	out = torch.zeros(4, dtype=torch.float32)
+	if n in ("normal", "stock"):
+		out[0] = 1.0
+	elif n in ("fast", "rules_fast"):
+		out[1] = 1.0
+	elif n in ("multishot", "rules_multishot"):
+		out[2] = 1.0
+	elif n in ("ricochet", "rules_ricochet"):
+		out[3] = 1.0
+	else:
+		raise ValueError(f"Unknown counterfactual rule: {name!r}")
+	return out
 
 
 def _vstack_tgt_gen_rgb01(
@@ -496,6 +534,29 @@ def main() -> None:
 					lane_dec.append(world_model.decode_video(lane[s0:e0]))
 				val_ar_gt_rgb_h[h] = torch.cat(lane_dec, dim=0).squeeze(1).cpu()
 
+		cf_envs = _parse_str_list(args.counterfactual_envs)
+		cf_samples = max(0, int(args.counterfactual_samples))
+		cf_items: list[dict] = []
+		cf_row_envs: list[str] = []
+		if cf_envs and cf_samples > 0:
+			for env_name in cf_envs:
+				added = 0
+				for idx in idx_by_folder.get(env_name, ()):
+					row = ds_test.try_contiguous_ar(idx, K, 1)
+					if row is None:
+						continue
+					cf_items.append(row)
+					cf_row_envs.append(env_name)
+					added += 1
+					if added >= cf_samples:
+						break
+				if added == 0:
+					print(f"Warning: no stock counterfactual validation window for {env_name!r}.")
+		cf_hist_z = torch.stack([s["history_latents"] for s in cf_items]) if cf_items else None
+		cf_hist_act = torch.stack([s["history_actions"] for s in cf_items]).long() if cf_items else None
+		cf_gt_z = torch.stack([s["gt_future_latents"] for s in cf_items]) if cf_items else None
+		cf_forced_rule = _rule_onehot_from_name(args.counterfactual_rule)
+
 	def save_checkpoint(step: int) -> None:
 		d = ckpt_root / f"step_{step:07d}"
 		world_model.save_diffuser(d)
@@ -663,6 +724,47 @@ def main() -> None:
 							global_step,
 						)
 					del vh, vt, va, vr
+					if cf_hist_z is not None and cf_hist_act is not None and cf_gt_z is not None:
+						ch = cf_hist_z.to(device)
+						ca = cf_hist_act.to(device)
+						ct = cf_gt_z[:, 0].to(device)
+						cn_rule = torch.zeros((ch.shape[0], 4), dtype=torch.float32, device=device)
+						cn_rule[:, 0] = 1.0
+						cf_rule = cf_forced_rule.to(device).view(1, 4).expand(ch.shape[0], -1)
+						cfa = ca[:, -1]
+						cf_norm_parts: list[torch.Tensor] = []
+						cf_forced_parts: list[torch.Tensor] = []
+						for s, e in _batched_ranges(int(ch.shape[0]), vb):
+							cf_norm_parts.append(
+								world_model.generate_next_frame(
+									ch[s:e], ca[s:e], cfa[s:e],
+									num_inference_steps=int(args.num_inference_steps),
+									rule_onehot=cn_rule[s:e],
+								)
+							)
+							cf_forced_parts.append(
+								world_model.generate_next_frame(
+									ch[s:e], ca[s:e], cfa[s:e],
+									num_inference_steps=int(args.num_inference_steps),
+									rule_onehot=cf_rule[s:e],
+								)
+							)
+						cf_norm_z = torch.cat(cf_norm_parts, dim=0)
+						cf_forced_z = torch.cat(cf_forced_parts, dim=0)
+						cf_target_rgb = world_model.decode_frames(ct)
+						cf_norm_rgb = world_model.decode_video(cf_norm_z).squeeze(1)
+						cf_forced_rgb = world_model.decode_video(cf_forced_z).squeeze(1)
+						for ri, env_name in enumerate(cf_row_envs):
+							target_01 = ((cf_target_rgb[ri : ri + 1].clamp(-1, 1) + 1) * 0.5).float()
+							normal_01 = ((cf_norm_rgb[ri : ri + 1].clamp(-1, 1) + 1) * 0.5).float()
+							forced_01 = ((cf_forced_rgb[ri : ri + 1].clamp(-1, 1) + 1) * 0.5).float()
+							preview = _strip_preview_01([target_01.cpu(), normal_01.cpu(), forced_01.cpu()])
+							writer.add_images(
+								f"val/counterfactual_{args.counterfactual_rule}/{env_name}_{ri}",
+								preview,
+								global_step,
+							)
+						del ch, ca, ct, cf_norm_z, cf_forced_z, cf_target_rgb, cf_norm_rgb, cf_forced_rgb
 				world_model.train()
 
 			optimizer.zero_grad(set_to_none=True)
