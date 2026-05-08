@@ -10,7 +10,8 @@ VRAM tips: lower ``--batch_size``; pass ``--gradient_checkpointing``; shorter ``
 steps (same DDIM step count as training ``--num_inference_steps``). Only predicted latents at horizon
 boundaries (``--val_ar_horizons``) are kept; VAE decodes just those timesteps. ``val/psnr_ar/hXX`` is
 PSNR on the **last frame at that horizon** (pred vs GT at rollout index ``h-1``), not the full prefix.
-TensorBoard also logs ``val/lpips_ar/hXX`` for the same frame (LPIPS on ``[-1,1]``). AR rollouts cache **one
+TensorBoard also logs ``val/lpips_ar/hXX`` for the same frame (LPIPS on ``[-1,1]``). Rule-conditioned
+"counterfactual" tags mirror these metrics under ``val/counterfactual/*``. AR rollouts cache **one
 window per encoded test folder** (env+rule variant) when possible; images are under
 ``val/ar_rollout/hXX/<base_game>`` with target above generated per rule column, rule columns side-by-side
 when a base game has multiple variants.
@@ -300,6 +301,7 @@ def _log_val_ar_tb_by_env(
 	writer: SummaryWriter,
 	global_step: int,
 	*,
+	tag_root: str = "val/ar_rollout",
 	gap_rule_px: int = 6,
 	gap_stack_px: int = 4,
 ) -> None:
@@ -320,7 +322,7 @@ def _log_val_ar_tb_by_env(
 			g_01 = ((pred_rgb_h[ri : ri + 1].clamp(-1, 1) + 1) * 0.5).float()
 			cards.append(_vstack_tgt_gen_rgb01(t_01, g_01, gap_px=gap_stack_px))
 		preview = cards[0] if len(cards) == 1 else _strip_preview_01(cards, gap_px=gap_rule_px)
-		writer.add_images(f"val/ar_rollout/{hid}/{base}", preview.cpu(), global_step)
+		writer.add_images(f"{tag_root}/{hid}/{base}", preview.cpu(), global_step)
 
 
 def main() -> None:
@@ -600,14 +602,21 @@ def main() -> None:
 							pred_rgb_h = rgb_pack[:, idx]
 							tgt_f = val_ar_gt_rgb_h[h].to(device)
 							hid = f"h{h:02d}"
+							psnr_h = psnr_neg1_to_01(pred_rgb_h.unsqueeze(1), tgt_f.unsqueeze(1))
 							writer.add_scalar(
 								f"val/psnr_ar/{hid}",
-								psnr_neg1_to_01(pred_rgb_h.unsqueeze(1), tgt_f.unsqueeze(1)),
+								psnr_h,
 								global_step,
 							)
 							writer.add_scalar(f"val/lpips_ar/{hid}", lp_per_h[h], global_step)
+							writer.add_scalar(f"val/counterfactual/psnr_ar/{hid}", psnr_h, global_step)
+							writer.add_scalar(f"val/counterfactual/lpips_ar/{hid}", lp_per_h[h], global_step)
 							_log_val_ar_tb_by_env(
 								pred_rgb_h, tgt_f, val_ar_row_games, hid, writer, global_step,
+							)
+							_log_val_ar_tb_by_env(
+								pred_rgb_h, tgt_f, val_ar_row_games, hid, writer, global_step,
+								tag_root="val/counterfactual/ar_rollout",
 							)
 							del tgt_f
 						del rgb_pack
@@ -639,7 +648,17 @@ def main() -> None:
 							global_step,
 						)
 						writer.add_images(
+							"val/counterfactual/generated_f0_by_rule",
+							_strip_preview_01([g.cpu() for g in gen_parts]),
+							global_step,
+						)
+						writer.add_images(
 							"val/target_f0_by_rule",
+							_strip_preview_01([t.cpu() for t in tgt_parts]),
+							global_step,
+						)
+						writer.add_images(
+							"val/counterfactual/target_f0_by_rule",
 							_strip_preview_01([t.cpu() for t in tgt_parts]),
 							global_step,
 						)
