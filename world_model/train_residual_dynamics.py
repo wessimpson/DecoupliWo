@@ -21,6 +21,7 @@ from world_model.dataset import (
 	MixedEncodedRolloutVideoDataset,
 	NUM_CORRECTION_RULE_TYPES,
 	correction_rule_tuple_from_env_name,
+	correction_rule_tensor_from_name,
 	encoded_original_dirs_under_split,
 	encoded_variant_dirs_under_split,
 	preprocess_latent,
@@ -96,6 +97,10 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--num_workers", type=int, default=4)
 	p.add_argument("--mixed_precision", type=str, choices=["no", "fp16", "bf16"], default="bf16")
 	p.add_argument("--val_ar_horizons", type=str, default="1,10,30")
+	p.add_argument("--transfer_probe_envs", type=str, default="defender,jaws")
+	p.add_argument("--transfer_probe_rule", type=str, default="multishot")
+	p.add_argument("--transfer_probe_action", type=int, default=5, help="Forced action id for transfer probe rollouts; default is FIRE/shoot in the current 7-action UI.")
+	p.add_argument("--transfer_probe_steps", type=int, default=10)
 	p.add_argument("--cfg_both_drop_prob", type=float, default=0.10)
 	p.add_argument("--cfg_action_drop_prob", type=float, default=0.05)
 	p.add_argument("--cfg_rule_drop_prob", type=float, default=0.05)
@@ -262,6 +267,10 @@ def main() -> None:
 	val_ar_horizons = _parse_int_list(args.val_ar_horizons)
 	val_ar_max = max(val_ar_horizons)
 	val_ar_horizons_set = frozenset(val_ar_horizons)
+	transfer_probe_envs = [x.strip() for x in str(args.transfer_probe_envs).split(",") if x.strip()]
+	transfer_probe_steps = max(0, int(args.transfer_probe_steps))
+	if args.transfer_probe_action < 0 or args.transfer_probe_action >= args.num_actions:
+		raise ValueError(f"--transfer_probe_action must be in [0, {args.num_actions - 1}], got {args.transfer_probe_action}")
 
 	if ds_variant_test is not None:
 		Sv = min(int(args.val_samples), len(ds_variant_test))
@@ -302,6 +311,28 @@ def main() -> None:
 		val_hist_z = val_tgt_z = val_hist_act = val_rule_oh = None
 		val_ar_hist_z = val_ar_hist_act = val_ar_fut = val_ar_gt_z = val_ar_rule_oh = None
 		val_ar_names = []
+
+	transfer_probe_items: list[dict] = []
+	transfer_probe_names: list[str] = []
+	if args.validation_every > 0 and transfer_probe_steps > 0 and transfer_probe_envs:
+		for probe_env in transfer_probe_envs:
+			try:
+				probe_dirs = encoded_original_dirs_under_split(encoded_root / "test", env=probe_env)
+				probe_ds = _make_mixed_dataset(
+					[(probe_dirs[0], correction_rule_tuple_from_env_name(probe_dirs[0].name))],
+					seq_len,
+					args.num_actions,
+				)
+			except (FileNotFoundError, ValueError, AssertionError) as e:
+				print(f"Warning: transfer probe skipped for {probe_env!r}: {e}")
+				continue
+			transfer_probe_items.append(probe_ds[0])
+			transfer_probe_names.append(probe_dirs[0].name)
+	if transfer_probe_items:
+		transfer_probe_hist_z = torch.stack([s["history_latents"] for s in transfer_probe_items])
+		transfer_probe_hist_act = torch.stack([s["history_actions"] for s in transfer_probe_items]).long()
+	else:
+		transfer_probe_hist_z = transfer_probe_hist_act = None
 
 	def save_checkpoint(step: int) -> None:
 		d = ckpt_root / f"step_{step:07d}"
@@ -478,6 +509,41 @@ def main() -> None:
 							((pred_rgb[i : i + 1].clamp(-1, 1) + 1) * 0.5),
 						], dim=-2)
 						writer.add_images(f"val/ar_rollout/{hid}/{folder}", card.cpu(), global_step)
+
+			if transfer_probe_hist_z is not None and transfer_probe_hist_act is not None:
+				z_probe = transfer_probe_hist_z.to(device)
+				a_probe = transfer_probe_hist_act.to(device)
+				Bp = int(z_probe.shape[0])
+				shoot_action = torch.full((Bp,), int(args.transfer_probe_action), dtype=torch.long, device=device)
+				rule_vec = correction_rule_tensor_from_name(args.transfer_probe_rule).to(device).view(1, -1).expand(Bp, -1)
+				generated_steps: list[torch.Tensor] = []
+				for _ in tqdm(range(transfer_probe_steps), desc="val transfer probe", leave=False, dynamic_ncols=True):
+					z_next_parts = [
+						model.generate_next_frame(
+							z_probe[s:e], a_probe[s:e], shoot_action[s:e],
+							num_inference_steps=int(args.num_inference_steps),
+							rule_onehot=rule_vec[s:e],
+						)
+						for s, e in _batched_ranges(Bp, vb)
+					]
+					z_next = torch.cat(z_next_parts, dim=0)
+					generated_steps.append(z_next.detach())
+					z_probe = torch.cat([z_probe[:, 1:], z_next], dim=1)
+					a_probe = torch.cat([a_probe[:, 1:], shoot_action.unsqueeze(1)], dim=1)
+				probe_lat = torch.cat(generated_steps, dim=1)
+				probe_rgb = torch.cat(
+					[model.decode_video(probe_lat[s:e]) for s, e in _batched_ranges(Bp, vb)],
+					dim=0,
+				)
+				for i, name in enumerate(transfer_probe_names):
+					writer.add_images(
+						f"val/transfer_probe/{name}_{args.transfer_probe_rule}_action{int(args.transfer_probe_action)}",
+						_strip_preview_01([
+							((probe_rgb[i : i + 1, t].clamp(-1, 1) + 1) * 0.5).cpu()
+							for t in range(int(probe_rgb.shape[1]))
+						]),
+						global_step,
+					)
 			print(f"step={global_step} loss={last_loss} val={metrics}")
 		model.train()
 		model.freeze_base()

@@ -86,6 +86,10 @@ SAVE_EVERY="${SAVE_EVERY:-10000}"
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-10}"
 VAL_SAMPLES="${VAL_SAMPLES:-8}"
 VAL_AR_HORIZONS="${VAL_AR_HORIZONS:-1,10,30}"
+TRANSFER_PROBE_ENVS="${TRANSFER_PROBE_ENVS:-defender,jaws}"
+TRANSFER_PROBE_RULE="${TRANSFER_PROBE_RULE:-multishot}"
+TRANSFER_PROBE_ACTION="${TRANSFER_PROBE_ACTION:-5}"
+TRANSFER_PROBE_STEPS="${TRANSFER_PROBE_STEPS:-10}"
 ORIGINAL_CHECKPOINT_DIR="${ORIGINAL_CHECKPOINT_DIR:-world_model/checkpoints/original_dynamics}"
 RESIDUAL_CHECKPOINT_DIR="${RESIDUAL_CHECKPOINT_DIR:-world_model/checkpoints/residual_dynamics}"
 ORIGINAL_LOG_DIR="${ORIGINAL_LOG_DIR:-runs/world_model_original}"
@@ -129,6 +133,10 @@ common_args=(
 	--num_inference_steps "$NUM_INFERENCE_STEPS"
 	--val_samples "$VAL_SAMPLES"
 	--val_ar_horizons "$VAL_AR_HORIZONS"
+	--transfer_probe_envs "$TRANSFER_PROBE_ENVS"
+	--transfer_probe_rule "$TRANSFER_PROBE_RULE"
+	--transfer_probe_action "$TRANSFER_PROBE_ACTION"
+	--transfer_probe_steps "$TRANSFER_PROBE_STEPS"
 )
 
 env_args=()
