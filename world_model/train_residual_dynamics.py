@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from datetime import datetime
 from functools import partial
 from itertools import cycle
@@ -32,6 +33,22 @@ CROSS_ATTENTION_DIM = 768
 PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 DEFAULT_CHECKPOINT_DIR = Path("world_model") / "checkpoints" / "residual_dynamics"
+
+
+def psnr_neg1_to_01(pred: torch.Tensor, tgt: torch.Tensor) -> float:
+	p = ((pred.clamp(-1, 1) + 1) * 0.5).float()
+	t = ((tgt.clamp(-1, 1) + 1) * 0.5).float()
+	mse = (p - t).pow(2).mean().item()
+	if mse <= 0:
+		return float("inf")
+	return 10.0 * math.log10(1.0 / mse)
+
+
+def _parse_int_list(s: str) -> tuple[int, ...]:
+	parts = [p.strip() for p in s.split(",") if p.strip()]
+	if not parts:
+		raise ValueError("expected at least one integer")
+	return tuple(int(x) for x in parts)
 
 
 def _batched_ranges(n: int, chunk: int) -> list[tuple[int, int]]:
@@ -78,6 +95,7 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--val_samples", type=int, default=8)
 	p.add_argument("--num_workers", type=int, default=4)
 	p.add_argument("--mixed_precision", type=str, choices=["no", "fp16", "bf16"], default="bf16")
+	p.add_argument("--val_ar_horizons", type=str, default="1,10,30")
 	p.add_argument("--cfg_both_drop_prob", type=float, default=0.10)
 	p.add_argument("--cfg_action_drop_prob", type=float, default=0.05)
 	p.add_argument("--cfg_rule_drop_prob", type=float, default=0.05)
@@ -214,6 +232,16 @@ def main() -> None:
 	if model.latent_channels != C:
 		raise ValueError(f"encoded latent C={C} != model latent_channels={model.latent_channels}")
 	print(f"Residual diffuser parameters: {sum(p.numel() for p in residual_model.diffuser.parameters()):,}")
+	try:
+		import lpips
+
+		lpips_val = lpips.LPIPS(net="alex").to(device)
+		lpips_val.eval()
+		for p_lp in lpips_val.parameters():
+			p_lp.requires_grad_(False)
+	except Exception as e:
+		lpips_val = None
+		print(f"Warning: LPIPS validation disabled: {e}")
 
 	use_amp = device.type == "cuda" and args.mixed_precision != "no"
 	amp_dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16
@@ -231,6 +259,9 @@ def main() -> None:
 	writer = SummaryWriter(log_dir=str(Path(args.log_dir) / run_name))
 	ckpt_root = Path(args.checkpoint_dir)
 	ckpt_root.mkdir(parents=True, exist_ok=True)
+	val_ar_horizons = _parse_int_list(args.val_ar_horizons)
+	val_ar_max = max(val_ar_horizons)
+	val_ar_horizons_set = frozenset(val_ar_horizons)
 
 	if ds_variant_test is not None:
 		Sv = min(int(args.val_samples), len(ds_variant_test))
@@ -242,8 +273,35 @@ def main() -> None:
 		val_tgt_z = torch.stack([s["target_latent"] for s in val_items])
 		val_hist_act = torch.stack([s["history_actions"] for s in val_items]).long()
 		val_rule_oh = torch.stack([s["rule_onehot"] for s in val_items]).float()
+
+		val_ar_items: list[dict] = []
+		val_ar_names: list[str] = []
+
+		def collect_ar_rows(ds: MixedEncodedRolloutVideoDataset, folder_names: list[str]) -> None:
+			for folder in folder_names:
+				row = None
+				for idx in range(len(ds)):
+					if ds.window_game_folder(idx) != folder:
+						continue
+					row = ds.try_contiguous_ar(idx, K, val_ar_max)
+					if row is not None:
+						break
+				if row is not None:
+					val_ar_items.append(row)
+					val_ar_names.append(folder)
+
+		collect_ar_rows(ds_variant_test, [p.name for p, _ in (variant_test_pairs or [])])
+		if ds_normal_test is not None and n_anchor > 0:
+			collect_ar_rows(ds_normal_test, [p.name for p in normal_test_dirs])
+		val_ar_hist_z = torch.stack([s["history_latents"] for s in val_ar_items]) if val_ar_items else None
+		val_ar_hist_act = torch.stack([s["history_actions"] for s in val_ar_items]).long() if val_ar_items else None
+		val_ar_fut = torch.stack([s["future_action_frames"] for s in val_ar_items]).long() if val_ar_items else None
+		val_ar_gt_z = torch.stack([s["gt_future_latents"] for s in val_ar_items]) if val_ar_items else None
+		val_ar_rule_oh = torch.stack([s["rule_onehot"] for s in val_ar_items]).float() if val_ar_items else None
 	else:
 		val_hist_z = val_tgt_z = val_hist_act = val_rule_oh = None
+		val_ar_hist_z = val_ar_hist_act = val_ar_fut = val_ar_gt_z = val_ar_rule_oh = None
+		val_ar_names = []
 
 	def save_checkpoint(step: int) -> None:
 		d = ckpt_root / f"step_{step:07d}"
@@ -307,25 +365,59 @@ def main() -> None:
 			metrics = _metrics(delta_pred, delta_target, base_pred, full_target, vr)
 			for k, v in metrics.items():
 				writer.add_scalar(f"val/{k}", v, global_step)
+			if "combined_mse_variant" in metrics:
+				writer.add_scalar("val/mse", metrics["combined_mse_variant"], global_step)
+
+			gen_parts = []
+			base_gen_parts = []
+			for s, e in _batched_ranges(Bv, vb):
+				gen_parts.append(
+					model.generate_next_frame(
+						vh[s:e], va[s:e], va[s:e, -1],
+						num_inference_steps=int(args.num_inference_steps),
+						rule_onehot=vr[s:e],
+					)
+				)
+				base_gen_parts.append(
+					model.base_model.generate_next_frame(
+						vh[s:e], va[s:e], va[s:e, -1],
+						num_inference_steps=int(args.num_inference_steps),
+					)
+				)
+			gen_lat = torch.cat(gen_parts, dim=0)
+			base_gen_lat = torch.cat(base_gen_parts, dim=0)
+			gen_rgb = torch.cat([model.decode_video(gen_lat[s:e]) for s, e in _batched_ranges(Bv, vb)], dim=0)
+			base_gen_rgb = torch.cat([model.decode_video(base_gen_lat[s:e]) for s, e in _batched_ranges(Bv, vb)], dim=0)
+			tgt_rgb = torch.cat([model.decode_frames(vt[s:e]) for s, e in _batched_ranges(Bv, vb)], dim=0)
+			writer.add_scalar("val/psnr_f0", psnr_neg1_to_01(gen_rgb[:, 0], tgt_rgb), global_step)
+			writer.add_scalar("val/base_psnr_f0", psnr_neg1_to_01(base_gen_rgb[:, 0], tgt_rgb), global_step)
+			if lpips_val is not None:
+				lp = lpips_val(gen_rgb[:, 0].float().clamp(-1, 1), tgt_rgb.float().clamp(-1, 1)).mean()
+				base_lp = lpips_val(base_gen_rgb[:, 0].float().clamp(-1, 1), tgt_rgb.float().clamp(-1, 1)).mean()
+				writer.add_scalar("val/lpips_f0", float(lp.item()), global_step)
+				writer.add_scalar("val/base_lpips_f0", float(base_lp.item()), global_step)
+			writer.add_images(
+				"val/generated_f0",
+				_strip_preview_01([((gen_rgb[i : i + 1, 0].clamp(-1, 1) + 1) * 0.5).cpu() for i in range(min(4, Bv))]),
+				global_step,
+			)
+			writer.add_images(
+				"val/base_generated_f0",
+				_strip_preview_01([((base_gen_rgb[i : i + 1, 0].clamp(-1, 1) + 1) * 0.5).cpu() for i in range(min(4, Bv))]),
+				global_step,
+			)
+			writer.add_images(
+				"val/target_f0",
+				_strip_preview_01([((tgt_rgb[i : i + 1].clamp(-1, 1) + 1) * 0.5).cpu() for i in range(min(4, Bv))]),
+				global_step,
+			)
 
 			variant_rows = torch.nonzero(vr.abs().sum(dim=1) > 0, as_tuple=False).flatten()
 			if variant_rows.numel() > 0:
 				rows = variant_rows[: min(4, int(variant_rows.numel()))]
-				vh_p = vh[rows]
-				va_p = va[rows]
-				vr_p = vr[rows]
-				vt_p = vt[rows]
-				base_lat = model.base_model.generate_next_frame(
-					vh_p, va_p, va_p[:, -1], num_inference_steps=int(args.num_inference_steps),
-				)
-				combined_lat = model.generate_next_frame(
-					vh_p, va_p, va_p[:, -1],
-					num_inference_steps=int(args.num_inference_steps),
-					rule_onehot=vr_p,
-				)
-				base_rgb = model.decode_video(base_lat)[:, 0]
-				combined_rgb = model.decode_video(combined_lat)[:, 0]
-				tgt_rgb = model.decode_frames(vt_p)
+				base_rgb = base_gen_rgb[rows, 0]
+				combined_rgb = gen_rgb[rows, 0]
+				tgt_rgb_rows = tgt_rgb[rows]
 				writer.add_images(
 					"val/base_only_generated",
 					_strip_preview_01([((base_rgb[i : i + 1].clamp(-1, 1) + 1) * 0.5).cpu() for i in range(len(rows))]),
@@ -338,9 +430,54 @@ def main() -> None:
 				)
 				writer.add_images(
 					"val/target",
-					_strip_preview_01([((tgt_rgb[i : i + 1].clamp(-1, 1) + 1) * 0.5).cpu() for i in range(len(rows))]),
+					_strip_preview_01([((tgt_rgb_rows[i : i + 1].clamp(-1, 1) + 1) * 0.5).cpu() for i in range(len(rows))]),
 					global_step,
 				)
+
+			if val_ar_hist_z is not None and val_ar_gt_z is not None and val_ar_rule_oh is not None:
+				z_ar = val_ar_hist_z.to(device)
+				h_act = val_ar_hist_act.to(device)
+				fut_dev = val_ar_fut.to(device)
+				gt_z = val_ar_gt_z.to(device)
+				rule_ar = val_ar_rule_oh.to(device)
+				Bar = int(z_ar.shape[0])
+				pred_lat_h: dict[int, torch.Tensor] = {}
+				for s in tqdm(range(val_ar_max), desc="val AR", leave=False, dynamic_ncols=True):
+					fa = h_act[:, -1] if s == 0 else fut_dev[:, s - 1]
+					zn_parts = [
+						model.generate_next_frame(
+							z_ar[s0:e0], h_act[s0:e0], fa[s0:e0],
+							num_inference_steps=int(args.num_inference_steps),
+							rule_onehot=rule_ar[s0:e0],
+						)
+						for s0, e0 in _batched_ranges(Bar, vb)
+					]
+					z_next = torch.cat(zn_parts, dim=0)
+					if s + 1 in val_ar_horizons_set:
+						pred_lat_h[s + 1] = z_next.detach()
+					z_ar = torch.cat([z_ar[:, 1:], z_next], dim=1)
+					h_act = torch.cat([h_act[:, 1:], fa.unsqueeze(1)], dim=1)
+				for h in val_ar_horizons:
+					pred_rgb = torch.cat(
+						[model.decode_video(pred_lat_h[h][s:e]) for s, e in _batched_ranges(Bar, vb)],
+						dim=0,
+					)[:, 0]
+					tgt_rgb_h = torch.cat(
+						[model.decode_video(gt_z[s:e, h - 1 : h]) for s, e in _batched_ranges(Bar, vb)],
+						dim=0,
+					)[:, 0]
+					hid = f"h{h:02d}"
+					writer.add_scalar(f"val/psnr_ar/{hid}", psnr_neg1_to_01(pred_rgb, tgt_rgb_h), global_step)
+					if lpips_val is not None:
+						lp_h = lpips_val(pred_rgb.float().clamp(-1, 1), tgt_rgb_h.float().clamp(-1, 1)).mean()
+						writer.add_scalar(f"val/lpips_ar/{hid}", float(lp_h.item()), global_step)
+					for i, folder in enumerate(val_ar_names):
+						card = torch.cat([
+							((tgt_rgb_h[i : i + 1].clamp(-1, 1) + 1) * 0.5),
+							torch.ones(1, 3, 4, tgt_rgb_h.shape[-1], device=device),
+							((pred_rgb[i : i + 1].clamp(-1, 1) + 1) * 0.5),
+						], dim=-2)
+						writer.add_images(f"val/ar_rollout/{hid}/{folder}", card.cpu(), global_step)
 			print(f"step={global_step} loss={last_loss} val={metrics}")
 		model.train()
 		model.freeze_base()

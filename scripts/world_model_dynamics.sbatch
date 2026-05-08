@@ -85,6 +85,7 @@ VALIDATION_EVERY="${VALIDATION_EVERY:-10000}"
 SAVE_EVERY="${SAVE_EVERY:-10000}"
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-10}"
 VAL_SAMPLES="${VAL_SAMPLES:-8}"
+VAL_AR_HORIZONS="${VAL_AR_HORIZONS:-1,10,30}"
 ORIGINAL_CHECKPOINT_DIR="${ORIGINAL_CHECKPOINT_DIR:-world_model/checkpoints/original_dynamics}"
 RESIDUAL_CHECKPOINT_DIR="${RESIDUAL_CHECKPOINT_DIR:-world_model/checkpoints/residual_dynamics}"
 ORIGINAL_LOG_DIR="${ORIGINAL_LOG_DIR:-runs/world_model_original}"
@@ -127,6 +128,7 @@ common_args=(
 	--save_every "$SAVE_EVERY"
 	--num_inference_steps "$NUM_INFERENCE_STEPS"
 	--val_samples "$VAL_SAMPLES"
+	--val_ar_horizons "$VAL_AR_HORIZONS"
 )
 
 env_args=()
