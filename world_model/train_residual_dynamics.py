@@ -94,8 +94,10 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--save_every", type=int, default=10_000)
 	p.add_argument("--max_grad_norm", type=float, default=1.0)
 	p.add_argument("--val_samples", type=int, default=8)
+	p.add_argument("--val_batch_size", type=int, default=8)
 	p.add_argument("--num_workers", type=int, default=4)
 	p.add_argument("--mixed_precision", type=str, choices=["no", "fp16", "bf16"], default="bf16")
+	p.add_argument("--disable_lpips", action="store_true")
 	p.add_argument("--val_ar_horizons", type=str, default="1,10,30")
 	p.add_argument("--transfer_probe_envs", type=str, default="defender,jaws")
 	p.add_argument("--transfer_probe_rule", type=str, default="multishot")
@@ -237,16 +239,20 @@ def main() -> None:
 	if model.latent_channels != C:
 		raise ValueError(f"encoded latent C={C} != model latent_channels={model.latent_channels}")
 	print(f"Residual diffuser parameters: {sum(p.numel() for p in residual_model.diffuser.parameters()):,}")
-	try:
-		import lpips
-
-		lpips_val = lpips.LPIPS(net="alex").to(device)
-		lpips_val.eval()
-		for p_lp in lpips_val.parameters():
-			p_lp.requires_grad_(False)
-	except Exception as e:
+	if args.disable_lpips:
 		lpips_val = None
-		print(f"Warning: LPIPS validation disabled: {e}")
+		print("LPIPS validation disabled by --disable_lpips")
+	else:
+		try:
+			import lpips
+
+			lpips_val = lpips.LPIPS(net="alex").to(device)
+			lpips_val.eval()
+			for p_lp in lpips_val.parameters():
+				p_lp.requires_grad_(False)
+		except Exception as e:
+			lpips_val = None
+			print(f"Warning: LPIPS validation disabled: {e}")
 
 	use_amp = device.type == "cuda" and args.mixed_precision != "no"
 	amp_dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16
@@ -269,6 +275,9 @@ def main() -> None:
 	val_ar_horizons_set = frozenset(val_ar_horizons)
 	transfer_probe_envs = [x.strip() for x in str(args.transfer_probe_envs).split(",") if x.strip()]
 	transfer_probe_steps = max(0, int(args.transfer_probe_steps))
+	val_batch_size = int(args.val_batch_size)
+	if val_batch_size <= 0:
+		val_batch_size = min(int(args.batch_size), 8)
 	if args.transfer_probe_action < 0 or args.transfer_probe_action >= args.num_actions:
 		raise ValueError(f"--transfer_probe_action must be in [0, {args.num_actions - 1}], got {args.transfer_probe_action}")
 
@@ -376,13 +385,13 @@ def main() -> None:
 
 	def validate(global_step: int, last_loss: float | None) -> None:
 		model.eval()
-		with torch.no_grad():
+		with torch.inference_mode():
 			vh = val_hist_z.to(device)
 			vt = val_tgt_z.to(device)
 			va = val_hist_act.to(device)
 			vr = val_rule_oh.to(device)
 			Bv = int(vh.shape[0])
-			vb = max(1, int(args.batch_size))
+			vb = max(1, val_batch_size)
 			ts = torch.randint(0, model.num_train_timesteps, (Bv,), device=device).long()
 			ns = torch.randn_like(vt, dtype=model.residual_model.diffuser.unet.dtype)
 			parts = []
@@ -545,6 +554,8 @@ def main() -> None:
 						global_step,
 					)
 			print(f"step={global_step} loss={last_loss} val={metrics}")
+		if device.type == "cuda":
+			torch.cuda.empty_cache()
 		model.train()
 		model.freeze_base()
 
