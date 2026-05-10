@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--output_dir", type=str, default=str(Path("world_model") / "checkpoints" / "vae"))
 	p.add_argument("--batch_size", type=int, default=4)
 	p.add_argument("--epochs", type=int, default=1, help="stop after this many epochs (0 = unlimited, use --max_train_steps)")
-	p.add_argument("--max_train_steps", type=int, default=500_000, help="stop after this many optimizer steps (0 = unlimited, use --epochs)")
+	p.add_argument("--max_train_steps", type=int, default=5_000_000, help="stop after this many optimizer steps (0 = unlimited, use --epochs)")
 	p.add_argument("--lr", type=float, default=1e-4)
 	p.add_argument("--weight_decay", type=float, default=1e-5, help="AdamW weight decay")
 	p.add_argument("--max_grad_norm", type=float, default=1.0, help="clip global grad norm (L2)")

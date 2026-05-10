@@ -36,22 +36,29 @@ from tqdm.auto import tqdm
 
 from world_model.dataset import (
 	MixedEncodedRolloutVideoDataset,
+	NUM_RULE_TYPES,
 	canonical_rule_onehots,
+	collect_unknown_rule_tags_under_split,
 	encoded_dirs_all_under_split,
 	encoded_dirs_with_rules,
+	encoded_folder_base_game,
+	LEGACY_NULL_RULE_TAGS,
 	preprocess_latent,
+	RULE_TAGS,
 )
 from world_model.model.error_buffer import ErrorBuffer
 from world_model.model.world_model import WorldModel
 
 CONTEXT_LEN = 4
-CROSS_ATTENTION_DIM = 768
+CROSS_ATTENTION_DIM = 512
 PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 DEFAULT_CHECKPOINT_DIR_RULES = Path("world_model") / "checkpoints" / "dit_encoded_rules"
 DEFAULT_CHECKPOINT_DIR_ALL_ENV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env"
 DEFAULT_CHECKPOINT_DIR_RULES_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_adv"
 DEFAULT_CHECKPOINT_DIR_ALL_ENV_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv"
+COUNTERFACTUAL_STEPS = 10
+COUNTERFACTUAL_SHOOT_ACTION = 5
 
 
 def psnr_neg1_to_01(pred: torch.Tensor, tgt: torch.Tensor) -> float:
@@ -82,12 +89,17 @@ def parse_args() -> argparse.Namespace:
 		type=str,
 		default=None,
 		help="Base name under encoded/{train,test}/ (e.g. aliens). If omitted, use every subdirectory "
-		"that contains encoded shards. Rule one-hot follows folder name suffix (_rules_fast, etc.); "
-		"same suffix across games shares the same rule conditioning.",
+		"with shards. Rule multi-hot follows folder name: base folder → NULL (zeros); `_rules_<tag>` → "
+		"see RULE_TAGS in world_model/dataset.py.",
 	)
 	p.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
 	p.add_argument("--encoded_subdir", type=str, default="encoded", help="Under transitions_root, same as encode script.")
-	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"))
+	p.add_argument(
+		"--vae_checkpoint",
+		type=str,
+		default="",
+		help="Path to frozen SD VAE weights (vae.pt). Empty uses ``world_model.model.net.vae.DEFAULT_VAE_PT``.",
+	)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN)
 	p.add_argument(
@@ -121,7 +133,7 @@ def parse_args() -> argparse.Namespace:
 		"--val_samples",
 		type=int,
 		default=8,
-		help="Validation windows sampled per rule (normal / fast / multishot / ricochet); missing rules are skipped.",
+		help="Validation windows sampled per rule variant (normal + each RULE_TAGS slot); missing rules are skipped.",
 	)
 	p.add_argument("--num_workers", type=int, default=4)
 	p.add_argument("--mixed_precision", type=str, choices=["no", "fp16", "bf16"], default="bf16")
@@ -172,13 +184,13 @@ def parse_args() -> argparse.Namespace:
 		"--adv_weight",
 		type=float,
 		default=0.01,
-		help="Weight for adversarial rule-invariance loss on state features.",
+		help="Weight for adversarial game-invariance loss on history state (classifier predicts base game).",
 	)
 	p.add_argument(
 		"--adv_lambda",
 		type=float,
 		default=1.0,
-		help="Gradient-reversal scale for adversarial rule classifier.",
+		help="Gradient-reversal scale for adversarial game classifier.",
 	)
 	p.add_argument(
 		"--adv_warmup_steps",
@@ -246,30 +258,34 @@ def _batched_ranges(n: int, chunk: int) -> list[tuple[int, int]]:
 	return [(s, min(s + c, n)) for s in range(0, n, c)]
 
 
-def _base_game_from_encoded_folder(folder: str) -> str:
-	"""Strip ``_rules_*`` suffix so variants of one game group together (e.g. ``aliens_rules_fast`` → ``aliens``)."""
-	if folder.endswith("_rules_ricochet"):
-		return folder[: -len("_rules_ricochet")]
-	if folder.endswith("_rules_multishot"):
-		return folder[: -len("_rules_multishot")]
-	if folder.endswith("_rules_fast"):
-		return folder[: -len("_rules_fast")]
-	return folder
+def _first_latent_chw(env_dir: Path) -> tuple[int, int, int]:
+	"""Read C/H/W from the first shard latent under an encoded env dir."""
+	for shard in sorted(env_dir.glob("shard_*")):
+		lat = shard / "latent.npy"
+		if lat.is_file():
+			arr = torch.from_numpy(__import__("numpy").load(lat, mmap_mode="r"))
+			if arr.ndim != 4:
+				raise ValueError(f"Unexpected latent shape in {lat}: {tuple(arr.shape)}")
+			return int(arr.shape[1]), int(arr.shape[2]), int(arr.shape[3])
+	raise FileNotFoundError(f"No shard_*/latent.npy under {env_dir}")
 
 
 def _variant_rule_rank(folder: str, base: str) -> tuple[int, str]:
-	"""Horizontal order: normal, fast, multishot, ricochet."""
+	"""Column order: base (NULL) first, then stable order by ``RULE_TAGS``."""
 	if folder == base:
 		return (0, folder)
-	if _base_game_from_encoded_folder(folder) != base:
-		return (9, folder)
-	if folder.endswith("_rules_fast"):
+	if encoded_folder_base_game(folder) != base:
+		return (9999, folder)
+	if "_rules_" not in folder:
 		return (1, folder)
-	if folder.endswith("_rules_multishot"):
-		return (2, folder)
-	if folder.endswith("_rules_ricochet"):
-		return (3, folder)
-	return (4, folder)
+	tag = folder.split("_rules_", 1)[1]
+	if tag in LEGACY_NULL_RULE_TAGS:
+		return (1, folder)
+	try:
+		ti = RULE_TAGS.index(tag)
+	except ValueError:
+		return (7000, folder)
+	return (10 + ti, folder)
 
 
 def _vstack_tgt_gen_rgb01(
@@ -303,7 +319,7 @@ def _log_val_ar_tb_by_env(
 		return
 	base_to_rows: dict[str, list[int]] = defaultdict(list)
 	for i, folder in enumerate(folder_per_row):
-		base_to_rows[_base_game_from_encoded_folder(folder)].append(i)
+		base_to_rows[encoded_folder_base_game(folder)].append(i)
 	for base in sorted(base_to_rows.keys()):
 		row_inds = sorted(
 			base_to_rows[base],
@@ -343,8 +359,50 @@ def main() -> None:
 	else:
 		train_pairs = encoded_dirs_with_rules(encoded_root / "train", args.env)
 		test_pairs = encoded_dirs_with_rules(encoded_root / "test", args.env)
+	shape_by_env: dict[str, tuple[int, int, int]] = {}
+	for p, _ in (train_pairs + test_pairs):
+		if p.name not in shape_by_env:
+			shape_by_env[p.name] = _first_latent_chw(p)
+	if not shape_by_env:
+		raise RuntimeError("No encoded env folders found for training/testing.")
+	ref_env, ref_shape = next(iter(shape_by_env.items()))
+	bad_envs = sorted(name for name, shp in shape_by_env.items() if shp != ref_shape)
+	if bad_envs:
+		print(
+			f"Warning: skipping encoded envs with mismatched latent shape (expected {ref_shape} from {ref_env!r}): "
+			f"{[(n, shape_by_env[n]) for n in bad_envs]}"
+		)
+		train_pairs = [(p, rh) for (p, rh) in train_pairs if p.name not in bad_envs]
+		test_pairs = [(p, rh) for (p, rh) in test_pairs if p.name not in bad_envs]
+		if not train_pairs or not test_pairs:
+			raise RuntimeError(
+				"After dropping mismatched latent-shape envs, train/test became empty. "
+				"Re-encode all envs with the same VAE backend/settings."
+			)
+	for split_label, split_path in (("train", encoded_root / "train"), ("test", encoded_root / "test")):
+		unk = collect_unknown_rule_tags_under_split(split_path)
+		if unk:
+			raise ValueError(
+				f"Unknown rule folder tag(s) under encoded/{split_label}: {unk}. "
+				"Add them to RULE_TAGS in world_model/dataset.py (folder pattern <game>_rules_<tag>)."
+			)
+	game_base_to_id = {
+		b: i
+		for i, b in enumerate(
+			sorted(
+				{
+					encoded_folder_base_game(p.name)
+					for p, _ in (train_pairs + test_pairs)
+				}
+			)
+		)
+	}
+	setattr(args, "num_game_classes", len(game_base_to_id))
+	setattr(args, "game_base_to_id", dict(game_base_to_id))
+	print(f"  adversarial game ids ({len(game_base_to_id)}): {game_base_to_id}")
 	mk_ds = lambda pairs: MixedEncodedRolloutVideoDataset(
 		pairs, seq_len=seq_len, stride=1, num_actions=args.num_actions,
+		game_base_to_id=game_base_to_id,
 	).with_transform(partial(preprocess_latent, history_len=K))
 	ds_train = mk_ds(train_pairs)
 	ds_test = mk_ds(test_pairs)
@@ -378,6 +436,7 @@ def main() -> None:
 		cfg_rule_drop_prob=args.cfg_rule_drop_prob,
 		cfg_scale_action=args.cfg_scale_action,
 		cfg_scale_rule=args.cfg_scale_rule,
+		num_game_classes=int(args.num_game_classes),
 	).to(device)
 	if world_model.latent_channels != C:
 		raise ValueError(f"encoded latent C={C} != model latent_channels={world_model.latent_channels}")
@@ -469,6 +528,34 @@ def main() -> None:
 		val_ar_hist_act = torch.stack([s["history_actions"] for s in val_ar_items]).long() if val_ar_items else None
 		val_ar_fut = torch.stack([s["future_action_frames"] for s in val_ar_items]).long() if val_ar_items else None
 		val_ar_rule_oh = torch.stack([s["rule_onehot"] for s in val_ar_items]) if val_ar_items else None
+
+		# Counter-factual cache: pick one contiguous seed window per requested base game.
+		# Use per-folder window index 50 as requested context start.
+		counterfactual_seed_index = 50
+		counterfactual_rows: dict[str, dict] = {}
+		for base in ("jaws", "defender", "zelda"):
+			candidates = [f for f in folder_order if encoded_folder_base_game(f) == base]
+			candidates.sort(key=lambda f: _variant_rule_rank(f, base))
+			picked = None
+			for folder in candidates:
+				folder_idxs = idx_by_folder.get(folder, ())
+				if len(folder_idxs) <= counterfactual_seed_index:
+					continue
+				idx = folder_idxs[counterfactual_seed_index]
+				row = ds_test.try_contiguous_ar(idx, K, COUNTERFACTUAL_STEPS)
+				if row is not None:
+					picked = row
+					break
+				if picked is not None:
+					break
+			if picked is None:
+				print(
+					f"Warning: no counter-factual seed for {base!r} at per-folder index "
+					f"{counterfactual_seed_index} (need {K + COUNTERFACTUAL_STEPS} contiguous rows)."
+				)
+			else:
+				counterfactual_rows[base] = picked
+
 		# Decode GT RGB only at horizon end frames (rollout index h-1 for each h in --val_ar_horizons).
 		val_ar_gt_rgb_h: dict[int, torch.Tensor] | None = None
 		if val_ar_items:
@@ -600,6 +687,46 @@ def main() -> None:
 							)
 							del tgt_f
 						del rgb_pack
+
+					# Counter-factual section: inject specific rules on selected base games and render strips.
+					if counterfactual_rows:
+						counterfactual_specs = (
+							("zelda", "multishot"),
+							("zelda", "shoot_walls"),
+							("defender", "multishot"),
+							("defender", "shoot_walls"),
+							("jaws", "shoot_walls"),
+						)
+						for base, rule_tag in counterfactual_specs:
+							row = counterfactual_rows.get(base)
+							if row is None:
+								continue
+							z_cf = row["history_latents"].unsqueeze(0).to(device)
+							h_act_cf = row["history_actions"].unsqueeze(0).long().to(device)
+							vr_cf = torch.zeros(1, NUM_RULE_TYPES, device=device, dtype=val_rule_oh.dtype)
+							if rule_tag not in RULE_TAGS:
+								print(f"Warning: counter-factual rule tag {rule_tag!r} not in RULE_TAGS; skipping.")
+								continue
+							vr_cf[0, RULE_TAGS.index(rule_tag)] = 1.0  # inject requested rule tag
+							shoot_action = min(COUNTERFACTUAL_SHOOT_ACTION, args.num_actions - 1)
+							frames_01: list[torch.Tensor] = []
+							for s in range(COUNTERFACTUAL_STEPS):
+								fa = torch.full((1,), shoot_action, device=device, dtype=torch.long)
+								z_next = world_model.generate_next_frame(
+									z_cf, h_act_cf, fa,
+									num_inference_steps=int(args.num_inference_steps),
+									rule_onehot=vr_cf,
+								)
+								dec = world_model.decode_video(z_next)[0, 0]
+								frames_01.append(((dec.clamp(-1, 1) + 1) * 0.5).unsqueeze(0).cpu())
+								z_cf = torch.cat([z_cf[:, 1:], z_next], dim=1)
+								h_act_cf = torch.cat([h_act_cf[:, 1:], fa.unsqueeze(1)], dim=1)
+							card = _strip_preview_01(frames_01, gap_px=6)
+							writer.add_images(
+								f"counter-factual/{base}_inject_{rule_tag}_rollout_{COUNTERFACTUAL_STEPS}steps",
+								card,
+								global_step,
+							)
 					else:
 						cl_parts: list[torch.Tensor] = []
 						for s, e in _batched_ranges(Bv, vb):
@@ -653,7 +780,7 @@ def main() -> None:
 			delta_hist = error_buffer.sample_like(z_hist) if error_buffer.ready() else None
 			timesteps = torch.randint(0, world_model.num_train_timesteps, (B,), device=device).long()
 			noise = torch.randn_like(z_tgt, dtype=world_model.diffuser.unet.dtype)
-			rule_ids = rule_oh.argmax(dim=1)
+			game_ids = batch["game_id"].to(device).long()
 
 			with autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
 				model_pred, target, h_state = world_model.diffusion_forward(
@@ -663,9 +790,8 @@ def main() -> None:
 					return_state=True,
 				)
 				diff_loss = F.mse_loss(model_pred.float(), target.float())
-				# Adversary uses the same state feature that conditions diffusion.
-				adv_logits = world_model.adversarial_rule_logits_from_state(h_state, adv_lambda=adv_lambda_eff)
-				adv_loss = F.cross_entropy(adv_logits.float(), rule_ids)
+				adv_logits = world_model.adversarial_game_logits_from_state(h_state, adv_lambda=adv_lambda_eff)
+				adv_loss = F.cross_entropy(adv_logits.float(), game_ids)
 				loss = diff_loss + adv_weight_eff * adv_loss
 			last_loss = loss.item()
 			last_diff_loss = diff_loss.item()

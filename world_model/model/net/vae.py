@@ -10,6 +10,56 @@ from diffusers import AutoencoderKL
 PRETRAINED_REMOTE_ID = "stabilityai/sd-vae-ft-mse"
 DEFAULT_VAE_PT = Path("world_model") / "checkpoints" / "vae" / "vae.pt"
 
+# Frozen-VAE backends (see :func:`load_frozen_vae`).
+VAE_BACKENDS_SD = frozenset({"sd", "default", "autoencoder"})
+VAE_BACKENDS_WAN = frozenset({"wan", "wan2", "wan2.1"})
+
+
+def load_frozen_vae(
+	backend: str,
+	checkpoint: Union[str, Path, None] = None,
+	*,
+	wan_z_dim: int = 16,
+) -> nn.Module:
+	"""Build a frozen perceptual encoder/decoder compatible with ``VAE``.
+
+	``backend``: ``sd`` (local ``vae.pt`` over Diffusers hub arch) or ``wan``
+	(:class:`~world_model.model.net.wan_vae.WanVAE` loaded from Hugging Face ``subfolder="vae"``).
+	"""
+	b = str(backend).strip().lower()
+	if b in VAE_BACKENDS_SD:
+		ck_sd = checkpoint
+		if ck_sd is None or str(ck_sd).strip() == "":
+			pt = DEFAULT_VAE_PT
+		else:
+			pt = Path(ck_sd)
+		return VAE(checkpoint=pt)
+	if b in VAE_BACKENDS_WAN:
+		from world_model.model.net.wan_vae import DEFAULT_WAN_VAE_REPO, WanVAE
+
+		ck = checkpoint
+		if ck is None or str(ck).strip() == "":
+			repo = DEFAULT_WAN_VAE_REPO
+		else:
+			p = Path(ck)
+			if p.is_file():
+				if p.resolve() == Path(DEFAULT_VAE_PT).resolve():
+					repo = DEFAULT_WAN_VAE_REPO
+				elif p.suffix.lower() == ".pth":
+					raise ValueError(
+						"WAN backend no longer loads standalone .pth files. "
+						f"Omit the checkpoint or pass a Hugging Face repo id (default {DEFAULT_WAN_VAE_REPO!r}) "
+						"or a local Diffusers model directory."
+					)
+				raise ValueError(
+					f"WAN backend expects a Hugging Face repo id or a model directory, not this file: {p}"
+				)
+			repo = str(p.resolve()) if p.is_dir() else str(ck).strip()
+		return WanVAE(repo, z_dim=int(wan_z_dim))
+	raise ValueError(
+		f"Unknown vae backend {backend!r}. Use one of {sorted(VAE_BACKENDS_SD | VAE_BACKENDS_WAN)}."
+	)
+
 
 class VAE(nn.Module):
 	"""Frozen SD VAE: hub architecture + weights from a single ``vae.pt`` file."""

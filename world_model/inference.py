@@ -10,8 +10,14 @@ import numpy as np
 import torch
 from matplotlib.patches import Rectangle
 
-from world_model.dataset import IMG_TRANSFORMS, crop_hw_div8
-from world_model.dataset import NUM_RULE_TYPES
+from world_model.dataset import (
+	IMG_TRANSFORMS,
+	LEGACY_NULL_RULE_TAGS,
+	NUM_RULE_TYPES,
+	RULE_TAG_TO_INDEX,
+	RULE_TAGS,
+	crop_hw_div8,
+)
 from world_model.model.world_model import WorldModel
 
 
@@ -53,26 +59,52 @@ def load_world_model(
 	pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
 	cfg_scale_action: float | None = None,
 	cfg_scale_rule: float | None = None,
+	num_game_classes: int | None = None,
+	vae_backend: str | None = None,
+	wan_z_dim: int | None = None,
 ) -> WorldModel:
 	"""Load weights from ``ckpt_dir`` (same layout as :meth:`WorldModel.save_diffuser`).
 
 	If ``trainer_state.pt`` exists, ``vae_checkpoint`` defaults from saved args when omitted.
+	``num_game_classes`` defaults from saved args or from ``game_adversary.pt`` / legacy ``rule_adversary.pt``.
+	``vae_backend`` / ``wan_z_dim`` default from trainer_state when omitted.
 	"""
 	ckpt_dir = Path(ckpt_dir)
 	meta = _read_trainer_args(ckpt_dir)
+	cpu = torch.device("cpu")
+	game_adv_path = ckpt_dir / "game_adversary.pt"
+	rule_adv_path = ckpt_dir / "rule_adversary.pt"
+	ng = int(num_game_classes) if num_game_classes is not None else int(meta.get("num_game_classes") or 0)
+	if ng <= 0:
+		if game_adv_path.is_file():
+			ng = int(_load_sd(game_adv_path, cpu)["2.weight"].shape[0])
+		elif rule_adv_path.is_file():
+			ng = int(_load_sd(rule_adv_path, cpu)["2.weight"].shape[0])
 
 	vae_eff = _coalesce(meta, "vae_checkpoint", vae_checkpoint, None)
+	vae_b = _coalesce(meta, "vae_backend", vae_backend, "sd")
+	wan_z = int(_coalesce(meta, "wan_z_dim", wan_z_dim, 16))
+	vae_b = str(vae_b).strip().lower()
+	if vae_eff is not None and vae_b in ("wan", "wan2", "wan2.1"):
+		from world_model.model.net.vae import DEFAULT_VAE_PT as _SD_VAE_PATH
+
+		pe = Path(str(vae_eff))
+		if pe.resolve() == Path(_SD_VAE_PATH).resolve() or (pe.is_file() and pe.suffix.lower() == ".pth"):
+			vae_eff = None
 	c_sa = _cfg_scale_from_meta(meta, "cfg_scale_action", "cfg_scale", cfg_scale_action, 1.5)
 	c_sr = _cfg_scale_from_meta(meta, "cfg_scale_rule", "cfg_scale", cfg_scale_rule, 1.5)
 	wm = WorldModel(
 		num_actions=num_actions,
-		cross_attention_dim=768,
+		cross_attention_dim=512,
 		vae_checkpoint=vae_eff,
+		vae_backend=vae_b,
+		wan_z_dim=int(wan_z),
 		prediction_type="v_prediction",
 		history_len=history_len,
 		pretrained_model_name_or_path=pretrained_model_name_or_path,
 		cfg_scale_action=c_sa,
 		cfg_scale_rule=c_sr,
+		num_game_classes=max(0, ng),
 	)
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	wm = wm.to(device)
@@ -101,16 +133,21 @@ def load_world_model(
 	frame_state_path = ckpt_dir / "frame_state_encoder.pt"
 	if frame_state_path.is_file():
 		wm.diffuser.frame_state_encoder.load_state_dict(_load_sd(frame_state_path, device))
+	hist_state_path = ckpt_dir / "history_state_encoder.pt"
+	if hist_state_path.is_file():
+		wm.diffuser.history_state_encoder.load_state_dict(_load_sd(hist_state_path, device))
 	state_proj_path = ckpt_dir / "state_token_projection.pt"
 	if state_proj_path.is_file():
 		wm.diffuser.state_token_projection.load_state_dict(_load_sd(state_proj_path, device))
 	state_enc_path = ckpt_dir / "state_encoder.pt"
 	if state_enc_path.is_file():
-		# Legacy alias (same module as frame_state_encoder).
+		# Legacy alias for state encoder (maps to joint history encoder now).
 		wm.state_encoder.load_state_dict(_load_sd(state_enc_path, device))
-	rule_adv_path = ckpt_dir / "rule_adversary.pt"
-	if rule_adv_path.is_file():
-		wm.rule_adversary.load_state_dict(_load_sd(rule_adv_path, device))
+	if wm.game_adversary is not None:
+		if game_adv_path.is_file():
+			wm.game_adversary.load_state_dict(_load_sd(game_adv_path, device))
+		elif rule_adv_path.is_file():
+			wm.game_adversary.load_state_dict(_load_sd(rule_adv_path, device))
 	for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
 		legacy = ckpt_dir / legacy_name
 		if legacy.is_file():
@@ -126,26 +163,63 @@ def _tensor_to_imshow01(t: torch.Tensor) -> np.ndarray:
 
 
 def _rule_vec(name: str) -> torch.Tensor:
-	"""[1, NUM_RULE_TYPES] float rule vector: one-hot or combined presets."""
-	n = str(name).lower().strip()
+	"""[1, NUM_RULE_TYPES] float: NULL (zeros) for base games, else multi-hot from tag name or preset."""
+	n0 = str(name).lower().strip()
 	v = torch.zeros(1, NUM_RULE_TYPES, dtype=torch.float32)
-	if n in {"multishot+ricochet", "rule3+rule4", "combo34", "5"}:
-		v[0, 2] = 1.0
-		v[0, 3] = 1.0
+	if n0 in {"", "normal", "null", "base", "zeros"}:
 		return v
-	idx = {"normal": 0, "fast": 1, "rules_fast": 1, "multishot": 2, "ricochet": 3}.get(n, 0)
-	v[0, idx] = 1.0
-	return v
+	if n0 in LEGACY_NULL_RULE_TAGS or n0 == "rules_fast":
+		return v
+	# Legacy / alias names
+	legacy = {"rule1": "null", "rule2": "null"}
+	n = legacy.get(n0, n0)
+	if n == "null" or n == "normal":
+		return v
+	if n in {"multishot+ricochet", "rule3+rule4", "combo34", "5"}:
+		v[0, RULE_TAG_TO_INDEX["multishot"]] = 1.0
+		v[0, RULE_TAG_TO_INDEX["ricochet"]] = 1.0
+		return v
+	if n in RULE_TAG_TO_INDEX:
+		v[0, RULE_TAG_TO_INDEX[n]] = 1.0
+		return v
+	if "_rules_" in n:
+		tag = n.split("_rules_", 1)[1]
+		if tag in LEGACY_NULL_RULE_TAGS:
+			return v
+		if tag in RULE_TAG_TO_INDEX:
+			v[0, RULE_TAG_TO_INDEX[tag]] = 1.0
+			return v
+	tags_known = ", ".join(RULE_TAGS)
+	raise ValueError(f"Unknown rule preset {name!r}. Try null/normal, multishot+ricochet, or a RULE_TAGS entry: {tags_known}")
 
 
-RULE_LABELS = ("normal", "fast", "multishot", "ricochet", "multishot+ricochet")
+def _is_valid_rule_name(n: str) -> bool:
+	s = str(n).lower().strip()
+	if s in {"", "normal", "null", "base", "zeros", "multishot+ricochet"} or s in RULE_TAG_TO_INDEX:
+		return True
+	if s in LEGACY_NULL_RULE_TAGS or s in {"rules_fast", "rule1", "rule2"}:
+		return True
+	if "_rules_" in s:
+		tag = s.split("_rules_", 1)[1]
+		return tag in LEGACY_NULL_RULE_TAGS or tag in RULE_TAG_TO_INDEX
+	return False
+
+
 RULE_KEY_TO_LABEL = {
-	"1": "normal",
-	"2": "fast",
+	"1": "null",
+	"2": RULE_TAGS[0],
 	"3": "multishot",
 	"4": "ricochet",
 	"5": "multishot+ricochet",
+	"k1": "null",
+	"k2": RULE_TAGS[0],
+	"k3": "multishot",
+	"k4": "ricochet",
+	"k5": "multishot+ricochet",
 }
+# Optional extra keys → other RULE_TAGS by order (keyboard)
+for _i, _tag in enumerate(RULE_TAGS, start=6):
+	RULE_KEY_TO_LABEL[str(_i)] = _tag
 
 
 def run_autoregressive(
@@ -156,7 +230,9 @@ def run_autoregressive(
 	num_inference_steps: int = 30,
 	bootstrap_start_idx: int = 0,
 	vae_checkpoint: Optional[str] = None,
-	rule: str = "normal",
+	vae_backend: Optional[str] = None,
+	wan_z_dim: Optional[int] = None,
+	rule: str = "null",
 	cfg_scale_action: float | None = None,
 	cfg_scale_rule: float | None = None,
 ) -> None:
@@ -166,12 +242,14 @@ def run_autoregressive(
 	K = history_len
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	current_rule = str(rule).lower().strip()
-	if current_rule not in RULE_LABELS:
-		current_rule = "normal"
+	if not _is_valid_rule_name(current_rule):
+		current_rule = "null"
 	rule_oh = _rule_vec(current_rule).to(device)
 	wm = load_world_model(
 		Path(ckpt_dir), num_actions, K,
 		vae_checkpoint=vae_checkpoint,
+		vae_backend=vae_backend,
+		wan_z_dim=wan_z_dim,
 		cfg_scale_action=cfg_scale_action,
 		cfg_scale_rule=cfg_scale_rule,
 	)
@@ -315,28 +393,36 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "step_0150000"))
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "step_0470000"))
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
 		default="world_model/checkpoints/vae/vae.pt",
-		help="Path to vae.pt (empty = default world_model/checkpoints/vae/vae.pt)",
+		help="Path to VAE checkpoint (WAN .pth or SD vae.pt); empty lets trainer_state decide.",
 	)
-	p.add_argument("--env", type=str, default="defender")
+	p.add_argument(
+		"--vae_backend",
+		type=str,
+		default=None,
+		help="Override VAE backend: sd | wan (default: trainer_state or sd).",
+	)
+	p.add_argument("--wan_z_dim", type=int, default=None, help="Override WAN latent channels (default from trainer_state or 16).")
+	p.add_argument("--env", type=str, default="jaws")
 	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=4, help="History length K (same as training).")
 	p.add_argument(
 		"--bootstrap_start_idx",
 		type=int,
-		default=0,
+		default=100,
 		help="Initial frame index used for bootstrap context. 0 keeps current behavior; 30 starts from frame 30.",
 	)
 	p.add_argument(
 		"--rule",
 		type=str,
-		default="normal",
-		help="Rule conditioning preset: normal | fast | multishot | ricochet | multishot+ricochet.",
+		default="null",
+		help="Rule multi-hot preset: null/normal/base (zeros) or any RULE_TAGS name (see world_model/dataset.py), "
+		"or multishot+ricochet. Folder-style `game_rules_tag` also works.",
 	)
 	p.add_argument(
 		"--cfg_scale_action",
@@ -352,17 +438,23 @@ def main() -> None:
 	)
 	args = p.parse_args()
 	rule_name = str(args.rule).strip().lower()
-	if rule_name not in RULE_LABELS:
-		rule_name = "normal"
-	print("Select initial rule condition: 1=normal, 2=fast, 3=multishot, 4=ricochet, 5=rule3+rule4")
+	if not _is_valid_rule_name(rule_name):
+		rule_name = "null"
+	tags_txt = ", ".join(RULE_TAGS)
+	print(
+		f"Keys 1=null, 2={RULE_TAGS[0]}, 3=multishot, 4=ricochet, 5=combo; "
+		f"6+ map to RULE_TAGS order: {tags_txt}"
+	)
 	choice = input("Rule [1-5]: ").strip()
 	if choice not in RULE_KEY_TO_LABEL:
-		raise ValueError("please select proper rule id")
+		raise ValueError("please select a valid rule key (see printed list)")
 	rule_name = RULE_KEY_TO_LABEL[choice]
 	run_autoregressive(
 		ckpt_dir=args.ckpt_dir,
 		env=args.env,
 		vae_checkpoint=args.vae_checkpoint.strip() or None,
+		vae_backend=(args.vae_backend.strip().lower() if args.vae_backend else None),
+		wan_z_dim=(int(args.wan_z_dim) if args.wan_z_dim is not None else None),
 		num_actions=args.num_actions,
 		num_inference_steps=args.num_inference_steps,
 		history_len=args.context_len,

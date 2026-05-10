@@ -30,7 +30,7 @@ from world_model.model.error_buffer import ErrorBuffer
 from world_model.model.world_model import WorldModel
 
 CONTEXT_LEN = 2
-CROSS_ATTENTION_DIM = 768
+CROSS_ATTENTION_DIM = 512
 PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 
@@ -63,6 +63,13 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
 	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"), help="Path to vae.pt (hub architecture + this state dict)")
+	p.add_argument(
+		"--vae_backend",
+		type=str,
+		default="sd",
+		help="sd | wan — frozen encoder for WorldModel.decode (pixels still from raw rollout).",
+	)
+	p.add_argument("--wan_z_dim", type=int, default=16, help="Latent C when vae_backend=wan.")
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN, help="History frames K (fixed window).")
 	p.add_argument("--resize", type=int, nargs=2, metavar=("H", "W"), default=None, help="Resize frames to H×W (multiples of 8).")
@@ -137,6 +144,8 @@ def main() -> None:
 		num_actions=args.num_actions,
 		cross_attention_dim=CROSS_ATTENTION_DIM,
 		vae_checkpoint=args.vae_checkpoint,
+		vae_backend=str(args.vae_backend).strip().lower(),
+		wan_z_dim=int(args.wan_z_dim),
 		prediction_type=PREDICTION_TYPE,
 		history_len=K,
 		gradient_checkpointing=args.gradient_checkpointing,

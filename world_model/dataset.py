@@ -385,88 +385,134 @@ class EncodedRolloutVideoDataset(Dataset):
 		return preprocess_contiguous_latent_ar(sample, history_len, num_future_frames)
 
 
-# Rule one-hot order: normal, rules_fast, multishot, ricochet (matches sibling dir names under encoded/{split}/).
-NUM_RULE_TYPES = 4
-_RULE_NORMAL = (1.0, 0.0, 0.0, 0.0)
-_RULE_FAST = (0.0, 1.0, 0.0, 0.0)
-_RULE_MULTISHOT = (0.0, 0.0, 1.0, 0.0)
-_RULE_RICOCHET = (0.0, 0.0, 0.0, 1.0)
+# Multi-hot rule vector: ``RULE_TAGS[i]`` is the folder suffix after ``_rules_`` (e.g. ``aliens_rules_multishot`` → ``multishot``).
+# Folders **without** ``_rules_*`` map to ``NULL``: all-zero vector (baseline / classifier-free ``rule`` dropout target).
+RULE_TAGS: tuple[str, ...] = (
+	"enemy_explode",
+	"enemy_multishot",
+	"multishot",
+	"ricochet",
+	"shoot_walls",
+	"split_orthogonal",
+	"two_hit_color",
+)
+RULE_TAG_TO_INDEX: dict[str, int] = {t: i for i, t in enumerate(RULE_TAGS)}
+NUM_RULE_TYPES = len(RULE_TAGS)
+# Suffixes treated as NULL (no rule slot); e.g. ``*_rules_fast`` data still loads without a ``fast`` dim.
+LEGACY_NULL_RULE_TAGS: frozenset[str] = frozenset({"fast"})
 
 
-def canonical_rule_onehots() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-	"""Fixed order: normal, rules_fast, multishot, ricochet (CPU float32 one-hot rows)."""
-	return tuple(torch.tensor(t, dtype=torch.float32) for t in (_RULE_NORMAL, _RULE_FAST, _RULE_MULTISHOT, _RULE_RICOCHET))
+def _zeros_rule_tuple() -> tuple[float, ...]:
+	return tuple(0.0 for _ in range(NUM_RULE_TYPES))
 
 
-def rule_onehot_tuple_from_env_name(env: str) -> tuple[float, float, float, float]:
-	"""Map encoded folder name (…/train/<name>) to a length-4 one-hot tuple."""
-	if env.endswith("_rules_ricochet"):
-		return _RULE_RICOCHET
-	if env.endswith("_rules_multishot"):
-		return _RULE_MULTISHOT
-	if env.endswith("_rules_fast"):
-		return _RULE_FAST
-	return _RULE_NORMAL
+def rule_multihot_tuple_from_env_name(env: str) -> tuple[float, ...]:
+	"""Map encoded folder name to a length-``NUM_RULE_TYPES`` multi-hot (single tag) or all zeros (base / NULL)."""
+	if "_rules_" not in env:
+		return _zeros_rule_tuple()
+	tag = env.split("_rules_", 1)[1]
+	if tag in LEGACY_NULL_RULE_TAGS:
+		return _zeros_rule_tuple()
+	if tag not in RULE_TAG_TO_INDEX:
+		known = ", ".join(RULE_TAGS)
+		raise ValueError(
+			f"Unknown rule tag {tag!r} in folder {env!r}. Extend RULE_TAGS in dataset.py. Known: {known}"
+		)
+	v = [0.0] * NUM_RULE_TYPES
+	v[RULE_TAG_TO_INDEX[tag]] = 1.0
+	return tuple(v)
 
 
-def encoded_dirs_with_rules(encoded_split_dir: str | Path, env: str) -> list[tuple[Path, tuple[float, float, float, float]]]:
+def canonical_rule_onehots() -> tuple[torch.Tensor, ...]:
+	"""For val bucketing: NULL (zeros) then one unit vector per ``RULE_TAGS`` slot (CPU float32)."""
+	out: list[torch.Tensor] = [torch.tensor(_zeros_rule_tuple(), dtype=torch.float32)]
+	for i in range(NUM_RULE_TYPES):
+		row = [0.0] * NUM_RULE_TYPES
+		row[i] = 1.0
+		out.append(torch.tensor(row, dtype=torch.float32))
+	return tuple(out)
+
+
+def encoded_folder_base_game(folder_name: str) -> str:
+	"""Strip ``_rules_<tag>`` so variants map to one base game (e.g. ``aliens_rules_fast`` → ``aliens``)."""
+	if "_rules_" in folder_name:
+		return folder_name.split("_rules_", 1)[0]
+	return folder_name
+
+
+def _dir_has_encoded_shards(p: Path) -> bool:
+	return p.is_dir() and any(
+		sp.is_dir() and (sp / "latent.npy").is_file() and (sp / "action.npy").is_file()
+		for sp in p.glob("shard_*")
+	)
+
+
+def collect_unknown_rule_tags_under_split(encoded_split_dir: str | Path) -> list[str]:
+	"""Tags after ``_rules_`` in immediate child dirs that are not in ``RULE_TAGS``."""
+	split_dir = Path(encoded_split_dir)
+	if not split_dir.is_dir():
+		return []
+	unknown: set[str] = set()
+	for p in split_dir.iterdir():
+		if not p.is_dir() or "_rules_" not in p.name:
+			continue
+		if not _dir_has_encoded_shards(p):
+			continue
+		tag = p.name.split("_rules_", 1)[1]
+		if tag in LEGACY_NULL_RULE_TAGS:
+			continue
+		if tag not in RULE_TAG_TO_INDEX:
+			unknown.add(tag)
+	return sorted(unknown)
+
+
+def encoded_dirs_with_rules(encoded_split_dir: str | Path, env: str) -> list[tuple[Path, tuple[float, ...]]]:
 	"""Resolve ``env`` to one or more shard directories under ``encoded_split_dir`` (e.g. encoded/train).
 
-	If ``env`` is a bare base name (no ``_rules_*`` suffix), every sibling variant that contains at least
-	one ``shard_*/latent.npy`` is included (normal ``{env}``, ``{env}_rules_fast``, …), so ``--env aliens``
-	mixes all available rule variants. If ``env`` names a specific variant folder, only that directory is used.
+	If ``env`` is a bare base name (no ``_rules_*`` in the string), every child ``{env}`` and ``{env}_rules_*``
+	with encoded shards is included. If ``env`` names a specific folder (optionally with ``_rules_<tag>``),
+	only that directory is used.
 
-	Rule one-hot for each path is ``rule_onehot_tuple_from_env_name(folder_name)`` (suffix only), so
-	different games with the same ``_rules_*`` suffix share the same conditioning. To load every game
-	under a split, use :func:`encoded_dirs_all_under_split` instead.
+	Base game folder ``{env}`` (no suffix) uses the **NULL** rule vector (all zeros).
 	"""
 	split_dir = Path(encoded_split_dir)
 	name = str(env)
-	explicit = name.endswith("_rules_fast") or name.endswith("_rules_multishot") or name.endswith("_rules_ricochet")
+	explicit = "_rules_" in name
 	if explicit:
 		p = split_dir / name
-		if not p.is_dir() or not any(p.glob("shard_*/latent.npy")):
+		if not _dir_has_encoded_shards(p):
 			raise FileNotFoundError(f"No encoded shards under {p}")
-		return [(p, rule_onehot_tuple_from_env_name(name))]
+		return [(p, rule_multihot_tuple_from_env_name(name))]
 
-	variant_names = [
-		name,
-		f"{name}_rules_fast",
-		f"{name}_rules_multishot",
-		f"{name}_rules_ricochet",
-	]
-	out: list[tuple[Path, tuple[float, float, float, float]]] = []
-	for vn in variant_names:
-		p = split_dir / vn
-		if p.is_dir() and any(p.glob("shard_*/latent.npy")):
-			out.append((p, rule_onehot_tuple_from_env_name(vn)))
+	out: list[tuple[Path, tuple[float, ...]]] = []
+	p0 = split_dir / name
+	if _dir_has_encoded_shards(p0):
+		out.append((p0, rule_multihot_tuple_from_env_name(name)))
+	for p in sorted(split_dir.glob(f"{name}_rules_*")):
+		if _dir_has_encoded_shards(p):
+			out.append((p, rule_multihot_tuple_from_env_name(p.name)))
 	if not out:
 		raise FileNotFoundError(
-			f"No encoded shards for env={name!r} (tried {variant_names[0]!r} and rule variants) under {split_dir}",
+			f"No encoded shards for env={name!r} (tried {name!r} and {name}_rules_*) under {split_dir}",
 		)
 	return out
 
 
-def encoded_dirs_all_under_split(encoded_split_dir: str | Path) -> list[tuple[Path, tuple[float, float, float, float]]]:
+def encoded_dirs_all_under_split(encoded_split_dir: str | Path) -> list[tuple[Path, tuple[float, ...]]]:
 	"""Every immediate subdirectory of ``encoded_split_dir`` that contains encoded shards.
 
-	Rule conditioning is ``rule_onehot_tuple_from_env_name(dir.name)``: the ``_rules_*`` suffix
-	determines the one-hot, so e.g. ``aliens_rules_fast`` and ``chopper_rules_fast`` share the
-	same rule vector even though the game name differs.
+	Rule conditioning is :func:`rule_multihot_tuple_from_env_name`: base folders → NULL (zeros); ``*_rules_<tag>`` → one-hot over ``RULE_TAGS``.
 	"""
 	split_dir = Path(encoded_split_dir)
 	if not split_dir.is_dir():
 		raise FileNotFoundError(f"encoded split dir not found: {split_dir}")
-	out: list[tuple[Path, tuple[float, float, float, float]]] = []
+	out: list[tuple[Path, tuple[float, ...]]] = []
 	for p in sorted(split_dir.iterdir()):
 		if not p.is_dir():
 			continue
-		if not any(
-			sp.is_dir() and (sp / "latent.npy").is_file() and (sp / "action.npy").is_file()
-			for sp in p.glob("shard_*")
-		):
+		if not _dir_has_encoded_shards(p):
 			continue
-		out.append((p, rule_onehot_tuple_from_env_name(p.name)))
+		out.append((p, rule_multihot_tuple_from_env_name(p.name)))
 	if not out:
 		raise FileNotFoundError(f"No encoded env dirs with shard_*/latent.npy+action.npy under {split_dir}")
 	return out
@@ -480,19 +526,20 @@ class EncodedShardRuleMeta:
 	cumulative_windows: int
 	n_actions: int
 	game_name: str
-	rule_onehot: tuple[float, float, float, float]
+	rule_onehot: tuple[float, ...]
 
 
 class MixedEncodedRolloutVideoDataset(Dataset):
-	"""Encoded windows over multiple env dirs, each tagged with a fixed rule one-hot (for dynamics training)."""
+	"""Encoded windows over multiple env dirs; each tagged with a fixed rule multi-hot (see ``RULE_TAGS``)."""
 
 	def __init__(
 		self,
-		dir_rule_pairs: list[tuple[Path, tuple[float, float, float, float]]],
+		dir_rule_pairs: list[tuple[Path, tuple[float, ...]]],
 		seq_len: int,
 		stride: int = 1,
 		num_actions: int | None = None,
 		transform: SampleTransform | None = None,
+		game_base_to_id: dict[str, int] | None = None,
 	) -> None:
 		super().__init__()
 		if not dir_rule_pairs:
@@ -501,6 +548,7 @@ class MixedEncodedRolloutVideoDataset(Dataset):
 		self.stride = max(1, int(stride))
 		self.num_actions = None if num_actions is None else int(num_actions)
 		self.transform = transform
+		self.game_base_to_id = dict(game_base_to_id) if game_base_to_id else None
 
 		self._shards: list[EncodedShardRuleMeta] = []
 		self._cumulative_windows: list[int] = []
@@ -546,6 +594,7 @@ class MixedEncodedRolloutVideoDataset(Dataset):
 		cloned = copy(self)
 		cloned.transform = transform
 		cloned._worker_cache = {}
+		cloned.game_base_to_id = self.game_base_to_id
 		return cloned
 
 	def __len__(self) -> int:
@@ -584,6 +633,9 @@ class MixedEncodedRolloutVideoDataset(Dataset):
 			raise TypeError("transform must return dict for MixedEncodedRolloutVideoDataset")
 		out = dict(out)
 		out["rule_onehot"] = torch.tensor(meta.rule_onehot, dtype=torch.float32)
+		if self.game_base_to_id is not None:
+			base = encoded_folder_base_game(meta.game_name)
+			out["game_id"] = torch.tensor(self.game_base_to_id[base], dtype=torch.long)
 		return out
 
 	def try_contiguous_ar(
