@@ -50,7 +50,7 @@ from world_model.model.error_buffer import ErrorBuffer
 from world_model.model.world_model import WorldModel
 
 CONTEXT_LEN = 4
-CROSS_ATTENTION_DIM = 512
+CROSS_ATTENTION_DIM = 768
 PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
 DEFAULT_CHECKPOINT_DIR_RULES = Path("world_model") / "checkpoints" / "dit_encoded_rules"
@@ -105,10 +105,10 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument(
 		"--batch_size",
 		type=int,
-		default=8,
+		default=4,
 		help="Training batch size; also chunks validation (diffusion MSE, generate_next_frame, VAE decode, AR decode).",
 	)
-	p.add_argument("--num_train_epochs", type=int, default=5)
+	p.add_argument("--num_train_epochs", type=int, default=3)
 	p.add_argument("--max_train_steps", type=int, default=50000_000)
 	p.add_argument("--lr", type=float, default=5e-5)
 	p.add_argument("--lr_scheduler", type=str, default="constant_with_warmup")
@@ -126,6 +126,18 @@ def parse_args() -> argparse.Namespace:
 		default=None,
 		help="Checkpoint root. Default: *_adv folder for this training variant "
 		"(all envs -> dit_encoded_rules_all_env_adv; single env -> dit_encoded_rules_adv).",
+	)
+	p.add_argument(
+		"--init_checkpoint",
+		type=str,
+		default="step_0100000",
+		help="Directory saved by this trainer (e.g. step_0100000 under --checkpoint_dir). "
+		"Absolute path, or a name resolved under --checkpoint_dir if not found from cwd.",
+	)
+	p.add_argument(
+		"--resume_state",
+		action="store_true",
+		help="With --init_checkpoint: load trainer_state.pt optimizer + global_step when present.",
 	)
 	p.add_argument("--save_every", type=int, default=10_000)
 	p.add_argument("--max_grad_norm", type=float, default=1.0)
@@ -184,13 +196,13 @@ def parse_args() -> argparse.Namespace:
 		"--adv_weight",
 		type=float,
 		default=0.01,
-		help="Weight for adversarial game-invariance loss on history state (classifier predicts base game).",
+		help="Weight for adversarial rule-invariance loss on state features.",
 	)
 	p.add_argument(
 		"--adv_lambda",
 		type=float,
 		default=1.0,
-		help="Gradient-reversal scale for adversarial game classifier.",
+		help="Gradient-reversal scale for adversarial rule classifier.",
 	)
 	p.add_argument(
 		"--adv_warmup_steps",
@@ -386,23 +398,8 @@ def main() -> None:
 				f"Unknown rule folder tag(s) under encoded/{split_label}: {unk}. "
 				"Add them to RULE_TAGS in world_model/dataset.py (folder pattern <game>_rules_<tag>)."
 			)
-	game_base_to_id = {
-		b: i
-		for i, b in enumerate(
-			sorted(
-				{
-					encoded_folder_base_game(p.name)
-					for p, _ in (train_pairs + test_pairs)
-				}
-			)
-		)
-	}
-	setattr(args, "num_game_classes", len(game_base_to_id))
-	setattr(args, "game_base_to_id", dict(game_base_to_id))
-	print(f"  adversarial game ids ({len(game_base_to_id)}): {game_base_to_id}")
 	mk_ds = lambda pairs: MixedEncodedRolloutVideoDataset(
 		pairs, seq_len=seq_len, stride=1, num_actions=args.num_actions,
-		game_base_to_id=game_base_to_id,
 	).with_transform(partial(preprocess_latent, history_len=K))
 	ds_train = mk_ds(train_pairs)
 	ds_test = mk_ds(test_pairs)
@@ -436,10 +433,29 @@ def main() -> None:
 		cfg_rule_drop_prob=args.cfg_rule_drop_prob,
 		cfg_scale_action=args.cfg_scale_action,
 		cfg_scale_rule=args.cfg_scale_rule,
-		num_game_classes=int(args.num_game_classes),
 	).to(device)
 	if world_model.latent_channels != C:
 		raise ValueError(f"encoded latent C={C} != model latent_channels={world_model.latent_channels}")
+
+	ckpt_root = Path(args.checkpoint_dir)
+	ckpt_root.mkdir(parents=True, exist_ok=True)
+
+	init_ckpt_path: Path | None = None
+	init_raw = str(args.init_checkpoint).strip()
+	if init_raw:
+		candidate = Path(init_raw).expanduser()
+		if not candidate.is_dir():
+			under_root = ckpt_root / init_raw
+			if under_root.is_dir():
+				candidate = under_root
+		if not candidate.is_dir():
+			raise FileNotFoundError(
+				f"--init_checkpoint is not a directory: {init_raw!r} "
+				f"(tried {Path(init_raw).expanduser()} and {ckpt_root / init_raw})",
+			)
+		init_ckpt_path = candidate
+		world_model.load_diffuser_checkpoint(init_ckpt_path, device)
+		print(f"Loaded dynamics weights from {init_ckpt_path}")
 
 	n_diff = sum(p.numel() for p in world_model.diffuser.parameters())
 	print(f"Diffuser parameters: {n_diff:,}")
@@ -462,12 +478,28 @@ def main() -> None:
 		num_training_steps=total_steps,
 	)
 
+	global_step = 0
+	if init_ckpt_path is not None and args.resume_state:
+		ts_path = init_ckpt_path / "trainer_state.pt"
+		if ts_path.is_file():
+			blob = torch.load(ts_path, map_location="cpu", weights_only=False)
+			opt_sd = blob.get("optimizer")
+			if isinstance(opt_sd, dict):
+				optimizer.load_state_dict(opt_sd)
+			global_step = int(blob.get("step", 0))
+			print(f"Resumed optimizer state + global_step={global_step} from {ts_path}")
+		else:
+			print(f"Warning: --resume_state set but missing {ts_path}; starting global_step=0 with fresh optimizer momentum.")
+
 	env_tag = "all_envs" if args.env is None else str(args.env)
 	run_name = f"{env_tag}_K{K}_encoded_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 	writer = SummaryWriter(log_dir=str(Path(args.log_dir) / run_name))
-	ckpt_root = Path(args.checkpoint_dir)
-	ckpt_root.mkdir(parents=True, exist_ok=True)
 	error_buffer = ErrorBuffer(capacity=args.error_buffer_cap)
+
+	if global_step >= total_steps:
+		print(f"global_step ({global_step}) >= total_steps ({total_steps}); nothing to train.")
+		writer.close()
+		return
 
 	val_ar_horizons = _parse_int_list(args.val_ar_horizons)
 	if any(h < 1 for h in val_ar_horizons):
@@ -575,12 +607,17 @@ def main() -> None:
 		world_model.save_diffuser(d)
 		torch.save({"step": step, "optimizer": optimizer.state_dict(), "args": vars(args)}, d / "trainer_state.pt")
 
-	global_step = 0
 	last_gamma_eff = 0.0
 	last_loss: float | None = None
 	last_diff_loss: float | None = None
 	last_adv_loss: float | None = None
-	pbar = tqdm(total=total_steps, desc="Training", unit="step", dynamic_ncols=True)
+	pbar = tqdm(
+		total=total_steps,
+		initial=global_step,
+		desc="Training",
+		unit="step",
+		dynamic_ncols=True,
+	)
 
 	while global_step < total_steps:
 		for batch in loader:
@@ -780,7 +817,8 @@ def main() -> None:
 			delta_hist = error_buffer.sample_like(z_hist) if error_buffer.ready() else None
 			timesteps = torch.randint(0, world_model.num_train_timesteps, (B,), device=device).long()
 			noise = torch.randn_like(z_tgt, dtype=world_model.diffuser.unet.dtype)
-			game_ids = batch["game_id"].to(device).long()
+			rule_ids = rule_oh.argmax(dim=1)
+			adv_active = rule_oh.abs().sum(dim=1) >= 1e-6
 
 			with autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
 				model_pred, target, h_state = world_model.diffusion_forward(
@@ -790,8 +828,14 @@ def main() -> None:
 					return_state=True,
 				)
 				diff_loss = F.mse_loss(model_pred.float(), target.float())
-				adv_logits = world_model.adversarial_game_logits_from_state(h_state, adv_lambda=adv_lambda_eff)
-				adv_loss = F.cross_entropy(adv_logits.float(), game_ids)
+				adv_logits = world_model.adversarial_rule_logits_from_state(h_state, adv_lambda=adv_lambda_eff)
+				if adv_active.any():
+					adv_loss = F.cross_entropy(
+						adv_logits.float()[adv_active],
+						rule_ids[adv_active],
+					)
+				else:
+					adv_loss = torch.zeros((), device=device, dtype=torch.float32)
 				loss = diff_loss + adv_weight_eff * adv_loss
 			last_loss = loss.item()
 			last_diff_loss = diff_loss.item()

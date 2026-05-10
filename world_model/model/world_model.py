@@ -16,8 +16,8 @@ import torch
 import torch.nn as nn
 from torch.autograd import Function
 
-from world_model.model.net import Diffuser
-from world_model.model.net.vae import DEFAULT_VAE_PT, load_frozen_vae
+from world_model.model.net import Diffuser, VAE
+from world_model.model.net.vae import DEFAULT_VAE_PT
 
 
 class WorldModel(nn.Module):
@@ -26,8 +26,6 @@ class WorldModel(nn.Module):
 		num_actions: int,
 		cross_attention_dim: int,
 		vae_checkpoint: str | Path | None = None,
-		vae_backend: str = "sd",
-		wan_z_dim: int = 16,
 		prediction_type: str = "v_prediction",
 		history_len: int = 2,
 		gradient_checkpointing: bool = False,
@@ -37,22 +35,15 @@ class WorldModel(nn.Module):
 		cfg_rule_drop_prob: float = 0.05,
 		cfg_scale_action: float = 1.5,
 		cfg_scale_rule: float = 1.5,
-		num_game_classes: int = 0,
 	) -> None:
 		super().__init__()
 		self.history_len = history_len
-		self.num_game_classes = int(num_game_classes)
 
 		vc = vae_checkpoint
 		if vc is not None and str(vc).strip() == "":
 			vc = None
-
-		b = str(vae_backend).strip().lower()
-		if b in ("wan", "wan2", "wan2.1"):
-			pt = vc
-		else:
-			pt = Path(DEFAULT_VAE_PT if vc is None else vc)
-		self.vae = load_frozen_vae(b, pt, wan_z_dim=int(wan_z_dim))
+		pt = Path(DEFAULT_VAE_PT if vc is None else vc)
+		self.vae = VAE(checkpoint=pt)
 		self.vae.freeze()
 		self.latent_channels = self.vae.latent_channels
 
@@ -73,21 +64,17 @@ class WorldModel(nn.Module):
 			self.diffuser.unet.enable_gradient_checkpointing()
 
 		self.num_train_timesteps = int(self.diffuser.noise_scheduler.config.num_train_timesteps)
-		# Keep a named alias for compatibility; joint history encoder (state for diffusion + adversary).
-		self.state_encoder = self.diffuser.history_state_encoder
-		if self.num_game_classes > 0:
-			self.game_adversary = nn.Sequential(
-				nn.Linear(cross_attention_dim, 256),
-				nn.SiLU(),
-				nn.Linear(256, self.num_game_classes),
-			)
-		else:
-			self.game_adversary = None
+		# Keep a named alias for compatibility; shared per-frame encoder used by the diffusion path.
+		self.state_encoder = self.diffuser.frame_state_encoder
+		self.rule_adversary = nn.Sequential(
+			nn.Linear(cross_attention_dim, 256),
+			nn.SiLU(),
+			nn.Linear(256, self.diffuser.num_rules),
+		)
 
 	def trainable_parameters(self):
 		yield from self.diffuser.parameters()
-		if self.game_adversary is not None:
-			yield from self.game_adversary.parameters()
+		yield from self.rule_adversary.parameters()
 
 	def enable_gradient_checkpointing(self) -> None:
 		self.diffuser.unet.enable_gradient_checkpointing()
@@ -170,20 +157,20 @@ class WorldModel(nn.Module):
 		"""Encode history latents into a compact state feature [B, D]."""
 		return self.diffuser.state_token_from_history(z_hist)
 
-	def adversarial_game_logits(self, z_hist: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
-		"""Predict base game from state features through gradient reversal (push history encoder game-invariant)."""
-		if self.game_adversary is None:
-			raise RuntimeError("WorldModel has num_game_classes=0; no game adversary.")
+	def adversarial_rule_logits(self, z_hist: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
+		"""Predict rule from state features through gradient reversal.
+
+		The rule adversary learns to classify rule from state; via gradient reversal,
+		the state encoder is pushed to hide rule-specific cues.
+		"""
 		h_state = self._state_features(z_hist)
 		h_rev = _GradReverse.apply(h_state, float(adv_lambda))
-		return self.game_adversary(h_rev)
+		return self.rule_adversary(h_rev)
 
-	def adversarial_game_logits_from_state(self, h_state: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
-		"""Predict game logits from a precomputed state feature [B, D] with GRL."""
-		if self.game_adversary is None:
-			raise RuntimeError("WorldModel has num_game_classes=0; no game adversary.")
+	def adversarial_rule_logits_from_state(self, h_state: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
+		"""Predict rule logits from a precomputed state feature [B, D] with GRL."""
 		h_rev = _GradReverse.apply(h_state, float(adv_lambda))
-		return self.game_adversary(h_rev)
+		return self.rule_adversary(h_rev)
 
 	# ── Inference ─────────────────────────────────────────────────
 
@@ -201,7 +188,7 @@ class WorldModel(nn.Module):
 		"""Generate next latent frame [B, 1, C, h, w].
 
 		``transition_action`` [B] is the env action from the last history frame (a[t-1] for target t).
-		``rule_onehot`` [B, R] optional; ``None`` → NULL rule vector (zeros), same as base-game folders.
+		``rule_onehot`` [B, R] optional; ``None`` → NULL (all-zero), same as dataset base folders.
 
 		Classifier-free guidance is **additive**: unconditional ``pred_00`` + ``cfg_scale_action * (pred_aa - pred_0a)``
 		(action guidance) + ``cfg_scale_rule * (pred_aa - pred_a0)`` (rule guidance), with ``pred_aa`` full cond,
@@ -240,7 +227,6 @@ class WorldModel(nn.Module):
 			x = torch.cat([z_hist, latents.unsqueeze(1)], dim=1)
 			t_batch = t.unsqueeze(0).expand(B).contiguous()
 			null_a = torch.full_like(a_t, self.diffuser.null_action_index)
-			# Additive CFG: ``pred_00`` + action guidance + rule guidance (fast paths at corners).
 			h_state = self._state_features(z_hist)
 			if math.isclose(sc_a, 0.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 0.0, rel_tol=0.0, abs_tol=1e-6):
 				pred = self.diffuser(x, t_batch, null_a, roh_u, state_token=h_state)
@@ -270,16 +256,72 @@ class WorldModel(nn.Module):
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
 		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
 		torch.save(self.diffuser.rule_projection.state_dict(), out_dir / "rule_projection.pt")
-		torch.save(self.diffuser.history_state_encoder.state_dict(), out_dir / "history_state_encoder.pt")
 		torch.save(self.diffuser.frame_state_encoder.state_dict(), out_dir / "frame_state_encoder.pt")
 		torch.save(self.diffuser.state_token_projection.state_dict(), out_dir / "state_token_projection.pt")
 		# Back-compat alias file name for previously added state encoder.
 		torch.save(self.state_encoder.state_dict(), out_dir / "state_encoder.pt")
-		if self.game_adversary is not None:
-			torch.save(self.game_adversary.state_dict(), out_dir / "game_adversary.pt")
+		torch.save(self.rule_adversary.state_dict(), out_dir / "rule_adversary.pt")
 		sched_dir = out_dir / "noise_scheduler"
 		sched_dir.mkdir(parents=True, exist_ok=True)
 		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))
+
+	def load_diffuser_checkpoint(self, ckpt_dir: Path | str, device: torch.device) -> None:
+		"""Load weights written by :meth:`save_diffuser` (same layout as inference).
+
+		If ``noise_scheduler/`` exists under ``ckpt_dir``, replaces the DDIM scheduler config.
+		"""
+		from diffusers import DDIMScheduler
+
+		ckpt_dir = Path(ckpt_dir)
+
+		def _sd(p: Path) -> dict:
+			return torch.load(p, map_location=device, weights_only=True)
+
+		unet_path = ckpt_dir / "unet.pt"
+		if not unet_path.is_file():
+			raise FileNotFoundError(f"Missing UNet weights: {unet_path}")
+		try:
+			self.diffuser.unet.load_state_dict(_sd(unet_path), strict=True)
+		except RuntimeError as e:
+			raise RuntimeError(
+				f"UNet load failed from {unet_path}. "
+				f"Ensure unet.pt matches this architecture (full SD1.4 UNet2D + widened conv_in)."
+			) from e
+		emb_path = ckpt_dir / "action_embedding.pt"
+		if not emb_path.exists():
+			emb_path = ckpt_dir / "future_action_embedding.pt"
+		if emb_path.is_file():
+			self.diffuser.action_embedding.load_state_dict(_sd(emb_path))
+		rule_path = ckpt_dir / "rule_projection.pt"
+		if rule_path.is_file():
+			self.diffuser.rule_projection.load_state_dict(_sd(rule_path))
+		else:
+			with torch.no_grad():
+				self.diffuser.rule_projection.weight.zero_()
+		frame_state_path = ckpt_dir / "frame_state_encoder.pt"
+		if frame_state_path.is_file():
+			self.diffuser.frame_state_encoder.load_state_dict(_sd(frame_state_path))
+		state_proj_path = ckpt_dir / "state_token_projection.pt"
+		if state_proj_path.is_file():
+			self.diffuser.state_token_projection.load_state_dict(_sd(state_proj_path))
+		state_enc_path = ckpt_dir / "state_encoder.pt"
+		if state_enc_path.is_file():
+			self.state_encoder.load_state_dict(_sd(state_enc_path))
+		rule_adv_path = ckpt_dir / "rule_adversary.pt"
+		if rule_adv_path.is_file():
+			self.rule_adversary.load_state_dict(_sd(rule_adv_path))
+		for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
+			legacy = ckpt_dir / legacy_name
+			if legacy.is_file():
+				raise RuntimeError(
+					f"Checkpoint has legacy {legacy_name} (MLP action head). Retrain with the current embedding-only diffuser."
+				)
+		sched_dir = ckpt_dir / "noise_scheduler"
+		if sched_dir.is_dir():
+			self.diffuser.noise_scheduler = DDIMScheduler.from_pretrained(str(sched_dir))
+			pt = self.diffuser.noise_scheduler.config.prediction_type
+			self.diffuser.noise_scheduler.register_to_config(prediction_type=pt)
+		self.num_train_timesteps = int(self.diffuser.noise_scheduler.config.num_train_timesteps)
 
 
 class _GradReverse(Function):
@@ -337,7 +379,7 @@ if __name__ == "__main__":
 	print("loading WorldModel ...")
 	wm = WorldModel(
 		num_actions=18,
-		cross_attention_dim=512,
+		cross_attention_dim=768,
 		vae_checkpoint=DEFAULT_VAE_PT,
 		prediction_type="v_prediction",
 		history_len=K,

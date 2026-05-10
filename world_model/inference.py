@@ -21,10 +21,6 @@ from world_model.dataset import (
 from world_model.model.world_model import WorldModel
 
 
-def _load_sd(path: Path, device: torch.device) -> dict:
-	return torch.load(path, map_location=device, weights_only=True)
-
-
 def _read_trainer_args(ckpt_dir: Path) -> dict[str, Any]:
 	p = ckpt_dir / "trainer_state.pt"
 	if not p.is_file():
@@ -59,101 +55,30 @@ def load_world_model(
 	pretrained_model_name_or_path: str = "CompVis/stable-diffusion-v1-4",
 	cfg_scale_action: float | None = None,
 	cfg_scale_rule: float | None = None,
-	num_game_classes: int | None = None,
-	vae_backend: str | None = None,
-	wan_z_dim: int | None = None,
 ) -> WorldModel:
 	"""Load weights from ``ckpt_dir`` (same layout as :meth:`WorldModel.save_diffuser`).
 
 	If ``trainer_state.pt`` exists, ``vae_checkpoint`` defaults from saved args when omitted.
-	``num_game_classes`` defaults from saved args or from ``game_adversary.pt`` / legacy ``rule_adversary.pt``.
-	``vae_backend`` / ``wan_z_dim`` default from trainer_state when omitted.
 	"""
 	ckpt_dir = Path(ckpt_dir)
 	meta = _read_trainer_args(ckpt_dir)
-	cpu = torch.device("cpu")
-	game_adv_path = ckpt_dir / "game_adversary.pt"
-	rule_adv_path = ckpt_dir / "rule_adversary.pt"
-	ng = int(num_game_classes) if num_game_classes is not None else int(meta.get("num_game_classes") or 0)
-	if ng <= 0:
-		if game_adv_path.is_file():
-			ng = int(_load_sd(game_adv_path, cpu)["2.weight"].shape[0])
-		elif rule_adv_path.is_file():
-			ng = int(_load_sd(rule_adv_path, cpu)["2.weight"].shape[0])
 
 	vae_eff = _coalesce(meta, "vae_checkpoint", vae_checkpoint, None)
-	vae_b = _coalesce(meta, "vae_backend", vae_backend, "sd")
-	wan_z = int(_coalesce(meta, "wan_z_dim", wan_z_dim, 16))
-	vae_b = str(vae_b).strip().lower()
-	if vae_eff is not None and vae_b in ("wan", "wan2", "wan2.1"):
-		from world_model.model.net.vae import DEFAULT_VAE_PT as _SD_VAE_PATH
-
-		pe = Path(str(vae_eff))
-		if pe.resolve() == Path(_SD_VAE_PATH).resolve() or (pe.is_file() and pe.suffix.lower() == ".pth"):
-			vae_eff = None
 	c_sa = _cfg_scale_from_meta(meta, "cfg_scale_action", "cfg_scale", cfg_scale_action, 1.5)
 	c_sr = _cfg_scale_from_meta(meta, "cfg_scale_rule", "cfg_scale", cfg_scale_rule, 1.5)
 	wm = WorldModel(
 		num_actions=num_actions,
-		cross_attention_dim=512,
+		cross_attention_dim=768,
 		vae_checkpoint=vae_eff,
-		vae_backend=vae_b,
-		wan_z_dim=int(wan_z),
 		prediction_type="v_prediction",
 		history_len=history_len,
 		pretrained_model_name_or_path=pretrained_model_name_or_path,
 		cfg_scale_action=c_sa,
 		cfg_scale_rule=c_sr,
-		num_game_classes=max(0, ng),
 	)
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	wm = wm.to(device)
-
-	unet_path = ckpt_dir / "unet.pt"
-	if not unet_path.is_file():
-		raise FileNotFoundError(f"Missing UNet weights: {unet_path}")
-	try:
-		wm.diffuser.unet.load_state_dict(_load_sd(unet_path, device), strict=True)
-	except RuntimeError as e:
-		raise RuntimeError(
-			f"UNet load failed from {unet_path}. "
-			f"Ensure unet.pt matches this architecture (full SD1.4 UNet2D + widened conv_in)."
-		) from e
-	emb_path = ckpt_dir / "action_embedding.pt"
-	if not emb_path.exists():
-		emb_path = ckpt_dir / "future_action_embedding.pt"
-	if emb_path.exists():
-		wm.diffuser.action_embedding.load_state_dict(_load_sd(emb_path, device))
-	rule_path = ckpt_dir / "rule_projection.pt"
-	if rule_path.is_file():
-		wm.diffuser.rule_projection.load_state_dict(_load_sd(rule_path, device))
-	else:
-		with torch.no_grad():
-			wm.diffuser.rule_projection.weight.zero_()
-	frame_state_path = ckpt_dir / "frame_state_encoder.pt"
-	if frame_state_path.is_file():
-		wm.diffuser.frame_state_encoder.load_state_dict(_load_sd(frame_state_path, device))
-	hist_state_path = ckpt_dir / "history_state_encoder.pt"
-	if hist_state_path.is_file():
-		wm.diffuser.history_state_encoder.load_state_dict(_load_sd(hist_state_path, device))
-	state_proj_path = ckpt_dir / "state_token_projection.pt"
-	if state_proj_path.is_file():
-		wm.diffuser.state_token_projection.load_state_dict(_load_sd(state_proj_path, device))
-	state_enc_path = ckpt_dir / "state_encoder.pt"
-	if state_enc_path.is_file():
-		# Legacy alias for state encoder (maps to joint history encoder now).
-		wm.state_encoder.load_state_dict(_load_sd(state_enc_path, device))
-	if wm.game_adversary is not None:
-		if game_adv_path.is_file():
-			wm.game_adversary.load_state_dict(_load_sd(game_adv_path, device))
-		elif rule_adv_path.is_file():
-			wm.game_adversary.load_state_dict(_load_sd(rule_adv_path, device))
-	for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
-		legacy = ckpt_dir / legacy_name
-		if legacy.is_file():
-			raise RuntimeError(
-				f"Checkpoint has legacy {legacy_name} (MLP action head). Retrain with the current embedding-only diffuser."
-			)
+	wm.load_diffuser_checkpoint(ckpt_dir, device)
 	return wm
 
 
@@ -175,9 +100,13 @@ def _rule_vec(name: str) -> torch.Tensor:
 	n = legacy.get(n0, n0)
 	if n == "null" or n == "normal":
 		return v
-	if n in {"multishot+ricochet", "rule3+rule4", "combo34", "5"}:
+	if n in {"multishot+ricochet", "rule3+rule4", "combo34"}:
 		v[0, RULE_TAG_TO_INDEX["multishot"]] = 1.0
 		v[0, RULE_TAG_TO_INDEX["ricochet"]] = 1.0
+		return v
+	if n in {"multishot+shoot_walls", "combo35", "rule3+rule5"}:
+		v[0, RULE_TAG_TO_INDEX["multishot"]] = 1.0
+		v[0, RULE_TAG_TO_INDEX["shoot_walls"]] = 1.0
 		return v
 	if n in RULE_TAG_TO_INDEX:
 		v[0, RULE_TAG_TO_INDEX[n]] = 1.0
@@ -195,7 +124,7 @@ def _rule_vec(name: str) -> torch.Tensor:
 
 def _is_valid_rule_name(n: str) -> bool:
 	s = str(n).lower().strip()
-	if s in {"", "normal", "null", "base", "zeros", "multishot+ricochet"} or s in RULE_TAG_TO_INDEX:
+	if s in {"", "normal", "null", "base", "zeros", "multishot+ricochet", "multishot+shoot_walls"} or s in RULE_TAG_TO_INDEX:
 		return True
 	if s in LEGACY_NULL_RULE_TAGS or s in {"rules_fast", "rule1", "rule2"}:
 		return True
@@ -205,21 +134,78 @@ def _is_valid_rule_name(n: str) -> bool:
 	return False
 
 
-RULE_KEY_TO_LABEL = {
-	"1": "null",
-	"2": RULE_TAGS[0],
-	"3": "multishot",
-	"4": "ricochet",
-	"5": "multishot+ricochet",
-	"k1": "null",
-	"k2": RULE_TAGS[0],
-	"k3": "multishot",
-	"k4": "ricochet",
-	"k5": "multishot+ricochet",
-}
-# Optional extra keys → other RULE_TAGS by order (keyboard)
-for _i, _tag in enumerate(RULE_TAGS, start=6):
-	RULE_KEY_TO_LABEL[str(_i)] = _tag
+def _rule_menu_key_to_label() -> dict[str, str]:
+	"""Interactive menu: 1=null, 2..(1+len(RULE_TAGS))=each tag in order, last key=multishot+ricochet combo."""
+	out: dict[str, str] = {}
+	out["1"] = "null"
+	key_i = 2
+	for tag in RULE_TAGS:
+		out[str(key_i)] = tag
+		key_i += 1
+	out[str(key_i)] = "multishot+ricochet"
+	for digit_key, label in list(out.items()):
+		out["k" + digit_key] = label
+	return out
+
+
+RULE_KEY_TO_LABEL = _rule_menu_key_to_label()
+
+_RULE_MENU_MAX_KEY = 1 + len(RULE_TAGS) + 1  # null + each tag + combo
+
+
+def _rule_panel_vec_labels_ordered() -> list[str]:
+	"""Rule HUD / digit order: null, each ``RULE_TAGS``, then multishot+ricochet."""
+	return ["null"] + list(RULE_TAGS) + ["multishot+ricochet", "multishot+shoot_walls"]
+
+
+def _panel_rule_id(rule_name: str) -> str:
+	"""Canonical label matching :func:`_rule_panel_vec_labels_ordered` entries."""
+	s = str(rule_name).lower().strip()
+	if s in {"", "normal", "null", "base", "zeros"}:
+		return "null"
+	if s in LEGACY_NULL_RULE_TAGS or s == "rules_fast":
+		return "null"
+	legacy = {"rule1": "null", "rule2": "null"}
+	s = legacy.get(s, s)
+	if s == "normal":
+		return "null"
+	if s in {"multishot+ricochet", "rule3+rule4", "combo34"}:
+		return "multishot+ricochet"
+	if s in {"multishot+shoot_walls", "rule3+rule5", "combo35"}:
+		return "multishot+shoot_walls"
+	if s in RULE_TAG_TO_INDEX:
+		return s
+	if "_rules_" in s:
+		tag = s.split("_rules_", 1)[1]
+		if tag in LEGACY_NULL_RULE_TAGS:
+			return "null"
+		if tag in RULE_TAG_TO_INDEX:
+			return tag
+	return "null"
+
+
+def _rule_square_caption(vec_lab: str) -> str:
+	"""Two-line text inside a rule tile (digit hint added separately)."""
+	if vec_lab == "null":
+		return "null"
+	if vec_lab == "multishot+ricochet":
+		return "multishot\n+ ricochet"
+	if vec_lab == "multishot+shoot_walls":
+		return "multishot\n+ shoot_walls"
+	if "_" in vec_lab:
+		a, _, b = vec_lab.partition("_")
+		return f"{a}\n{b}"
+	return vec_lab
+
+
+def _rule_menu_help_lines() -> list[str]:
+	lines = ["  1  null (base game / no rule tag — all-zero conditioning)"]
+	i = 2
+	for tag in RULE_TAGS:
+		lines.append(f"  {i}  {tag}")
+		i += 1
+	lines.append(f"  {i}  multishot+ricochet (multi-hot combo)")
+	return lines
 
 
 def run_autoregressive(
@@ -230,8 +216,6 @@ def run_autoregressive(
 	num_inference_steps: int = 30,
 	bootstrap_start_idx: int = 0,
 	vae_checkpoint: Optional[str] = None,
-	vae_backend: Optional[str] = None,
-	wan_z_dim: Optional[int] = None,
 	rule: str = "null",
 	cfg_scale_action: float | None = None,
 	cfg_scale_rule: float | None = None,
@@ -248,8 +232,6 @@ def run_autoregressive(
 	wm = load_world_model(
 		Path(ckpt_dir), num_actions, K,
 		vae_checkpoint=vae_checkpoint,
-		vae_backend=vae_backend,
-		wan_z_dim=wan_z_dim,
 		cfg_scale_action=cfg_scale_action,
 		cfg_scale_rule=cfg_scale_rule,
 	)
@@ -278,13 +260,16 @@ def run_autoregressive(
 	action_hist: deque[int] = deque([int(a) for a in acts[start : start + K]], maxlen=K)
 	data_pos = start
 
-	fig = plt.figure(figsize=(7.2, 6.0))
-	gs = gridspec.GridSpec(3, 1, height_ratios=[1.0, 0.08, 0.30], hspace=0.01, figure=fig)
-	ax_top = fig.add_subplot(gs[0])
-	step_ax = fig.add_subplot(gs[1])
-	text_ax = fig.add_subplot(gs[2])
-	for ax in (ax_top, step_ax, text_ax):
+	fig = plt.figure(figsize=(7.6, 8.0))
+	gs = gridspec.GridSpec(4, 1, height_ratios=[0.34, 1.0, 0.05, 0.34], hspace=0.015, figure=fig)
+	rule_ax = fig.add_subplot(gs[0])
+	ax_top = fig.add_subplot(gs[1])
+	step_ax = fig.add_subplot(gs[2])
+	text_ax = fig.add_subplot(gs[3])
+	for ax in (rule_ax, ax_top, step_ax, text_ax):
 		ax.axis("off")
+	rule_ax.set_xlim(0, 1)
+	rule_ax.set_ylim(0, 1)
 	step_ax.set_xlim(0, 1)
 	step_ax.set_ylim(0, 1)
 	text_ax.set_xlim(0, 1)
@@ -292,11 +277,60 @@ def run_autoregressive(
 	preview = tx(np.asarray(obs[start])[..., -3:])
 	h, w = int(preview.shape[-2]), int(preview.shape[-1])
 	img_top = ax_top.imshow(np.zeros((h, w, 3), dtype=np.float32), vmin=0, vmax=1, interpolation="nearest")
-	ax_top.set_title(f"Rule: {current_rule}", fontsize=14, pad=8)
 	status = step_ax.text(
 		0.5, 0.5, f"step={data_pos}",
-		ha="center", va="center", fontsize=14, color="#212529",
+		ha="center", va="center", fontsize=13, color="#212529",
 	)
+
+	# ── Rule tiles (top of HUD): same order / digits as CLI menu ─────────────────
+	panel_rules = _rule_panel_vec_labels_ordered()
+	n_rule_tiles = len(panel_rules)
+	ncols_r = 3
+	nrows_r = (n_rule_tiles + ncols_r - 1) // ncols_r
+	rx0, ry0, rx1, ry1 = 0.02, 0.08, 0.98, 0.94
+	padx_r, pady_r = 0.016, 0.03
+	cell_rw = (rx1 - rx0 - padx_r * (ncols_r + 1)) / ncols_r
+	cell_rh = (ry1 - ry0 - pady_r * (nrows_r + 1)) / nrows_r
+	_rule_gray = "#E9ECEF"
+	_rule_gray_edge = "#6C757D"
+	_rule_hi = "#4C6EF5"
+	_rule_hi_edge = "#364FC7"
+	rule_tile_rects: list[tuple[Rectangle, str]] = []
+	rule_tile_bounds: list[tuple[float, float, float, float, str]] = []
+	for i, vec_lab in enumerate(panel_rules):
+		row = i // ncols_r
+		col = i % ncols_r
+		x = rx0 + padx_r + col * (cell_rw + padx_r)
+		y_top = ry1 - pady_r - row * (cell_rh + pady_r)
+		y = y_top - cell_rh
+		rect = Rectangle(
+			(x, y), cell_rw, cell_rh, linewidth=1.8, edgecolor=_rule_gray_edge, facecolor=_rule_gray,
+		)
+		rule_ax.add_patch(rect)
+		rule_tile_rects.append((rect, vec_lab))
+		rule_tile_bounds.append((x, y, cell_rw, cell_rh, vec_lab))
+		rule_ax.text(
+			x + cell_rw / 2.0, y + cell_rh * 0.38, _rule_square_caption(vec_lab),
+			ha="center", va="center", fontsize=8, color="#212529",
+		)
+
+	def _paint_rule_hud(selected_id: str) -> None:
+		for rect, vec_lab in rule_tile_rects:
+			if vec_lab == selected_id:
+				rect.set_facecolor(_rule_hi)
+				rect.set_edgecolor(_rule_hi_edge)
+			else:
+				rect.set_facecolor(_rule_gray)
+				rect.set_edgecolor(_rule_gray_edge)
+
+	def _apply_rule_vec_lab(vec_lab: str) -> None:
+		nonlocal current_rule, rule_oh
+		current_rule = vec_lab
+		rule_oh = _rule_vec(current_rule).to(device)
+		_paint_rule_hud(_panel_rule_id(current_rule))
+
+	_paint_rule_hud(_panel_rule_id(current_rule))
+
 	key_to_action = {
 		"up": 1,
 		"left": 2,
@@ -305,13 +339,13 @@ def run_autoregressive(
 		" ": 5,
 		"space": 5,
 	}
-	key_w, key_h = 0.20, 0.30
-	bottom_row_y = 0.10
-	top_row_y = bottom_row_y + key_h  # zero vertical margin to bottom row
+	key_w, key_h = 0.20, 0.22
+	bottom_row_y = 0.04
+	top_row_y = bottom_row_y + key_h
 	left_col_x = 0.06
-	down_col_x = left_col_x + key_w  # zero horizontal margin
-	right_col_x = down_col_x + key_w  # zero horizontal margin
-	fire_col_x = right_col_x + key_w + 0.08  # add left margin before FIRE
+	down_col_x = left_col_x + key_w
+	right_col_x = down_col_x + key_w
+	fire_col_x = right_col_x + key_w + 0.08
 	key_layout = (
 		("UP", "up", (down_col_x, top_row_y)),
 		("LEFT", "left", (left_col_x, bottom_row_y)),
@@ -327,6 +361,7 @@ def run_autoregressive(
 		text_ax.add_patch(rect)
 		text_ax.text(x + key_w / 2.0, y + key_h / 2.0, label, ha="center", va="center", fontsize=10, color="#212529")
 		key_boxes[key_name] = rect
+
 
 	def _paint_action_hud(action_idx: int | None) -> None:
 		for rect in key_boxes.values():
@@ -344,13 +379,23 @@ def run_autoregressive(
 
 	_paint_action_hud(None)
 
+	def on_click(event):
+		if event.inaxes != rule_ax or event.button != 1:
+			return
+		xd, yd = event.xdata, event.ydata
+		if xd is None or yd is None:
+			return
+		for x, y, rw, rh, vec_lab in rule_tile_bounds:
+			if x <= xd <= x + rw and y <= yd <= y + rh:
+				_apply_rule_vec_lab(vec_lab)
+				fig.canvas.draw_idle()
+				return
+
 	def on_key(event):
-		nonlocal data_pos, current_rule, rule_oh
+		nonlocal data_pos
 		rule_next = RULE_KEY_TO_LABEL.get(event.key or "")
 		if rule_next is not None:
-			current_rule = rule_next
-			rule_oh = _rule_vec(current_rule).to(device)
-			ax_top.set_title(f"Rule: {current_rule}", fontsize=14, pad=8)
+			_apply_rule_vec_lab(rule_next)
 			fig.canvas.draw_idle()
 			return
 
@@ -386,6 +431,7 @@ def run_autoregressive(
 		fig.canvas.draw_idle()
 
 	fig.canvas.mpl_connect("key_press_event", on_key)
+	fig.canvas.mpl_connect("button_press_event", on_click)
 	plt.tight_layout()
 	plt.show()
 
@@ -393,28 +439,21 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "step_0470000"))
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv_cfg_normal" / "step_0240000"))
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
 		default="world_model/checkpoints/vae/vae.pt",
-		help="Path to VAE checkpoint (WAN .pth or SD vae.pt); empty lets trainer_state decide.",
+		help="Path to vae.pt (empty lets trainer_state decide).",
 	)
-	p.add_argument(
-		"--vae_backend",
-		type=str,
-		default=None,
-		help="Override VAE backend: sd | wan (default: trainer_state or sd).",
-	)
-	p.add_argument("--wan_z_dim", type=int, default=None, help="Override WAN latent channels (default from trainer_state or 16).")
-	p.add_argument("--env", type=str, default="jaws")
+	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=4, help="History length K (same as training).")
 	p.add_argument(
 		"--bootstrap_start_idx",
 		type=int,
-		default=100,
+		default=10,
 		help="Initial frame index used for bootstrap context. 0 keeps current behavior; 30 starts from frame 30.",
 	)
 	p.add_argument(
@@ -440,21 +479,18 @@ def main() -> None:
 	rule_name = str(args.rule).strip().lower()
 	if not _is_valid_rule_name(rule_name):
 		rule_name = "null"
-	tags_txt = ", ".join(RULE_TAGS)
-	print(
-		f"Keys 1=null, 2={RULE_TAGS[0]}, 3=multishot, 4=ricochet, 5=combo; "
-		f"6+ map to RULE_TAGS order: {tags_txt}"
-	)
-	choice = input("Rule [1-5]: ").strip()
+	print("Rule preset (must match training RULE_TAGS / folder suffixes). Pick one:")
+	for line in _rule_menu_help_lines():
+		print(line)
+	print(f"(During the matplotlib window, digit keys 1–{_RULE_MENU_MAX_KEY} switch rule the same way.)")
+	choice = input(f"Rule [1-{_RULE_MENU_MAX_KEY}]: ").strip()
 	if choice not in RULE_KEY_TO_LABEL:
-		raise ValueError("please select a valid rule key (see printed list)")
+		raise ValueError(f"Choose an integer 1–{_RULE_MENU_MAX_KEY} (see list above).")
 	rule_name = RULE_KEY_TO_LABEL[choice]
 	run_autoregressive(
 		ckpt_dir=args.ckpt_dir,
 		env=args.env,
 		vae_checkpoint=args.vae_checkpoint.strip() or None,
-		vae_backend=(args.vae_backend.strip().lower() if args.vae_backend else None),
-		wan_z_dim=(int(args.wan_z_dim) if args.wan_z_dim is not None else None),
 		num_actions=args.num_actions,
 		num_inference_steps=args.num_inference_steps,
 		history_len=args.context_len,

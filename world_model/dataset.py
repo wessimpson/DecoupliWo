@@ -539,7 +539,6 @@ class MixedEncodedRolloutVideoDataset(Dataset):
 		stride: int = 1,
 		num_actions: int | None = None,
 		transform: SampleTransform | None = None,
-		game_base_to_id: dict[str, int] | None = None,
 	) -> None:
 		super().__init__()
 		if not dir_rule_pairs:
@@ -548,7 +547,6 @@ class MixedEncodedRolloutVideoDataset(Dataset):
 		self.stride = max(1, int(stride))
 		self.num_actions = None if num_actions is None else int(num_actions)
 		self.transform = transform
-		self.game_base_to_id = dict(game_base_to_id) if game_base_to_id else None
 
 		self._shards: list[EncodedShardRuleMeta] = []
 		self._cumulative_windows: list[int] = []
@@ -594,7 +592,6 @@ class MixedEncodedRolloutVideoDataset(Dataset):
 		cloned = copy(self)
 		cloned.transform = transform
 		cloned._worker_cache = {}
-		cloned.game_base_to_id = self.game_base_to_id
 		return cloned
 
 	def __len__(self) -> int:
@@ -633,9 +630,6 @@ class MixedEncodedRolloutVideoDataset(Dataset):
 			raise TypeError("transform must return dict for MixedEncodedRolloutVideoDataset")
 		out = dict(out)
 		out["rule_onehot"] = torch.tensor(meta.rule_onehot, dtype=torch.float32)
-		if self.game_base_to_id is not None:
-			base = encoded_folder_base_game(meta.game_name)
-			out["game_id"] = torch.tensor(self.game_base_to_id[base], dtype=torch.long)
 		return out
 
 	def try_contiguous_ar(
