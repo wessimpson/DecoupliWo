@@ -1,0 +1,17 @@
+gymnasium[atari]>=1.0,<2.0
+AutoROM[accept-rom-license]>=0.4.0
+numpy>=1.26,<2
+stable-baselines3>=2.3.0
+matplotlib>=3.8.0
+moviepy>=1.0.3
+ocatari>=0.4.7
+tensorboard>=2.13
+einops>=0.7.0
+diffusers>=0.27.0
+transformers>=4.38.0
+accelerate>=0.27.0
+safetensors>=0.4.2
+huggingface_hub>=0.21.0
+pillow>=10.0.0
+tqdm>=4.66.0
+lpips>=0.1.4

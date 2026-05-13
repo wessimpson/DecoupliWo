@@ -1,0 +1,21 @@
+venv/
+venv_rebuild/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+checkpoints/
+tb_logs/
+transitions/
+videos/
+data/transitions/
+world_model/checkpoint/vae/*.pth
+world_model/checkpoint/vae/*.pt
+world_model/checkpoint/dit/*.pt
+.DS_Store
+
+# experiment results
+runs/
+
+# sample repos
+Micro-World/
+Matrix-Game-2/
