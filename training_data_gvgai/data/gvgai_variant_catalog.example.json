@@ -1,0 +1,163 @@
+{
+  "defaults": {
+    "levels": [0, 1, 2, 3, 4]
+  },
+  "games": {
+    "aliens": {
+      "variants": {
+        "default": {
+          "description": "Stock Aliens rules.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl4.txt"
+          ],
+          "rule_flags": {}
+        },
+        "physics_a": {
+          "description": "Aliens training physics variant A.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_train_physics_a.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl4.txt"
+          ],
+          "rule_flags": {"physics_a": 1}
+        },
+        "physics_b": {
+          "description": "Aliens training physics variant B.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_train_physics_b.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl4.txt"
+          ],
+          "rule_flags": {"physics_b": 1}
+        },
+        "physics_c": {
+          "description": "Aliens training physics variant C.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_train_physics_c.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/aliens_v0/aliens_lvl4.txt"
+          ],
+          "rule_flags": {"physics_c": 1}
+        }
+      }
+    },
+    "chopper": {
+      "variants": {
+        "default": {
+          "description": "Stock Chopper rules.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl4.txt"
+          ],
+          "rule_flags": {}
+        },
+        "physics_a": {
+          "description": "Chopper training physics variant A.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_train_physics_a.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl4.txt"
+          ],
+          "rule_flags": {"physics_a": 1}
+        },
+        "physics_b": {
+          "description": "Chopper training physics variant B.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_train_physics_b.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl4.txt"
+          ],
+          "rule_flags": {"physics_b": 1}
+        },
+        "physics_c": {
+          "description": "Chopper training physics variant C.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_train_physics_c.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/chopper_v0/chopper_lvl4.txt"
+          ],
+          "rule_flags": {"physics_c": 1}
+        }
+      }
+    },
+    "waves": {
+      "variants": {
+        "default": {
+          "description": "Stock Waves rules.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/waves_v0/waves.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl4.txt"
+          ],
+          "rule_flags": {}
+        },
+        "physics_a": {
+          "description": "Waves training physics variant A.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/waves_v0/waves_train_physics_a.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl4.txt"
+          ],
+          "rule_flags": {"physics_a": 1}
+        },
+        "physics_b": {
+          "description": "Waves training physics variant B.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/waves_v0/waves_train_physics_b.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl4.txt"
+          ],
+          "rule_flags": {"physics_b": 1}
+        },
+        "physics_c": {
+          "description": "Waves training physics variant C.",
+          "game_file": "../gvgai/gym_gvgai/envs/games/waves_v0/waves_train_physics_c.txt",
+          "level_files": [
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl0.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl1.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl2.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl3.txt",
+            "../gvgai/gym_gvgai/envs/games/waves_v0/waves_lvl4.txt"
+          ],
+          "rule_flags": {"physics_c": 1}
+        }
+      }
+    }
+  }
+}
