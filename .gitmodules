@@ -1,0 +1,4 @@
+[submodule "gvgai"]
+	path = gvgai
+	url = https://github.com/wessimpson/training-data-gvgai.git
+	branch = main
