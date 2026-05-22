@@ -7,28 +7,67 @@ import torch
 import torch.nn as nn
 from diffusers import AutoencoderKL
 
-PRETRAINED_REMOTE_ID = "stabilityai/sd-vae-ft-mse"
 DEFAULT_VAE_PT = Path("world_model") / "checkpoints" / "vae" / "vae.pt"
+
+LATENT_CHANNELS = 4
+VAE_DOWNSAMPLE = 8
+LATENT_H = 11
+LATENT_W = 30
+PIXEL_H = LATENT_H * VAE_DOWNSAMPLE
+PIXEL_W = LATENT_W * VAE_DOWNSAMPLE
+SCALING_FACTOR = 0.18215
+
+
+def vae_latent_hw() -> tuple[int, int]:
+	return LATENT_H, LATENT_W
+
+
+def vae_pixel_hw() -> tuple[int, int]:
+	return PIXEL_H, PIXEL_W
+
+
+def build_autoencoder_kl() -> AutoencoderKL:
+	"""Randomly initialized KL-VAE (SD-style 8× downsample, 4 latent channels)."""
+	return AutoencoderKL(
+		in_channels=3,
+		out_channels=3,
+		down_block_types=(
+			"DownEncoderBlock2D",
+			"DownEncoderBlock2D",
+			"DownEncoderBlock2D",
+			"DownEncoderBlock2D",
+		),
+		up_block_types=(
+			"UpDecoderBlock2D",
+			"UpDecoderBlock2D",
+			"UpDecoderBlock2D",
+			"UpDecoderBlock2D",
+		),
+		block_out_channels=(128, 256, 512, 512),
+		layers_per_block=2,
+		latent_channels=LATENT_CHANNELS,
+		sample_size=max(PIXEL_H, PIXEL_W),
+	)
 
 
 class VAE(nn.Module):
-	"""Frozen SD VAE: hub architecture + weights from a single ``vae.pt`` file."""
+	"""Frozen KL-VAE: scratch architecture + weights from a single ``vae.pt`` file."""
 
 	def __init__(self, checkpoint: Union[str, Path]) -> None:
 		super().__init__()
 		pt = Path(checkpoint)
 		assert pt.is_file(), f"VAE checkpoint must be an existing .pt file: {pt}"
-		self.autoencoder = AutoencoderKL.from_pretrained(PRETRAINED_REMOTE_ID)
+		self.autoencoder = build_autoencoder_kl()
 		self.autoencoder.load_state_dict(torch.load(pt, map_location="cpu", weights_only=True))
-		print(f"[VAE] {PRETRAINED_REMOTE_ID} + {pt}")
+		print(f"[VAE] scratch AutoencoderKL latent={LATENT_CHANNELS}x{LATENT_H}x{LATENT_W} + {pt}")
 
 	@property
 	def latent_channels(self) -> int:
-		return int(self.autoencoder.config.latent_channels)
+		return LATENT_CHANNELS
 
 	@property
 	def scaling_factor(self) -> float:
-		return float(self.autoencoder.config.scaling_factor)
+		return SCALING_FACTOR
 
 	def freeze(self) -> None:
 		self.autoencoder.eval()
@@ -38,7 +77,7 @@ class VAE(nn.Module):
 		return next(self.autoencoder.parameters()).dtype
 
 	def encode_pixels(self, pixels: torch.Tensor) -> torch.Tensor:
-		"""[N,3,H,W] in [-1,1] → scaled latents [N,C,h,w]."""
+		"""[N,3,H,W] in [-1,1] → scaled latents [N,C,h,w]. Expects H={PIXEL_H}, W={PIXEL_W}."""
 		x = pixels.to(dtype=self._dtype())
 		with torch.no_grad():
 			return self.autoencoder.encode(x).latent_dist.mode() * self.scaling_factor
@@ -71,9 +110,10 @@ def _to_uint8(t: torch.Tensor):
 
 
 def main() -> None:
-	import numpy as np
-	from torchvision import transforms
 	import matplotlib.pyplot as plt
+	import numpy as np
+
+	from world_model.dataset import obs_array_to_pixels
 
 	# ── locate first shard ──
 	test_root = Path("data") / "transitions" / "test"
@@ -90,32 +130,15 @@ def main() -> None:
 	assert shard is not None, f"no shard with obs.npy under {test_root}"
 	print(f"shard: {shard}")
 
-	# ── load frames ──
 	obs = np.load(shard / "obs.npy", mmap_mode="r")
-	h, w = (max(8, (v // 8) * 8) for v in (208, 160))
-	tx = transforms.Compose([
-		transforms.ToTensor(),
-		transforms.Lambda(lambda x: x * 2.0 - 1.0),
-		transforms.Resize((h, w), antialias=True),
-	])
 	T = min(8, obs.shape[0])
-	frames = []
-	for i in range(T):
-		f = np.asarray(obs[i])
-		if f.shape[-1] > 3:
-			f = f[..., -3:]
-		if f.dtype != np.uint8:
-			f = np.clip(f, 0, 255).astype(np.uint8)
-		frames.append(tx(f))
-	frames = torch.stack(frames)  # [T,3,H,W]
+	frames = obs_array_to_pixels(obs[:T], resize_to=vae_pixel_hw())
 
-	# ── model ──
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	vae = VAE(checkpoint=DEFAULT_VAE_PT)
 	vae.freeze()
 	vae.to(device)
 
-	# ── single-frame roundtrip ──
 	inp = frames[:1].to(device)
 	z = vae.encode_pixels(inp)
 	recon = vae.decode_latents(z)
@@ -131,8 +154,7 @@ def main() -> None:
 	fig.suptitle("Single-frame reconstruction")
 	plt.tight_layout()
 
-	# ── video roundtrip ──
-	vid = frames.unsqueeze(0).to(device)  # [1,T,3,H,W]
+	vid = frames.unsqueeze(0).to(device)
 	z_vid = vae.encode_video(vid)
 	recon_vid = vae.decode_video(z_vid)
 	print(f"[video] latent={tuple(z_vid.shape)}")

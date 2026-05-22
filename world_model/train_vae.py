@@ -1,10 +1,10 @@
 """
-Fine-tune stabilityai/sd-vae-ft-mse.
+Train a scratch KL-VAE (no pretrained weights).
 Train: data/transitions/train/**/shard_*/obs.npy  |  Val: data/transitions/test/**/shard_*/obs.npy
 Loss: MSE + 0.1*LPIPS + kl_weight*KL.  TensorBoard: runs/vae/<timestamp>/
 
-RGB frames are cropped to multiples of 8, then optionally bilinear-downscaled by ``--down_scale``
-(integer factor; 1 = full resolution after crop).
+Frames are bilinear-resized to the fixed VAE input size (``world_model.model.net.vae.vae_pixel_hw``),
+which yields latents ``[4, 11, 30]``.
 
 CUDA: ``--mixed_precision`` (``no`` / ``fp16`` / ``bf16``, default ``bf16``) wraps VAE (+ LPIPS) in
 autocast; ``fp16`` also enables ``GradScaler``. On CPU, mixed precision is disabled.
@@ -27,6 +27,9 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from world_model.dataset import obs_array_to_pixels
+from world_model.model.net.vae import build_autoencoder_kl, vae_latent_hw, vae_pixel_hw
+
 LPIPS_W = 0.1
 
 
@@ -34,9 +37,14 @@ def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser()
 	p.add_argument("--train_dir", type=str, default=str(Path("data") / "transitions" / "train"))
 	p.add_argument("--val_dir", type=str, default=str(Path("data") / "transitions" / "test"))
-	p.add_argument("--pretrained_model_name_or_path", type=str, default="stabilityai/sd-vae-ft-mse")
+	p.add_argument(
+		"--init_checkpoint",
+		type=str,
+		default="",
+		help="Optional vae.pt to resume; empty = random init.",
+	)
 	p.add_argument("--output_dir", type=str, default=str(Path("world_model") / "checkpoints" / "vae"))
-	p.add_argument("--batch_size", type=int, default=4)
+	p.add_argument("--batch_size", type=int, default=16)
 	p.add_argument("--epochs", type=int, default=1, help="stop after this many epochs (0 = unlimited, use --max_train_steps)")
 	p.add_argument("--max_train_steps", type=int, default=5_000_000, help="stop after this many optimizer steps (0 = unlimited, use --epochs)")
 	p.add_argument("--lr", type=float, default=1e-4)
@@ -52,12 +60,6 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--val_batch_size", type=int, default=8, help="max frames per val eval")
 	p.add_argument("--kl_weight", type=float, default=1e-6, help="KL term multiplier (small)")
 	p.add_argument("--warmup_steps", type=int, default=500, help="linear LR warmup to --lr over this many optimizer steps")
-	p.add_argument(
-		"--down_scale",
-		type=int,
-		default=1,
-		help="After div-8 crop, divide H/W by this integer (bilinear). 1 = no extra resize.",
-	)
 	p.add_argument(
 		"--mixed_precision",
 		type=str,
@@ -78,28 +80,12 @@ def discover_shards(root: Path) -> list[Path]:
 	return out
 
 
-def crop_hw_div8(h: int, w: int) -> tuple[int, int]:
-	H, W = (h // 8) * 8, (w // 8) * 8
-	assert H > 0 and W > 0, (h, w)
-	return H, W
-
-
 def amp_autocast(device: torch.device, mixed_precision: str):
 	"""Autocast context for VAE training/val on CUDA; no-op on CPU or when ``mixed_precision`` is ``no``."""
 	if mixed_precision == "no" or device.type != "cuda":
 		return nullcontext()
 	dtype = torch.float16 if mixed_precision == "fp16" else torch.bfloat16
 	return torch.autocast(device_type="cuda", dtype=dtype)
-
-
-def downscaled_hw_div8(h: int, w: int, down_scale: int) -> tuple[int, int]:
-	"""Target (H, W) after shrinking by ``down_scale``, still multiples of 8 (for VAE)."""
-	assert down_scale >= 1
-	if down_scale <= 1:
-		return h, w
-	H = max(8, (h // down_scale // 8) * 8)
-	W = max(8, (w // down_scale // 8) * 8)
-	return H, W
 
 
 def psnr_batch(x: torch.Tensor, y: torch.Tensor) -> float:
@@ -156,9 +142,9 @@ def eval_val(
 
 
 class AllFramesDataset(Dataset):
-	def __init__(self, root: Path, down_scale: int = 1):
+	def __init__(self, root: Path):
 		super().__init__()
-		self.down_scale = max(1, int(down_scale))
+		self.pixel_hw = vae_pixel_hw()
 		self.paths: list[Path] = []
 		self.ends: list[int] = []
 		o = 0
@@ -181,16 +167,8 @@ class AllFramesDataset(Dataset):
 
 	def __getitem__(self, i: int) -> torch.Tensor:
 		p, r = self._loc(i)
-		f = np.asarray(np.load(p / "obs.npy", mmap_mode="r")[r])[..., -3:]
-		H, W = crop_hw_div8(*f.shape[:2])
-		f = f[:H, :W].astype(np.float32) / 127.5 - 1.0
-		x = torch.from_numpy(f).permute(2, 0, 1).contiguous()
-		if self.down_scale > 1:
-			Ht, Wt = downscaled_hw_div8(H, W, self.down_scale)
-			x = F.interpolate(
-				x.unsqueeze(0), size=(Ht, Wt), mode="bilinear", align_corners=False
-			).squeeze(0)
-		return x
+		f = np.asarray(np.load(p / "obs.npy", mmap_mode="r")[r])
+		return obs_array_to_pixels(f[np.newaxis], resize_to=self.pixel_hw)[0]
 
 
 def main() -> None:
@@ -203,8 +181,8 @@ def main() -> None:
 		print("Warning: --mixed_precision requires CUDA; using no mixed precision on CPU.")
 		mixed_precision = "no"
 
-	train_ds = AllFramesDataset(Path(args.train_dir), down_scale=args.down_scale)
-	val_ds = AllFramesDataset(Path(args.val_dir), down_scale=args.down_scale)
+	train_ds = AllFramesDataset(Path(args.train_dir))
+	val_ds = AllFramesDataset(Path(args.val_dir))
 	loader = DataLoader(
 		train_ds,
 		batch_size=args.batch_size,
@@ -222,7 +200,11 @@ def main() -> None:
 	log_dir.parent.mkdir(parents=True, exist_ok=True)
 	writer = SummaryWriter(log_dir=str(log_dir))
 
-	vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path).to(device)
+	vae = build_autoencoder_kl().to(device)
+	init_ckpt = str(args.init_checkpoint).strip()
+	if init_ckpt:
+		vae.load_state_dict(torch.load(init_ckpt, map_location=device, weights_only=True))
+		print(f"Loaded init checkpoint: {init_ckpt}")
 	vae.train()
 	lpips_fn = lpips.LPIPS(net="alex").to(device)
 	lpips_fn.eval()
@@ -234,8 +216,10 @@ def main() -> None:
 	)
 	use_fp16_scaler = mixed_precision == "fp16" and device.type == "cuda"
 	scaler = torch.amp.GradScaler("cuda", enabled=use_fp16_scaler)
+	lh, lw = vae_latent_hw()
+	ph, pw = vae_pixel_hw()
 	print(
-		f"train={len(train_ds):,}  val={len(val_ds):,}  down_scale={args.down_scale}  "
+		f"train={len(train_ds):,}  val={len(val_ds):,}  pixel={ph}x{pw}  latent={lh}x{lw}  "
 		f"mixed_precision={mixed_precision}  device={device}\nTensorBoard: {log_dir.resolve()}"
 	)
 

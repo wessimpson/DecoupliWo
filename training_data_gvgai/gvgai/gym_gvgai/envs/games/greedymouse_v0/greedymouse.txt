@@ -1,0 +1,50 @@
+BasicGame square_size=30
+    SpriteSet
+        floor > Immovable hidden=True img=oryx/backLBlue
+        bite > OrientedFlicker limit=1
+        damage > Immovable img=oryx/spike2
+        food > Immovable
+            cheese > img=newset/cheese
+            butter > img=newset/butter
+            cake > img=newset/cake
+        trap > Immovable
+            cheeseTrap > img=newset/cheese
+            butterTrap > img=newset/butter
+            cakeTrap > img=newset/cake
+        moving >
+            avatar > ShootAvatar stype=bite img=oryx/rat1
+            enemy >
+                monsterQuick > RandomNPC color=BLACK cooldown=2 cons=6 img=newset/cat
+                monsterNormal > RandomNPC cooldown=4 cons=8 img=newset/cat
+                monsterSlow > RandomNPC color=YELLOW cooldown=8 cons=12 img=newset/cat
+        wall > Immovable img=oryx/wall3 autotiling=True
+    LevelMapping
+        c > cheese floor
+        C > cheeseTrap floor
+        b > butter floor
+        B > butterTrap floor
+        k > cake floor
+        K > cakeTrap floor
+        . > floor
+        w > wall floor
+        1 > monsterQuick floor
+        2 > monsterNormal floor
+        3 > monsterSlow floor
+        A > avatar floor
+    TerminationSet
+        SpriteCounter  stype=avatar  limit=0 win=False
+        MultiSpriteCounter  stype1=food stype2=trap limit=0 win=True
+        Timeout limit=1200 win=False
+    InteractionSet
+        moving wall EOS > stepBack
+        avatar enemy > killSprite scoreChange=-5
+        avatar trap > killSprite scoreChange=-5
+        avatar damage > killSprite scoreChange=-5
+        food avatar > killSprite scoreChange=2
+        trap avatar > transformTo stype=damage
+
+        enemy enemy > stepBack
+        enemy trap > stepBack
+        enemy food > stepBack
+        wall bite > killSprite
+        trap bite > transformTo stype=damage scoreChange=1

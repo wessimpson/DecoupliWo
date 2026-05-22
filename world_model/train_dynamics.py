@@ -57,6 +57,9 @@ DEFAULT_CHECKPOINT_DIR_RULES = Path("world_model") / "checkpoints" / "dit_encode
 DEFAULT_CHECKPOINT_DIR_ALL_ENV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env"
 DEFAULT_CHECKPOINT_DIR_RULES_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_adv"
 DEFAULT_CHECKPOINT_DIR_ALL_ENV_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv"
+DEFAULT_PRETRAINED_DYNAMICS = str(
+	Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "20260511_011018" / "step_0330000"
+)
 COUNTERFACTUAL_STEPS = 10
 COUNTERFACTUAL_SHOOT_ACTION = 5
 
@@ -98,7 +101,7 @@ def parse_args() -> argparse.Namespace:
 		"--vae_checkpoint",
 		type=str,
 		default="",
-		help="Path to frozen SD VAE weights (vae.pt). Empty uses ``world_model.model.net.vae.DEFAULT_VAE_PT``.",
+		help="Path to frozen VAE weights (vae.pt). Empty uses ``world_model.model.net.vae.DEFAULT_VAE_PT``.",
 	)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN)
@@ -125,19 +128,29 @@ def parse_args() -> argparse.Namespace:
 		type=str,
 		default=None,
 		help="Checkpoint root. Default: *_adv folder for this training variant "
-		"(all envs -> dit_encoded_rules_all_env_adv; single env -> dit_encoded_rules_adv).",
+		"(all envs -> dit_encoded_rules_all_env_adv; single env -> dit_encoded_rules_adv). "
+		"Each run writes under <checkpoint_dir>/YYYYMMDD_HHMMSS/step_*.",
+	)
+	p.add_argument(
+		"--pretrained_dynamics",
+		type=str,
+		default="",
+		help="Initial dynamics weights: absolute checkpoint dir, repo-relative path, or a step_* name under "
+		"the --checkpoint_dir base (not inside the per-run dated subfolder). Used when --init_checkpoint is empty. "
+		"Default: dit_encoded_rules_all_env_adv_cfg_normal/step_0250000. Set empty to skip unless --init_checkpoint is set.",
 	)
 	p.add_argument(
 		"--init_checkpoint",
 		type=str,
-		default="step_0100000",
-		help="Directory saved by this trainer (e.g. step_0100000 under --checkpoint_dir). "
-		"Absolute path, or a name resolved under --checkpoint_dir if not found from cwd.",
+		default="",
+		help="If non-empty, overrides --pretrained_dynamics: same resolution rules (cwd, then --checkpoint_dir base). "
+		"Legacy alias for an explicit starting checkpoint.",
 	)
 	p.add_argument(
 		"--resume_state",
 		action="store_true",
-		help="With --init_checkpoint: load trainer_state.pt optimizer + global_step when present.",
+		help="With the loaded dynamics dir (--init_checkpoint or --pretrained_dynamics): load trainer_state.pt "
+		"optimizer + global_step when present.",
 	)
 	p.add_argument("--save_every", type=int, default=10_000)
 	p.add_argument("--max_grad_norm", type=float, default=1.0)
@@ -191,24 +204,6 @@ def parse_args() -> argparse.Namespace:
 		type=float,
 		default=1.5,
 		help="Inference / val generate: CFG scale for rule (nested with action).",
-	)
-	p.add_argument(
-		"--adv_weight",
-		type=float,
-		default=0.01,
-		help="Weight for adversarial rule-invariance loss on state features.",
-	)
-	p.add_argument(
-		"--adv_lambda",
-		type=float,
-		default=1.0,
-		help="Gradient-reversal scale for adversarial rule classifier.",
-	)
-	p.add_argument(
-		"--adv_warmup_steps",
-		type=int,
-		default=2000,
-		help="Linear warmup steps for adversarial term (0 = no warmup).",
 	)
 	return p.parse_args()
 
@@ -437,25 +432,33 @@ def main() -> None:
 	if world_model.latent_channels != C:
 		raise ValueError(f"encoded latent C={C} != model latent_channels={world_model.latent_channels}")
 
-	ckpt_root = Path(args.checkpoint_dir)
-	ckpt_root.mkdir(parents=True, exist_ok=True)
+	checkpoint_base = Path(args.checkpoint_dir)
+	checkpoint_base.mkdir(parents=True, exist_ok=True)
 
 	init_ckpt_path: Path | None = None
 	init_raw = str(args.init_checkpoint).strip()
-	if init_raw:
-		candidate = Path(init_raw).expanduser()
+	pre_raw = str(args.pretrained_dynamics).strip()
+	eff_raw = init_raw if init_raw else pre_raw
+	if eff_raw:
+		candidate = Path(eff_raw).expanduser()
 		if not candidate.is_dir():
-			under_root = ckpt_root / init_raw
-			if under_root.is_dir():
-				candidate = under_root
+			under_base = checkpoint_base / eff_raw
+			if under_base.is_dir():
+				candidate = under_base
 		if not candidate.is_dir():
+			src = "--init_checkpoint" if init_raw else "--pretrained_dynamics"
 			raise FileNotFoundError(
-				f"--init_checkpoint is not a directory: {init_raw!r} "
-				f"(tried {Path(init_raw).expanduser()} and {ckpt_root / init_raw})",
+				f"{src} is not a directory: {eff_raw!r} "
+				f"(tried {Path(eff_raw).expanduser()} and {checkpoint_base / eff_raw})",
 			)
 		init_ckpt_path = candidate
 		world_model.load_diffuser_checkpoint(init_ckpt_path, device)
 		print(f"Loaded dynamics weights from {init_ckpt_path}")
+
+	run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+	ckpt_root = checkpoint_base / run_ts
+	ckpt_root.mkdir(parents=True, exist_ok=True)
+	print(f"Saving checkpoints under {ckpt_root}")
 
 	n_diff = sum(p.numel() for p in world_model.diffuser.parameters())
 	print(f"Diffuser parameters: {n_diff:,}")
@@ -492,7 +495,7 @@ def main() -> None:
 			print(f"Warning: --resume_state set but missing {ts_path}; starting global_step=0 with fresh optimizer momentum.")
 
 	env_tag = "all_envs" if args.env is None else str(args.env)
-	run_name = f"{env_tag}_K{K}_encoded_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+	run_name = f"{env_tag}_K{K}_encoded_{run_ts}"
 	writer = SummaryWriter(log_dir=str(Path(args.log_dir) / run_name))
 	error_buffer = ErrorBuffer(capacity=args.error_buffer_cap)
 
@@ -610,7 +613,6 @@ def main() -> None:
 	last_gamma_eff = 0.0
 	last_loss: float | None = None
 	last_diff_loss: float | None = None
-	last_adv_loss: float | None = None
 	pbar = tqdm(
 		total=total_steps,
 		initial=global_step,
@@ -809,37 +811,19 @@ def main() -> None:
 			Wg = args.gamma_warmup_steps
 			gamma_eff = float(args.gamma) if Wg <= 0 else float(args.gamma) * min(1.0, global_step / float(Wg))
 			last_gamma_eff = gamma_eff
-			Wa = args.adv_warmup_steps
-			adv_scale = 1.0 if Wa <= 0 else min(1.0, global_step / float(Wa))
-			adv_weight_eff = float(args.adv_weight) * adv_scale
-			adv_lambda_eff = float(args.adv_lambda) * adv_scale
-
 			delta_hist = error_buffer.sample_like(z_hist) if error_buffer.ready() else None
 			timesteps = torch.randint(0, world_model.num_train_timesteps, (B,), device=device).long()
 			noise = torch.randn_like(z_tgt, dtype=world_model.diffuser.unet.dtype)
-			rule_ids = rule_oh.argmax(dim=1)
-			adv_active = rule_oh.abs().sum(dim=1) >= 1e-6
 
 			with autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-				model_pred, target, h_state = world_model.diffusion_forward(
+				model_pred, target = world_model.diffusion_forward(
 					z_hist, z_tgt, hist_actions, timesteps, noise,
 					delta_hist=delta_hist, gamma=gamma_eff,
 					rule_onehot=rule_oh,
-					return_state=True,
 				)
-				diff_loss = F.mse_loss(model_pred.float(), target.float())
-				adv_logits = world_model.adversarial_rule_logits_from_state(h_state, adv_lambda=adv_lambda_eff)
-				if adv_active.any():
-					adv_loss = F.cross_entropy(
-						adv_logits.float()[adv_active],
-						rule_ids[adv_active],
-					)
-				else:
-					adv_loss = torch.zeros((), device=device, dtype=torch.float32)
-				loss = diff_loss + adv_weight_eff * adv_loss
+				loss = F.mse_loss(model_pred.float(), target.float())
 			last_loss = loss.item()
-			last_diff_loss = diff_loss.item()
-			last_adv_loss = adv_loss.item()
+			last_diff_loss = loss.item()
 
 			if scaler.is_enabled():
 				scaler.scale(loss).backward()
@@ -876,17 +860,13 @@ def main() -> None:
 			pbar.set_postfix(
 				loss=f"{loss.item():.4f}",
 				diff=f"{(last_diff_loss if last_diff_loss is not None else float('nan')):.4f}",
-				adv=f"{(last_adv_loss if last_adv_loss is not None else float('nan')):.4f}",
 				gamma=f"{last_gamma_eff:.4f}",
 				buf=len(error_buffer),
 			)
 
 			if global_step > 0 and global_step % 20 == 0:
 				writer.add_scalar("train/loss", loss.item(), global_step)
-				writer.add_scalar("train/diff_loss", diff_loss.item(), global_step)
-				writer.add_scalar("train/adv_loss", adv_loss.item(), global_step)
-				writer.add_scalar("train/adv_weight_eff", adv_weight_eff, global_step)
-				writer.add_scalar("train/adv_lambda_eff", adv_lambda_eff, global_step)
+				writer.add_scalar("train/diff_loss", loss.item(), global_step)
 				writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
 
 			if global_step > 0 and args.save_every > 0 and global_step % args.save_every == 0:

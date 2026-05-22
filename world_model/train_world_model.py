@@ -1,7 +1,7 @@
 """
 Train next-frame temporal world model.
 
-Architecture: frozen SD VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
+Architecture: frozen scratch KL-VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
 Loss:         epsilon MSE on the next latent frame only.
 History:      corrupted with Matrix-3.0-style error-buffer residuals.
 
@@ -27,6 +27,7 @@ from tqdm.auto import tqdm
 
 from world_model.dataset import RolloutVideoDataset, preprocess
 from world_model.model.error_buffer import ErrorBuffer
+from world_model.model.net.vae import vae_pixel_hw
 from world_model.model.world_model import WorldModel
 
 CONTEXT_LEN = 2
@@ -62,10 +63,18 @@ def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser(description="Train next-frame temporal world model.")
 	p.add_argument("--env", type=str, default="aliens")
 	p.add_argument("--transitions_root", type=str, default=str(Path("data") / "transitions"))
-	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"), help="Path to vae.pt (hub architecture + this state dict)")
+	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"), help="Path to vae.pt (scratch KL-VAE state dict)")
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN, help="History frames K (fixed window).")
-	p.add_argument("--resize", type=int, nargs=2, metavar=("H", "W"), default=None, help="Resize frames to H×W (multiples of 8).")
+	ph, pw = vae_pixel_hw()
+	p.add_argument(
+		"--resize",
+		type=int,
+		nargs=2,
+		metavar=("H", "W"),
+		default=[ph, pw],
+		help=f"Resize frames to H×W (default {ph}×{pw} for 11×30 latents).",
+	)
 	p.add_argument("--batch_size", type=int, default=4)
 	p.add_argument("--num_train_epochs", type=int, default=2)
 	p.add_argument("--max_train_steps", type=int, default=500_000)
@@ -111,7 +120,7 @@ def main() -> None:
 
 	# ── Data ──────────────────────────────────────────────────────
 	trans_root = Path(args.transitions_root)
-	resize_to = tuple(args.resize) if args.resize is not None else None
+	resize_to = tuple(args.resize)
 	mk_ds = lambda d: RolloutVideoDataset(d, seq_len=seq_len, stride=1, num_actions=args.num_actions).with_transform(
 		partial(preprocess, history_len=K, resize_to=resize_to),
 	)

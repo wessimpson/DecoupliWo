@@ -1,4 +1,7 @@
-"""Interactive inference with user-key actions and generated frames only."""
+"""Interactive inference with user-key actions and generated frames only.
+
+Uses the dynamics model with stacked VAE latents and action+rule cross-attn only (no state encoder).
+"""
 
 from __future__ import annotations
 
@@ -11,13 +14,13 @@ import torch
 from matplotlib.patches import Rectangle
 
 from world_model.dataset import (
-	IMG_TRANSFORMS,
 	LEGACY_NULL_RULE_TAGS,
 	NUM_RULE_TYPES,
 	RULE_TAG_TO_INDEX,
 	RULE_TAGS,
-	crop_hw_div8,
+	obs_array_to_pixels,
 )
+from world_model.model.net.vae import vae_pixel_hw
 from world_model.model.world_model import WorldModel
 
 
@@ -108,6 +111,10 @@ def _rule_vec(name: str) -> torch.Tensor:
 		v[0, RULE_TAG_TO_INDEX["multishot"]] = 1.0
 		v[0, RULE_TAG_TO_INDEX["shoot_walls"]] = 1.0
 		return v
+	if n.replace(" ", "") in {"multishot+enemy_explode", "enemy_explode+multishot", "combo02", "rule1+rule3"}:
+		v[0, RULE_TAG_TO_INDEX["enemy_explode"]] = 1.0
+		v[0, RULE_TAG_TO_INDEX["multishot"]] = 1.0
+		return v
 	if n in RULE_TAG_TO_INDEX:
 		v[0, RULE_TAG_TO_INDEX[n]] = 1.0
 		return v
@@ -119,12 +126,32 @@ def _rule_vec(name: str) -> torch.Tensor:
 			v[0, RULE_TAG_TO_INDEX[tag]] = 1.0
 			return v
 	tags_known = ", ".join(RULE_TAGS)
-	raise ValueError(f"Unknown rule preset {name!r}. Try null/normal, multishot+ricochet, or a RULE_TAGS entry: {tags_known}")
+	raise ValueError(
+		f"Unknown rule preset {name!r}. Try null/normal, multishot+ricochet, multishot+enemy_explode, "
+		f"or a RULE_TAGS entry: {tags_known}",
+	)
 
 
 def _is_valid_rule_name(n: str) -> bool:
 	s = str(n).lower().strip()
-	if s in {"", "normal", "null", "base", "zeros", "multishot+ricochet", "multishot+shoot_walls"} or s in RULE_TAG_TO_INDEX:
+	combos = {
+		"multishot+ricochet",
+		"multishot+shoot_walls",
+		"multishot+enemy_explode",
+		"enemy_explode+multishot",
+		"rule3+rule4",
+		"combo34",
+		"rule3+rule5",
+		"combo35",
+		"combo02",
+		"rule1+rule3",
+	}
+	if (
+		s in {"", "normal", "null", "base", "zeros"}
+		or s.replace(" ", "") in combos
+		or s in combos
+		or s in RULE_TAG_TO_INDEX
+	):
 		return True
 	if s in LEGACY_NULL_RULE_TAGS or s in {"rules_fast", "rule1", "rule2"}:
 		return True
@@ -135,14 +162,16 @@ def _is_valid_rule_name(n: str) -> bool:
 
 
 def _rule_menu_key_to_label() -> dict[str, str]:
-	"""Interactive menu: 1=null, 2..(1+len(RULE_TAGS))=each tag in order, last key=multishot+ricochet combo."""
+	"""Interactive menu: 1=null, 2.. each RULE_TAGS, then combo presets."""
 	out: dict[str, str] = {}
 	out["1"] = "null"
 	key_i = 2
 	for tag in RULE_TAGS:
 		out[str(key_i)] = tag
 		key_i += 1
-	out[str(key_i)] = "multishot+ricochet"
+	for combo in ("multishot+ricochet", "multishot+shoot_walls", "multishot+enemy_explode"):
+		out[str(key_i)] = combo
+		key_i += 1
 	for digit_key, label in list(out.items()):
 		out["k" + digit_key] = label
 	return out
@@ -150,12 +179,12 @@ def _rule_menu_key_to_label() -> dict[str, str]:
 
 RULE_KEY_TO_LABEL = _rule_menu_key_to_label()
 
-_RULE_MENU_MAX_KEY = 1 + len(RULE_TAGS) + 1  # null + each tag + combo
+_RULE_MENU_MAX_KEY = 1 + len(RULE_TAGS) + 3  # null + each tag + three combos
 
 
 def _rule_panel_vec_labels_ordered() -> list[str]:
-	"""Rule HUD / digit order: null, each ``RULE_TAGS``, then multishot+ricochet."""
-	return ["null"] + list(RULE_TAGS) + ["multishot+ricochet", "multishot+shoot_walls"]
+	"""Rule HUD / digit order: null, each ``RULE_TAGS``, then multi-hot combo presets."""
+	return ["null"] + list(RULE_TAGS) + ["multishot+ricochet", "multishot+shoot_walls", "multishot+enemy_explode"]
 
 
 def _panel_rule_id(rule_name: str) -> str:
@@ -173,6 +202,9 @@ def _panel_rule_id(rule_name: str) -> str:
 		return "multishot+ricochet"
 	if s in {"multishot+shoot_walls", "rule3+rule5", "combo35"}:
 		return "multishot+shoot_walls"
+	sc = s.replace(" ", "")
+	if sc in {"multishot+enemy_explode", "enemy_explode+multishot", "combo02", "rule1+rule3"}:
+		return "multishot+enemy_explode"
 	if s in RULE_TAG_TO_INDEX:
 		return s
 	if "_rules_" in s:
@@ -192,6 +224,8 @@ def _rule_square_caption(vec_lab: str) -> str:
 		return "multishot\n+ ricochet"
 	if vec_lab == "multishot+shoot_walls":
 		return "multishot\n+ shoot_walls"
+	if vec_lab == "multishot+enemy_explode":
+		return "multishot\n+ enemy_explode"
 	if "_" in vec_lab:
 		a, _, b = vec_lab.partition("_")
 		return f"{a}\n{b}"
@@ -205,7 +239,39 @@ def _rule_menu_help_lines() -> list[str]:
 		lines.append(f"  {i}  {tag}")
 		i += 1
 	lines.append(f"  {i}  multishot+ricochet (multi-hot combo)")
+	i += 1
+	lines.append(f"  {i}  multishot+shoot_walls (multi-hot combo)")
+	i += 1
+	lines.append(f"  {i}  multishot+enemy_explode (multi-hot combo)")
 	return lines
+
+
+def _resolve_bootstrap_shard_dir(env: str, shard_dir: Optional[str | Path]) -> Path:
+	"""Where to read ``obs.npy`` / ``action.npy`` for bootstrap context.
+
+	If ``shard_dir`` is set: use that path if it already contains ``obs.npy``, else treat it as a
+	parent directory and pick the first ``shard_*`` (sorted) that has ``obs.npy`` + ``action.npy``.
+	Otherwise: ``data/transitions/train/<env>/shard_*`` (same as training shards).
+	"""
+	if shard_dir is None or str(shard_dir).strip() == "":
+		root = Path("data") / "transitions" / "train" / str(env)
+		shards = sorted(p for p in root.glob("shard_*") if (p / "obs.npy").is_file() and (p / "action.npy").is_file())
+		if not shards:
+			raise FileNotFoundError(f"No shard_* with obs/action under {root.resolve()}")
+		return shards[0]
+
+	p = Path(shard_dir).expanduser().resolve()
+	if (p / "obs.npy").is_file() and (p / "action.npy").is_file():
+		return p
+	shards = sorted(
+		q for q in p.glob("shard_*")
+		if q.is_dir() and (q / "obs.npy").is_file() and (q / "action.npy").is_file()
+	)
+	if not shards:
+		raise FileNotFoundError(
+			f"No usable shard: {p} is not a shard dir (missing obs.npy/action.npy) and has no shard_* children with both.",
+		)
+	return shards[0]
 
 
 def run_autoregressive(
@@ -219,6 +285,7 @@ def run_autoregressive(
 	rule: str = "null",
 	cfg_scale_action: float | None = None,
 	cfg_scale_rule: float | None = None,
+	shard_dir: Optional[str | Path] = None,
 ) -> None:
 	import matplotlib.gridspec as gridspec
 	import matplotlib.pyplot as plt
@@ -238,15 +305,12 @@ def run_autoregressive(
 	wm.eval()
 
 	def tx(frame: np.ndarray) -> torch.Tensor:
-		rgb = np.asarray(frame)[..., -3:]
-		h, w = crop_hw_div8(*rgb.shape[:2])
-		return IMG_TRANSFORMS(rgb[:h, :w])
+		return obs_array_to_pixels(np.asarray(frame)[np.newaxis], resize_to=vae_pixel_hw())[0]
 
-	transitions_root = Path("data") / "transitions" / "train" / str(env)
-	shards = sorted(p for p in transitions_root.glob("shard_*") if (p / "obs.npy").exists())
-	assert shards, f"No shards under {transitions_root}"
-	obs = np.load(shards[0] / "obs.npy", mmap_mode="r")
-	acts = np.load(shards[0] / "action.npy", mmap_mode="r")
+	boot_shard = _resolve_bootstrap_shard_dir(env, shard_dir)
+	print(f"Bootstrap shard: {boot_shard}")
+	obs = np.load(boot_shard / "obs.npy", mmap_mode="r")
+	acts = np.load(boot_shard / "action.npy", mmap_mode="r")
 	n = int(obs.shape[0])
 	start = int(bootstrap_start_idx)
 	if start < 0:
@@ -254,9 +318,13 @@ def run_autoregressive(
 	if start + K > n:
 		raise ValueError(f"Need at least start+K <= {n}; got start={start}, K={K}")
 
-	# Bootstrap: K real frames starting from ``start`` (same preprocessing as training).
+	# Bootstrap: K real frames (same ``tx`` as training), then VAE encode→decode so history lives in
+	# the same reconstructed pixel domain as autoregressive outputs (do not feed raw pixels as if they were latents).
 	init = torch.stack([tx(np.asarray(obs[start + i])[..., -3:]) for i in range(K)], dim=0)
-	gen_hist: deque[torch.Tensor] = deque([init[i].clone() for i in range(K)], maxlen=K)
+	with torch.no_grad():
+		z_boot = wm.encode_video(init.unsqueeze(0).to(device))
+		boot_pixels = wm.decode_video(z_boot)[0].cpu()
+	gen_hist: deque[torch.Tensor] = deque([boot_pixels[i].clone() for i in range(K)], maxlen=K)
 	action_hist: deque[int] = deque([int(a) for a in acts[start : start + K]], maxlen=K)
 	data_pos = start
 
@@ -274,9 +342,9 @@ def run_autoregressive(
 	step_ax.set_ylim(0, 1)
 	text_ax.set_xlim(0, 1)
 	text_ax.set_ylim(0, 1)
-	preview = tx(np.asarray(obs[start])[..., -3:])
-	h, w = int(preview.shape[-2]), int(preview.shape[-1])
-	img_top = ax_top.imshow(np.zeros((h, w, 3), dtype=np.float32), vmin=0, vmax=1, interpolation="nearest")
+	last_boot = boot_pixels[-1]
+	h, w = int(last_boot.shape[-2]), int(last_boot.shape[-1])
+	img_top = ax_top.imshow(_tensor_to_imshow01(last_boot), vmin=0, vmax=1, interpolation="nearest")
 	status = step_ax.text(
 		0.5, 0.5, f"step={data_pos}",
 		ha="center", va="center", fontsize=13, color="#212529",
@@ -439,7 +507,7 @@ def run_autoregressive(
 def main() -> None:
 	import argparse
 	p = argparse.ArgumentParser()
-	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv_cfg_normal" / "step_0240000"))
+	p.add_argument("--ckpt_dir", type=str, default=str(Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "20260518_214310" / "step_0149121"))
 	p.add_argument(
 		"--vae_checkpoint",
 		type=str,
@@ -447,13 +515,20 @@ def main() -> None:
 		help="Path to vae.pt (empty lets trainer_state decide).",
 	)
 	p.add_argument("--env", type=str, default="aliens")
+	p.add_argument(
+		"--shard_dir",
+		type=str,
+		default=None,
+		help="Bootstrap from this shard instead of data/transitions/train/<env>/. "
+		"Pass a shard folder (…/shard_00000) or a game dir (e.g. data/eval/transitions/2ship) to use its first shard.",
+	)
 	p.add_argument("--num_inference_steps", type=int, default=10)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=4, help="History length K (same as training).")
 	p.add_argument(
 		"--bootstrap_start_idx",
 		type=int,
-		default=10,
+		default=100,
 		help="Initial frame index used for bootstrap context. 0 keeps current behavior; 30 starts from frame 30.",
 	)
 	p.add_argument(
@@ -461,7 +536,7 @@ def main() -> None:
 		type=str,
 		default="null",
 		help="Rule multi-hot preset: null/normal/base (zeros) or any RULE_TAGS name (see world_model/dataset.py), "
-		"or multishot+ricochet. Folder-style `game_rules_tag` also works.",
+		"or combos multishot+ricochet / multishot+shoot_walls / multishot+enemy_explode. Folder-style `game_rules_tag` also works.",
 	)
 	p.add_argument(
 		"--cfg_scale_action",
@@ -498,6 +573,7 @@ def main() -> None:
 		rule=rule_name,
 		cfg_scale_action=args.cfg_scale_action,
 		cfg_scale_rule=args.cfg_scale_rule,
+		shard_dir=args.shard_dir,
 	)
 
 

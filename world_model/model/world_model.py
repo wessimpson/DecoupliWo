@@ -1,9 +1,9 @@
 """
 Next-frame temporal world model.
 
-Architecture: frozen SD VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
-Training:    denoise the next latent frame from history; cross-attn conditioned on a single action a_t
-             (the transition action a[K-1]: obs[K-1]→obs[K]).
+Architecture: frozen scratch KL-VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
+Training:    denoise the next latent frame from history; cross-attn conditioned on transition action a_t
+             and rule multi-hot only (no separate state encoder / state token).
 Inference:   pass the action that leaves the last history state (one step control).
 """
 
@@ -14,7 +14,6 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.autograd import Function
 
 from world_model.model.net import Diffuser, VAE
 from world_model.model.net.vae import DEFAULT_VAE_PT
@@ -64,17 +63,9 @@ class WorldModel(nn.Module):
 			self.diffuser.unet.enable_gradient_checkpointing()
 
 		self.num_train_timesteps = int(self.diffuser.noise_scheduler.config.num_train_timesteps)
-		# Keep a named alias for compatibility; shared per-frame encoder used by the diffusion path.
-		self.state_encoder = self.diffuser.frame_state_encoder
-		self.rule_adversary = nn.Sequential(
-			nn.Linear(cross_attention_dim, 256),
-			nn.SiLU(),
-			nn.Linear(256, self.diffuser.num_rules),
-		)
 
 	def trainable_parameters(self):
 		yield from self.diffuser.parameters()
-		yield from self.rule_adversary.parameters()
 
 	def enable_gradient_checkpointing(self) -> None:
 		self.diffuser.unet.enable_gradient_checkpointing()
@@ -109,8 +100,7 @@ class WorldModel(nn.Module):
 		delta_hist: torch.Tensor | None = None,
 		gamma: float = 0.0,
 		rule_onehot: torch.Tensor | None = None,
-		return_state: bool = False,
-	) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+	) -> tuple[torch.Tensor, torch.Tensor]:
 		"""
 		z_hist:           [B, K, C, h, w] clean history latents (frames …, t-1)
 		z_tgt:            [B, C, h, w] clean frame at t (from a[t-1]: obs[t-1]→obs[t])
@@ -138,9 +128,8 @@ class WorldModel(nn.Module):
 		x = torch.cat([z_hist, noisy_tgt.unsqueeze(1)], dim=1)  # [B, K+1, C, h, w]
 		a_t = history_actions[:, -1].to(device)
 		roh = None if rule_onehot is None else rule_onehot.to(device=device, dtype=self.diffuser.action_embedding.weight.dtype)
-		h_state = self._state_features(z_hist)
 
-		model_pred = self.diffuser(x, timesteps, a_t, roh, state_token=h_state)
+		model_pred = self.diffuser(x, timesteps, a_t, roh)
 
 		pt = sched.config.prediction_type
 		if pt == "v_prediction":
@@ -149,28 +138,7 @@ class WorldModel(nn.Module):
 			target = z_tgt
 		else:
 			target = noise
-		if return_state:
-			return model_pred, target, h_state
 		return model_pred, target
-
-	def _state_features(self, z_hist: torch.Tensor) -> torch.Tensor:
-		"""Encode history latents into a compact state feature [B, D]."""
-		return self.diffuser.state_token_from_history(z_hist)
-
-	def adversarial_rule_logits(self, z_hist: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
-		"""Predict rule from state features through gradient reversal.
-
-		The rule adversary learns to classify rule from state; via gradient reversal,
-		the state encoder is pushed to hide rule-specific cues.
-		"""
-		h_state = self._state_features(z_hist)
-		h_rev = _GradReverse.apply(h_state, float(adv_lambda))
-		return self.rule_adversary(h_rev)
-
-	def adversarial_rule_logits_from_state(self, h_state: torch.Tensor, adv_lambda: float = 1.0) -> torch.Tensor:
-		"""Predict rule logits from a precomputed state feature [B, D] with GRL."""
-		h_rev = _GradReverse.apply(h_state, float(adv_lambda))
-		return self.rule_adversary(h_rev)
 
 	# ── Inference ─────────────────────────────────────────────────
 
@@ -227,16 +195,15 @@ class WorldModel(nn.Module):
 			x = torch.cat([z_hist, latents.unsqueeze(1)], dim=1)
 			t_batch = t.unsqueeze(0).expand(B).contiguous()
 			null_a = torch.full_like(a_t, self.diffuser.null_action_index)
-			h_state = self._state_features(z_hist)
 			if math.isclose(sc_a, 0.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 0.0, rel_tol=0.0, abs_tol=1e-6):
-				pred = self.diffuser(x, t_batch, null_a, roh_u, state_token=h_state)
+				pred = self.diffuser(x, t_batch, null_a, roh_u)
 			elif math.isclose(sc_a, 1.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 1.0, rel_tol=0.0, abs_tol=1e-6):
-				pred = self.diffuser(x, t_batch, a_t, roh, state_token=h_state)
+				pred = self.diffuser(x, t_batch, a_t, roh)
 			else:
-				pred_aa = self.diffuser(x, t_batch, a_t, roh, state_token=h_state)
-				pred_0a = self.diffuser(x, t_batch, null_a, roh, state_token=h_state)
-				pred_a0 = self.diffuser(x, t_batch, a_t, roh_u, state_token=h_state)
-				pred_00 = self.diffuser(x, t_batch, null_a, roh_u, state_token=h_state)
+				pred_aa = self.diffuser(x, t_batch, a_t, roh)
+				pred_0a = self.diffuser(x, t_batch, null_a, roh)
+				pred_a0 = self.diffuser(x, t_batch, a_t, roh_u)
+				pred_00 = self.diffuser(x, t_batch, null_a, roh_u)
 				pred = pred_00 + sc_a * (pred_aa - pred_0a) + sc_r * (pred_aa - pred_a0)
 			latents = sched.step(
 				pred,
@@ -256,11 +223,6 @@ class WorldModel(nn.Module):
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
 		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
 		torch.save(self.diffuser.rule_projection.state_dict(), out_dir / "rule_projection.pt")
-		torch.save(self.diffuser.frame_state_encoder.state_dict(), out_dir / "frame_state_encoder.pt")
-		torch.save(self.diffuser.state_token_projection.state_dict(), out_dir / "state_token_projection.pt")
-		# Back-compat alias file name for previously added state encoder.
-		torch.save(self.state_encoder.state_dict(), out_dir / "state_encoder.pt")
-		torch.save(self.rule_adversary.state_dict(), out_dir / "rule_adversary.pt")
 		sched_dir = out_dir / "noise_scheduler"
 		sched_dir.mkdir(parents=True, exist_ok=True)
 		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))
@@ -298,18 +260,16 @@ class WorldModel(nn.Module):
 		else:
 			with torch.no_grad():
 				self.diffuser.rule_projection.weight.zero_()
-		frame_state_path = ckpt_dir / "frame_state_encoder.pt"
-		if frame_state_path.is_file():
-			self.diffuser.frame_state_encoder.load_state_dict(_sd(frame_state_path))
-		state_proj_path = ckpt_dir / "state_token_projection.pt"
-		if state_proj_path.is_file():
-			self.diffuser.state_token_projection.load_state_dict(_sd(state_proj_path))
-		state_enc_path = ckpt_dir / "state_encoder.pt"
-		if state_enc_path.is_file():
-			self.state_encoder.load_state_dict(_sd(state_enc_path))
-		rule_adv_path = ckpt_dir / "rule_adversary.pt"
-		if rule_adv_path.is_file():
-			self.rule_adversary.load_state_dict(_sd(rule_adv_path))
+		legacy_state = any(
+			(ckpt_dir / n).is_file()
+			for n in ("frame_state_encoder.pt", "state_token_projection.pt", "state_encoder.pt", "rule_adversary.pt")
+		)
+		if legacy_state:
+			print(
+				f"Note: checkpoint {ckpt_dir} has legacy state-encoder/adversary files; "
+				"this architecture ignores them — retrain dynamics for best results.",
+				flush=True,
+			)
 		for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
 			legacy = ckpt_dir / legacy_name
 			if legacy.is_file():
@@ -322,18 +282,6 @@ class WorldModel(nn.Module):
 			pt = self.diffuser.noise_scheduler.config.prediction_type
 			self.diffuser.noise_scheduler.register_to_config(prediction_type=pt)
 		self.num_train_timesteps = int(self.diffuser.noise_scheduler.config.num_train_timesteps)
-
-
-class _GradReverse(Function):
-	@staticmethod
-	def forward(ctx, x: torch.Tensor, lambd: float) -> torch.Tensor:
-		ctx.lambd = float(lambd)
-		return x.view_as(x)
-
-	@staticmethod
-	def backward(ctx, grad_output: torch.Tensor):
-		return grad_output.neg() * ctx.lambd, None
-
 
 
 """test"""

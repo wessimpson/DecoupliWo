@@ -1,0 +1,2 @@
+recursive-include gym_gvgai/envs/games *.txt
+recursive-include gym_gvgai/envs/gvgai/sprites *

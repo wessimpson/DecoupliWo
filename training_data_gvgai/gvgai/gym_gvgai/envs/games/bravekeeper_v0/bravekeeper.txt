@@ -1,0 +1,44 @@
+BasicGame
+    SpriteSet
+        floor > Immovable hidden=True img=oryx/backBrown
+        safe > Immovable img=oryx/backGreen hidden=True
+        movable >
+          avatar > MovingAvatar img=newset/girl4 frameRate=10
+          thief  >
+            monsterQuick > RandomNPC cooldown=2 cons=6 img=oryx/devil1
+            monsterNormal > RandomNPC cooldown=4 cons=8 img=oryx/ghost1
+            monsterSlow > RandomNPC cooldown=8 cons=12 img=oryx/skeleton1
+        wall > Immovable autotiling=true img=oryx/dirtWall
+        timer > Immovable autotiling=true img=oryx/dirtWall
+        box > Passive img=oryx/treasure2
+        openbox > Passive img=oryx/treasure1 hidden=True
+
+    LevelMapping
+        A > floor avatar
+        b > floor box
+        s > floor safe
+        1 > floor monsterQuick
+        2 > floor monsterNormal
+        3 > floor monsterSlow
+        w > wall
+        . > floor
+        T > floor timer
+
+    InteractionSet
+        movable wall EOS  > stepBack
+        box thief > killSprite scoreChange=-5
+        box safe > transformTo stype=openbox scoreChange=5
+        thief  thief    > stepBack
+        thief  safe    > stepBack
+        box    avatar    > bounceForward
+        box    thief     > undoAll notStype=monsterQuick,monsterNormal,monsterSlow
+        box    wall box > undoAll notStype=monsterQuick,monsterNormal,monsterSlow
+        wall   box       > undoAll notStype=monsterQuick,monsterNormal,monsterSlow,avatar
+        avatar thief     > killSprite
+        avatar TIME      > undoAll  notStype=monsterQuick,monsterNormal,monsterSlow   timer=100 repeating=true scoreChange=5
+
+    TerminationSet
+        Timeout limit=1200                  win=True
+        SpriteCounter stype=avatar limit=0   win=False
+        MultiSpriteCounter  stype1=box stype2=openbox limit=0 win=False
+
