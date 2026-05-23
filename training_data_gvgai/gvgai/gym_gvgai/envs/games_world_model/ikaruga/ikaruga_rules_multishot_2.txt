@@ -3,7 +3,7 @@ BasicGame square_size=8
         background > Immovable img=oryx/space1 hidden=True
         wall    > Immovable    color=WHITE img=oryx/planet
         avatar  > FlakAvatar rotateInPlace=False
-            whiteAvatar > stype=whiteBullet1,whiteBullet2 img=oryx/spaceship1 fireAllWeapons=True spreadPixels=0
+            whiteAvatar > stype=whiteBullet1,whiteBullet2 img=oryx/spaceship1 fireAllWeapons=True spreadPixels=8
             blackAvatar > stype=blackBullet img=oryx/spaceship2
         missile > Missile
             whiteBullet1 > orientation=UP    color=BLUE singleton=True img=oryx/cspell1

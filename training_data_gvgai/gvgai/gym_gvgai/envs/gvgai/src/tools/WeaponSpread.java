@@ -3,14 +3,14 @@ package tools;
 import ontology.Types;
 
 /**
- * Shared +/- angular spread for triple shots (player ShootAvatar, enemy Bomber).
+ * Shared +/- angular spread for simultaneous weapon shots.
  */
 public final class WeaponSpread {
 
     private WeaponSpread() {}
 
     public static boolean usesAngularSpread(boolean fireAllWeapons, int weaponCount, double spreadDegrees) {
-        if (!fireAllWeapons || weaponCount < 3)
+        if (!fireAllWeapons || weaponCount < 2)
             return false;
         if (spreadDegrees > 0)
             return true;

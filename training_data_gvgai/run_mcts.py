@@ -105,6 +105,12 @@ def _refresh_frame(fig, im, frame: np.ndarray, title: str, delay: float) -> None
     plt.pause(max(delay, 0.001))
 
 
+def _figure_closed(plt, fig, closed: bool) -> bool:
+    if closed or fig is None:
+        return closed
+    return not plt.fignum_exists(fig.number)
+
+
 def _video_out_path(base: Path, env_id: str, multi: bool) -> Path:
     if not multi:
         return base
@@ -139,6 +145,7 @@ def _run_episode(
     plt = None
     im = None
     fig = None
+    window_closed = False
 
     try:
         obs, info = env.reset()
@@ -154,19 +161,32 @@ def _run_episode(
         if show:
             import matplotlib.pyplot as plt
 
+            def on_close(_event) -> None:
+                nonlocal window_closed
+                window_closed = True
+
             plt.ion()
             fig, ax = plt.subplots(figsize=(10, 5))
+            fig.canvas.mpl_connect("close_event", on_close)
             im = ax.imshow(frame)
             ax.set_title(_title(env_id, max(game_tick, 0), 0.0, str(info.get("winner", ""))))
             ax.axis("off")
             fig.tight_layout()
             _refresh_frame(fig, im, frame, ax.get_title(), delay)
+            window_closed = _figure_closed(plt, fig, window_closed)
+            if window_closed:
+                print(f"[{env_id}] window closed; moving to next item.", flush=True)
+                return
 
         for step_idx in range(steps):
             if show and fig is not None:
                 import matplotlib.pyplot as plt
 
                 plt.pause(0.001)
+                window_closed = _figure_closed(plt, fig, window_closed)
+                if window_closed:
+                    print(f"[{env_id}] window closed; moving to next item.", flush=True)
+                    return
                 fig.canvas.flush_events()
 
             obs, reward, terminated, truncated, info = env.step_mcts(mcts_ms)
@@ -195,6 +215,10 @@ def _run_episode(
                     ),
                     delay,
                 )
+                window_closed = _figure_closed(plt, fig, window_closed)
+                if window_closed:
+                    print(f"[{env_id}] window closed; moving to next item.", flush=True)
+                    return
 
             if done:
                 if step_idx == 0:
@@ -205,7 +229,7 @@ def _run_episode(
                     )
                 break
 
-        if show and plt is not None:
+        if show and plt is not None and fig is not None and not _figure_closed(plt, fig, window_closed):
             print("Close the window to exit.", flush=True)
             plt.ioff()
             plt.show()

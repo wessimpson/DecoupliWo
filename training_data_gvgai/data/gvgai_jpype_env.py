@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -45,13 +46,65 @@ def _ensure_jvm(gvgai_root: Path) -> None:
 		raise FileNotFoundError(f"GVGAI build directory not found: {build_dir}")
 
 	jpype.startJVM(
-		jpype.getDefaultJVMPath(),
+		_jvm_path(jpype),
 		f"-Djava.class.path={build_dir}",
 		"-Djava.awt.headless=true",
 		"-Xmx1024m",
 		convertStrings=False,
 	)
 	_JVM_STARTED = True
+
+
+def _add_jvm_candidate(candidates: list[Path], path: str | Path | None) -> None:
+	if not path:
+		return
+	candidate = Path(path).expanduser()
+	if candidate.is_file() and candidate not in candidates:
+		candidates.append(candidate)
+
+
+def _home_jvm_path(java_home: str | Path | None) -> Path | None:
+	if not java_home:
+		return None
+	return Path(java_home).expanduser() / "lib" / "server" / "libjvm.dylib"
+
+
+def _jvm_path(jpype) -> str:
+	candidates: list[Path] = []
+
+	_add_jvm_candidate(candidates, os.environ.get("JVM_PATH"))
+	_add_jvm_candidate(candidates, os.environ.get("JPYPE_JVM"))
+	_add_jvm_candidate(candidates, _home_jvm_path(os.environ.get("JAVA_HOME")))
+
+	if os.name == "posix":
+		for root in (
+			Path("/Library/Java/JavaVirtualMachines"),
+			Path("/opt/homebrew/opt"),
+			Path("/usr/local/opt"),
+		):
+			if root.name == "JavaVirtualMachines":
+				for home in root.glob("*/Contents/Home"):
+					_add_jvm_candidate(candidates, _home_jvm_path(home))
+			else:
+				for formula in ("openjdk", "openjdk@26", "openjdk@25", "openjdk@21", "openjdk@17", "openjdk@11"):
+					home = root / formula / "libexec" / "openjdk.jdk" / "Contents" / "Home"
+					_add_jvm_candidate(candidates, _home_jvm_path(home))
+
+	if candidates:
+		return str(candidates[0])
+
+	try:
+		_add_jvm_candidate(candidates, jpype.getDefaultJVMPath())
+	except Exception:
+		pass
+
+	if candidates:
+		return str(candidates[0])
+
+	raise RuntimeError(
+		"Could not find a working JVM library. Install a JDK, for example with "
+		"`brew install openjdk@17`, or set JAVA_HOME/JVM_PATH to a JDK install."
+	)
 
 
 class GVGAIFileEnv(gym.Env):

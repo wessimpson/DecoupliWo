@@ -9,6 +9,61 @@ from argparse import ArgumentParser
 
 dest = 'GVGAI_Build'
 
+def add_candidate(candidates, path):
+	if(path and path not in candidates and os.path.exists(path)):
+		candidates.append(path)
+
+def javac_candidates():
+	candidates = []
+
+	add_candidate(candidates, os.environ.get("JAVAC"))
+	if(os.environ.get("JAVA_HOME")):
+		add_candidate(candidates, os.path.join(os.environ["JAVA_HOME"], "bin", "javac"))
+
+	add_candidate(candidates, shutil.which("javac"))
+
+	if(sys.platform == "darwin" and os.path.exists("/usr/libexec/java_home")):
+		try:
+			result = subprocess.run(
+				["/usr/libexec/java_home"],
+				stdout=subprocess.PIPE,
+				stderr=subprocess.PIPE,
+				text=True,
+				check=False,
+			)
+			if(result.returncode == 0):
+				add_candidate(candidates, os.path.join(result.stdout.strip(), "bin", "javac"))
+		except OSError:
+			pass
+
+		for prefix in ("/opt/homebrew/opt", "/usr/local/opt"):
+			for formula in ("openjdk", "openjdk@26", "openjdk@25", "openjdk@21", "openjdk@17", "openjdk@11"):
+				add_candidate(candidates, os.path.join(prefix, formula, "bin", "javac"))
+				add_candidate(candidates, os.path.join(prefix, formula, "libexec", "openjdk.jdk", "Contents", "Home", "bin", "javac"))
+
+	return candidates
+
+def find_javac():
+	for javac in javac_candidates():
+		try:
+			result = subprocess.run(
+				[javac, "-version"],
+				stdout=subprocess.PIPE,
+				stderr=subprocess.PIPE,
+				text=True,
+				check=False,
+			)
+		except OSError:
+			continue
+
+		if(result.returncode == 0):
+			return javac
+
+	raise Exception(
+		"Could not find a working javac. Install a JDK, for example with "
+		"`brew install openjdk@17`, or set JAVAC/JAVA_HOME to a JDK install."
+	)
+
 def get_src(path):
 	source = []
 	for root, _, files in os.walk(path):
@@ -18,7 +73,8 @@ def get_src(path):
 	return source
 
 def main(dir):
-	if(shutil.which("javac")):
+	javac = find_javac()
+	if(javac):
 		#Verify directory and import local file
 		try:
 			sys.path.append(dir)
@@ -55,7 +111,7 @@ def main(dir):
 						else:
 							fp.write(f"{normalized}\n")
 
-				subprocess.run(["javac", "--release", "8", "-encoding", "UTF-8", "-d", path, f"@{arg_file}"], check=True)
+				subprocess.run([javac, "--release", "8", "-encoding", "UTF-8", "-d", path, f"@{arg_file}"], check=True)
 			finally:
 				if arg_file and os.path.exists(arg_file):
 					try:
@@ -74,8 +130,6 @@ def main(dir):
 			print("Failed to build java source code. Make sure you have Java JDK installed (> 7) and javac works.")
 			print("This build process has not been tested on Windows. Feel free to contribute fixes to the build.py file to get this working on Windows.")
 			raise e
-	else:
-		raise Exception("Command 'javac' is not found. Can't compile source code. May need to install Java JDK or fix path variables.")
 
 if __name__ == "__main__":
 	d_path = os.path.join(os.path.dirname(__file__), "gym_gvgai", "envs", "gvgai")

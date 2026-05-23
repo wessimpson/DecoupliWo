@@ -21,8 +21,13 @@ import tools.Vector2d;
 public class FlakAvatar extends HorizontalAvatar
 {
     public String stype;
+    public String[] stypes;
 
     public int itype;
+    public int[] itypes;
+
+    public boolean fireAllWeapons;
+    public int spreadPixels;
 
     //This is the resource I need, to be able to shoot.
     public String ammo; //If ammo is null, no resource needed to shoot.
@@ -52,6 +57,8 @@ public class FlakAvatar extends HorizontalAvatar
         ammoId = -1;
         minAmmo = -1;
         ammoCost = 1;
+        fireAllWeapons = false;
+        spreadPixels = 10;
         color = Types.GREEN;
     }
 
@@ -68,7 +75,16 @@ public class FlakAvatar extends HorizontalAvatar
 
         super.postProcess();
 
-        itype =  VGDLRegistry.GetInstance().getRegisteredSpriteValue(stype);
+        stypes = stype.split(",");
+        itypes = new int[stypes.length];
+        for(int i = 0; i < itypes.length; i++)
+        {
+            stypes[i] = stypes[i].trim();
+            itypes[i] =  VGDLRegistry.GetInstance().getRegisteredSpriteValue(stypes[i]);
+            if(itypes[i] < 0)
+                throw new IllegalArgumentException("Undefined sprite " + stypes[i] + " in FlakAvatar stype=" + stype);
+        }
+        itype = itypes[0];
         if(ammo != null)
             ammoId = VGDLRegistry.GetInstance().getRegisteredSpriteValue(ammo);
     }
@@ -88,10 +104,25 @@ public class FlakAvatar extends HorizontalAvatar
     {
         if(Utils.processUseKey(getKeyHandler().getMask(), getPlayerID()) && hasAmmo()) //use primary set of keys, idx = 0
         {
-            VGDLSprite added = game.addSprite(itype, new Vector2d(this.rect.x, this.rect.y));
-            if(added != null){ //singleton sprites could not add anything here.
+            int weaponCount = fireAllWeapons ? itypes.length : 1;
+            boolean addedAny = false;
+            for(int i = 0; i < weaponCount; i++)
+            {
+                Vector2d spawn = new Vector2d(this.rect.x, this.rect.y);
+                if(fireAllWeapons && spreadPixels != 0 && weaponCount > 1)
+                {
+                    double mid = (weaponCount - 1) / 2.0;
+                    spawn.x += (int) Math.round((i - mid) * spreadPixels);
+                }
+
+                VGDLSprite added = game.addSprite(itypes[i], spawn);
+                if(added != null){ //singleton sprites could not add anything here.
+                    addedAny = true;
+                    added.setFromAvatar(true);
+                }
+            }
+            if(addedAny) {
                 reduceAmmo();
-                added.setFromAvatar(true);
             }
         }
     }
@@ -129,20 +160,29 @@ public class FlakAvatar extends HorizontalAvatar
     {
         FlakAvatar targetSprite = (FlakAvatar) target;
         targetSprite.stype = this.stype;
+        targetSprite.stypes = this.stypes == null ? null : this.stypes.clone();
         targetSprite.itype= this.itype;
+        targetSprite.itypes= this.itypes == null ? null : this.itypes.clone();
         targetSprite.ammo = this.ammo;
         targetSprite.ammoId= this.ammoId;
         targetSprite.ammoCost = this.ammoCost;
         targetSprite.minAmmo= this.minAmmo;
+        targetSprite.fireAllWeapons = this.fireAllWeapons;
+        targetSprite.spreadPixels = this.spreadPixels;
         super.copyTo(targetSprite);
     }
     
     @Override
     public ArrayList<String> getDependentSprites(){
-    	ArrayList<String> result = new ArrayList<String>();
-    	if(ammo != null) result.add(ammo);
-    	if(stype != null) result.add(stype);
-    	
-    	return result;
+        ArrayList<String> result = new ArrayList<String>();
+        if(ammo != null) result.add(ammo);
+        if(stypes != null) {
+            for(String type : stypes)
+                result.add(type);
+        } else if(stype != null) {
+            result.add(stype);
+        }
+
+        return result;
     }
 }

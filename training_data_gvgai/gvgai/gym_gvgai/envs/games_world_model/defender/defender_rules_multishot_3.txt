@@ -2,7 +2,7 @@ BasicGame key_handler=Pulse square_size=8
     SpriteSet
         floor > Immovable img=oryx/space1 hidden=True
         city    > Immovable    color=WHITE img=newset/city1
-        avatar  > ShootAvatar color=YELLOW ammo=bullet stype=sam1,sam2,sam3 img=oryx/spaceship1 rotateInPlace=False fireAllWeapons=True spreadPixels=0
+        avatar  > ShootAvatar color=YELLOW ammo=bullet stype=sam1,sam2,sam3 img=oryx/spaceship1 rotateInPlace=False fireAllWeapons=True spreadPixels=4
         missile > Missile
             sam1 > orientation=RIGHT color=BLUE img=oryx/bullet1 shrinkfactor=3.0
             sam2 > orientation=RIGHT color=BLUE img=oryx/bullet1 shrinkfactor=3.0
