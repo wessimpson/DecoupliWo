@@ -1,0 +1,1859 @@
+{
+  "defaults": {
+    "levels": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "games": {
+    "aliens": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-aliens-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "enemy_explode": {
+          "description": "aliens with rule tag enemy_explode.",
+          "env_id": "gvgai-aliens_rules_enemy_explode-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode": 1
+          }
+        },
+        "enemy_multishot": {
+          "description": "aliens with rule tag enemy_multishot.",
+          "env_id": "gvgai-aliens_rules_enemy_multishot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_multishot": 1
+          }
+        },
+        "multishot": {
+          "description": "aliens with rule tag multishot.",
+          "env_id": "gvgai-aliens_rules_multishot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot": 1
+          }
+        },
+        "ricochet": {
+          "description": "aliens with rule tag ricochet.",
+          "env_id": "gvgai-aliens_rules_ricochet-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "ricochet": 1
+          }
+        },
+        "shoot_walls": {
+          "description": "aliens with rule tag shoot_walls.",
+          "env_id": "gvgai-aliens_rules_shoot_walls-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "shoot_walls": 1
+          }
+        },
+        "split_orthogonal": {
+          "description": "aliens with rule tag split_orthogonal.",
+          "env_id": "gvgai-aliens_rules_split_orthogonal-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "split_orthogonal": 1
+          }
+        },
+        "two_hit_color": {
+          "description": "aliens with rule tag two_hit_color.",
+          "env_id": "gvgai-aliens_rules_two_hit_color-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "two_hit_color": 1
+          }
+        }
+      }
+    },
+    "chopper": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-chopper-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "enemy_explode": {
+          "description": "chopper with rule tag enemy_explode.",
+          "env_id": "gvgai-chopper_rules_enemy_explode-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode": 1
+          }
+        },
+        "enemy_multishot": {
+          "description": "chopper with rule tag enemy_multishot.",
+          "env_id": "gvgai-chopper_rules_enemy_multishot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_multishot": 1
+          }
+        },
+        "multishot": {
+          "description": "chopper with rule tag multishot.",
+          "env_id": "gvgai-chopper_rules_multishot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot": 1
+          }
+        },
+        "ricochet": {
+          "description": "chopper with rule tag ricochet.",
+          "env_id": "gvgai-chopper_rules_ricochet-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "ricochet": 1
+          }
+        },
+        "split_orthogonal": {
+          "description": "chopper with rule tag split_orthogonal.",
+          "env_id": "gvgai-chopper_rules_split_orthogonal-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "split_orthogonal": 1
+          }
+        }
+      }
+    },
+    "defender": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "big_shot_1x": {
+          "description": "defender with rule tag big_shot_1x.",
+          "env_id": "gvgai-defender_rules_big_shot_1x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_1x": 1
+          }
+        },
+        "big_shot_2x": {
+          "description": "defender with rule tag big_shot_2x.",
+          "env_id": "gvgai-defender_rules_big_shot_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_2x": 1
+          }
+        },
+        "big_shot_4x": {
+          "description": "defender with rule tag big_shot_4x.",
+          "env_id": "gvgai-defender_rules_big_shot_4x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_4x": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-defender-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "enemy_speed_2x": {
+          "description": "defender with rule tag enemy_speed_2x.",
+          "env_id": "gvgai-defender_rules_enemy_speed_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_speed_2x": 1
+          }
+        },
+        "multishot_2": {
+          "description": "defender with rule tag multishot_2.",
+          "env_id": "gvgai-defender_rules_multishot_2-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_2": 1
+          }
+        },
+        "multishot_3": {
+          "description": "defender with rule tag multishot_3.",
+          "env_id": "gvgai-defender_rules_multishot_3-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_3": 1
+          }
+        },
+        "multishot_5": {
+          "description": "defender with rule tag multishot_5.",
+          "env_id": "gvgai-defender_rules_multishot_5-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_5": 1
+          }
+        },
+        "pierce_shot": {
+          "description": "defender with rule tag pierce_shot.",
+          "env_id": "gvgai-defender_rules_pierce_shot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "pierce_shot": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "defender with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-defender_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "defender with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-defender_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "defender with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-defender_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        },
+        "shield_reflect": {
+          "description": "defender with rule tag shield_reflect.",
+          "env_id": "gvgai-defender_rules_shield_reflect-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "shield_reflect": 1
+          }
+        }
+      }
+    },
+    "frogs": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "car_speed_2x": {
+          "description": "frogs with rule tag car_speed_2x.",
+          "env_id": "gvgai-frogs_rules_car_speed_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "car_speed_2x": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-frogs-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "quick_dash_2tile": {
+          "description": "frogs with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-frogs_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "frogs with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-frogs_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "frogs with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-frogs_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        }
+      }
+    },
+    "ikaruga": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "big_explosion_3rad": {
+          "description": "ikaruga with rule tag big_explosion_3rad.",
+          "env_id": "gvgai-ikaruga_rules_big_explosion_3rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_explosion_3rad": 1
+          }
+        },
+        "big_shot_1x": {
+          "description": "ikaruga with rule tag big_shot_1x.",
+          "env_id": "gvgai-ikaruga_rules_big_shot_1x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_1x": 1
+          }
+        },
+        "big_shot_2x": {
+          "description": "ikaruga with rule tag big_shot_2x.",
+          "env_id": "gvgai-ikaruga_rules_big_shot_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_2x": 1
+          }
+        },
+        "big_shot_4x": {
+          "description": "ikaruga with rule tag big_shot_4x.",
+          "env_id": "gvgai-ikaruga_rules_big_shot_4x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_4x": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-ikaruga-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "multishot_2": {
+          "description": "ikaruga with rule tag multishot_2.",
+          "env_id": "gvgai-ikaruga_rules_multishot_2-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_2": 1
+          }
+        },
+        "multishot_3": {
+          "description": "ikaruga with rule tag multishot_3.",
+          "env_id": "gvgai-ikaruga_rules_multishot_3-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_3": 1
+          }
+        },
+        "multishot_5": {
+          "description": "ikaruga with rule tag multishot_5.",
+          "env_id": "gvgai-ikaruga_rules_multishot_5-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_5": 1
+          }
+        },
+        "pierce_shot": {
+          "description": "ikaruga with rule tag pierce_shot.",
+          "env_id": "gvgai-ikaruga_rules_pierce_shot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "pierce_shot": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "ikaruga with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-ikaruga_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "ikaruga with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-ikaruga_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "ikaruga with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-ikaruga_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        },
+        "shield_reflect": {
+          "description": "ikaruga with rule tag shield_reflect.",
+          "env_id": "gvgai-ikaruga_rules_shield_reflect-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "shield_reflect": 1
+          }
+        }
+      }
+    },
+    "jaws": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-jaws-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "enemy_speed_2x": {
+          "description": "jaws with rule tag enemy_speed_2x.",
+          "env_id": "gvgai-jaws_rules_enemy_speed_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_speed_2x": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "jaws with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-jaws_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "jaws with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-jaws_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "jaws with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-jaws_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        }
+      }
+    },
+    "missilecommand": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "big_explosion_3rad": {
+          "description": "missilecommand with rule tag big_explosion_3rad.",
+          "env_id": "gvgai-missilecommand_rules_big_explosion_3rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_explosion_3rad": 1
+          }
+        },
+        "big_explosion_5rad": {
+          "description": "missilecommand with rule tag big_explosion_5rad.",
+          "env_id": "gvgai-missilecommand_rules_big_explosion_5rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_explosion_5rad": 1
+          }
+        },
+        "big_shot_1x": {
+          "description": "missilecommand with rule tag big_shot_1x.",
+          "env_id": "gvgai-missilecommand_rules_big_shot_1x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_1x": 1
+          }
+        },
+        "big_shot_2x": {
+          "description": "missilecommand with rule tag big_shot_2x.",
+          "env_id": "gvgai-missilecommand_rules_big_shot_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_2x": 1
+          }
+        },
+        "big_shot_4x": {
+          "description": "missilecommand with rule tag big_shot_4x.",
+          "env_id": "gvgai-missilecommand_rules_big_shot_4x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_4x": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-missilecommand-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "multishot_2": {
+          "description": "missilecommand with rule tag multishot_2.",
+          "env_id": "gvgai-missilecommand_rules_multishot_2-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_2": 1
+          }
+        },
+        "multishot_3": {
+          "description": "missilecommand with rule tag multishot_3.",
+          "env_id": "gvgai-missilecommand_rules_multishot_3-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_3": 1
+          }
+        },
+        "multishot_5": {
+          "description": "missilecommand with rule tag multishot_5.",
+          "env_id": "gvgai-missilecommand_rules_multishot_5-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_5": 1
+          }
+        },
+        "pierce_shot": {
+          "description": "missilecommand with rule tag pierce_shot.",
+          "env_id": "gvgai-missilecommand_rules_pierce_shot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "pierce_shot": 1
+          }
+        }
+      }
+    },
+    "pacman": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-pacman-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "ghost_freeze_on_powerup": {
+          "description": "pacman with rule tag ghost_freeze_on_powerup.",
+          "env_id": "gvgai-pacman_rules_ghost_freeze_on_powerup-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "ghost_freeze_on_powerup": 1
+          }
+        },
+        "ghost_speed_2x": {
+          "description": "pacman with rule tag ghost_speed_2x.",
+          "env_id": "gvgai-pacman_rules_ghost_speed_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "ghost_speed_2x": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "pacman with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-pacman_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "pacman with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-pacman_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "pacman with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-pacman_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        },
+        "wall_on_death": {
+          "description": "pacman with rule tag wall_on_death.",
+          "env_id": "gvgai-pacman_rules_wall_on_death-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "wall_on_death": 1
+          }
+        }
+      }
+    },
+    "roadfighter": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "car_speed_2x": {
+          "description": "roadfighter with rule tag car_speed_2x.",
+          "env_id": "gvgai-roadfighter_rules_car_speed_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "car_speed_2x": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-roadfighter-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "oil_slowdown": {
+          "description": "roadfighter with rule tag oil_slowdown.",
+          "env_id": "gvgai-roadfighter_rules_oil_slowdown-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "oil_slowdown": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "roadfighter with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-roadfighter_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "roadfighter with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-roadfighter_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "roadfighter with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-roadfighter_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        }
+      }
+    },
+    "seaquest": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "big_shot_1x": {
+          "description": "seaquest with rule tag big_shot_1x.",
+          "env_id": "gvgai-seaquest_rules_big_shot_1x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_1x": 1
+          }
+        },
+        "big_shot_2x": {
+          "description": "seaquest with rule tag big_shot_2x.",
+          "env_id": "gvgai-seaquest_rules_big_shot_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_2x": 1
+          }
+        },
+        "big_shot_4x": {
+          "description": "seaquest with rule tag big_shot_4x.",
+          "env_id": "gvgai-seaquest_rules_big_shot_4x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_4x": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-seaquest-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "enemy_speed_2x": {
+          "description": "seaquest with rule tag enemy_speed_2x.",
+          "env_id": "gvgai-seaquest_rules_enemy_speed_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_speed_2x": 1
+          }
+        },
+        "multishot_2": {
+          "description": "seaquest with rule tag multishot_2.",
+          "env_id": "gvgai-seaquest_rules_multishot_2-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_2": 1
+          }
+        },
+        "multishot_3": {
+          "description": "seaquest with rule tag multishot_3.",
+          "env_id": "gvgai-seaquest_rules_multishot_3-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_3": 1
+          }
+        },
+        "multishot_5": {
+          "description": "seaquest with rule tag multishot_5.",
+          "env_id": "gvgai-seaquest_rules_multishot_5-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_5": 1
+          }
+        },
+        "pierce_shot": {
+          "description": "seaquest with rule tag pierce_shot.",
+          "env_id": "gvgai-seaquest_rules_pierce_shot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "pierce_shot": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "seaquest with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-seaquest_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "seaquest with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-seaquest_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "seaquest with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-seaquest_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        },
+        "shield_reflect": {
+          "description": "seaquest with rule tag shield_reflect.",
+          "env_id": "gvgai-seaquest_rules_shield_reflect-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "shield_reflect": 1
+          }
+        }
+      }
+    },
+    "sheriff": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "big_explosion_3rad": {
+          "description": "sheriff with rule tag big_explosion_3rad.",
+          "env_id": "gvgai-sheriff_rules_big_explosion_3rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_explosion_3rad": 1
+          }
+        },
+        "big_shot_1x": {
+          "description": "sheriff with rule tag big_shot_1x.",
+          "env_id": "gvgai-sheriff_rules_big_shot_1x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_1x": 1
+          }
+        },
+        "big_shot_2x": {
+          "description": "sheriff with rule tag big_shot_2x.",
+          "env_id": "gvgai-sheriff_rules_big_shot_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_2x": 1
+          }
+        },
+        "big_shot_4x": {
+          "description": "sheriff with rule tag big_shot_4x.",
+          "env_id": "gvgai-sheriff_rules_big_shot_4x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_shot_4x": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-sheriff-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "multishot_2": {
+          "description": "sheriff with rule tag multishot_2.",
+          "env_id": "gvgai-sheriff_rules_multishot_2-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_2": 1
+          }
+        },
+        "multishot_3": {
+          "description": "sheriff with rule tag multishot_3.",
+          "env_id": "gvgai-sheriff_rules_multishot_3-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_3": 1
+          }
+        },
+        "multishot_5": {
+          "description": "sheriff with rule tag multishot_5.",
+          "env_id": "gvgai-sheriff_rules_multishot_5-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot_5": 1
+          }
+        },
+        "pierce_shot": {
+          "description": "sheriff with rule tag pierce_shot.",
+          "env_id": "gvgai-sheriff_rules_pierce_shot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "pierce_shot": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "sheriff with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-sheriff_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "sheriff with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-sheriff_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "sheriff with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-sheriff_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        },
+        "wall_on_death": {
+          "description": "sheriff with rule tag wall_on_death.",
+          "env_id": "gvgai-sheriff_rules_wall_on_death-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "wall_on_death": 1
+          }
+        }
+      }
+    },
+    "waves": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-waves-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "enemy_explode": {
+          "description": "waves with rule tag enemy_explode.",
+          "env_id": "gvgai-waves_rules_enemy_explode-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode": 1
+          }
+        },
+        "enemy_multishot": {
+          "description": "waves with rule tag enemy_multishot.",
+          "env_id": "gvgai-waves_rules_enemy_multishot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_multishot": 1
+          }
+        },
+        "multishot": {
+          "description": "waves with rule tag multishot.",
+          "env_id": "gvgai-waves_rules_multishot-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "multishot": 1
+          }
+        },
+        "ricochet": {
+          "description": "waves with rule tag ricochet.",
+          "env_id": "gvgai-waves_rules_ricochet-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "ricochet": 1
+          }
+        },
+        "shoot_walls": {
+          "description": "waves with rule tag shoot_walls.",
+          "env_id": "gvgai-waves_rules_shoot_walls-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "shoot_walls": 1
+          }
+        },
+        "split_orthogonal": {
+          "description": "waves with rule tag split_orthogonal.",
+          "env_id": "gvgai-waves_rules_split_orthogonal-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "split_orthogonal": 1
+          }
+        },
+        "two_hit_color": {
+          "description": "waves with rule tag two_hit_color.",
+          "env_id": "gvgai-waves_rules_two_hit_color-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "two_hit_color": 1
+          }
+        }
+      }
+    },
+    "zelda": {
+      "levels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "variants": {
+        "big_explosion_3rad": {
+          "description": "zelda with rule tag big_explosion_3rad.",
+          "env_id": "gvgai-zelda_rules_big_explosion_3rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "big_explosion_3rad": 1
+          }
+        },
+        "default": {
+          "description": "Base world-model GVGAI rules.",
+          "env_id": "gvgai-zelda-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {}
+        },
+        "enemy_speed_2x": {
+          "description": "zelda with rule tag enemy_speed_2x.",
+          "env_id": "gvgai-zelda_rules_enemy_speed_2x-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_speed_2x": 1
+          }
+        },
+        "quick_dash_2tile": {
+          "description": "zelda with rule tag quick_dash_2tile.",
+          "env_id": "gvgai-zelda_rules_quick_dash_2tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_2tile": 1
+          }
+        },
+        "quick_dash_3tile": {
+          "description": "zelda with rule tag quick_dash_3tile.",
+          "env_id": "gvgai-zelda_rules_quick_dash_3tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_3tile": 1
+          }
+        },
+        "quick_dash_5tile": {
+          "description": "zelda with rule tag quick_dash_5tile.",
+          "env_id": "gvgai-zelda_rules_quick_dash_5tile-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "quick_dash_5tile": 1
+          }
+        },
+        "wall_on_death": {
+          "description": "zelda with rule tag wall_on_death.",
+          "env_id": "gvgai-zelda_rules_wall_on_death-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "wall_on_death": 1
+          }
+        }
+      }
+    }
+  },
+  "metadata": {
+    "games_world_model_root": "training_data_gvgai/gvgai/gym_gvgai/envs/games_world_model",
+    "marker_version": "v14_world_model_variants_mixed_grids",
+    "source": "training_data_gvgai/scripts/generate_world_model_rule_variants.py"
+  }
+}

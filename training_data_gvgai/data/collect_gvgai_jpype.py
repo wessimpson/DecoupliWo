@@ -16,7 +16,7 @@ from training_data_gvgai.data.gvgai_jpype_env import GVGAIFileEnv
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CATALOG = PACKAGE_ROOT / "data" / "gvgai_variant_catalog.example.json"
+DEFAULT_CATALOG = PACKAGE_ROOT / "data" / "gvgai_variant_catalog.world_model.json"
 DEFAULT_OUT_ROOT = PACKAGE_ROOT / "data" / "gvgai_rollouts"
 SCHEMA_VERSION = "gvgai-rollout-v1"
 

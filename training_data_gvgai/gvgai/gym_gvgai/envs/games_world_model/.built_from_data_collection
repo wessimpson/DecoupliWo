@@ -1,7 +1,7 @@
-v13_grid_15x15_square_8
-games=6
-variants=26
+v14_world_model_variants_mixed_grids
+games=13
+variants=101
 levels=lvl0..lvl5
-grid=15x15
+grid=mixed
 square_size=8
-source=C:\Users\carro\Projects\DecoupliWo\DecoupliWo-aliens-variants\examples\data_collection
+source=training_data_gvgai/scripts/generate_world_model_rule_variants.py

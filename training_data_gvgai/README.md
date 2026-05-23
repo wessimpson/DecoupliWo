@@ -7,7 +7,8 @@ Contents:
 - `gvgai/`: vendored JPype GVGAI fork plus local rule variants
 - `data/collect_gvgai_jpype.py`: rollout collector
 - `data/export_gvgai_hf.py`: Hugging Face dataset-folder exporter
-- `data/gvgai_variant_catalog.example.json`: 3 games × 4 variants catalog
+- `data/gvgai_variant_catalog.world_model.json`: full games_world_model rollout catalog
+- `data/gvgai_variant_catalog.example.json`: legacy minimal example catalog
 - `docs/gvgai_data_collection.md`: setup, schema, and workflow
 
 Quick validation:
