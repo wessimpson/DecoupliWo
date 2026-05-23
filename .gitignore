@@ -15,6 +15,7 @@ world_model/checkpoint/dit/*.pt
 
 # experiment results
 runs/
+data/
 
 # sample repos
 Micro-World/
