@@ -10,9 +10,9 @@ BasicGame square_size=8
         avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb img=newset/helicopter rotateInPlace=False
         missile > Missile
             sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
-            samLeft > orientation=LEFT color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
-            samRight > orientation=RIGHT color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
             bomb > orientation=DOWN color=RED speed=0.75 img=newset/bomb singleton=True shrinkfactor=0.5
+            bombLeft > orientation=LEFT color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
+            bombRight > orientation=RIGHT color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
 
         cloud  > Missile img=newset/cloud2
             leftCloud  > orientation=LEFT speed=0.05  color=WHITE
@@ -20,7 +20,7 @@ BasicGame square_size=8
             rightCloud  > orientation=RIGHT speed=0.05  color=WHITE
             fastRightCloud  > orientation=RIGHT speed=0.2  color=WHITE
 
-        tank   > Bomber stype=sam  prob=0.03  cooldown=5 speed=0.6 img=newset/tank_blueU
+        tank   > Bomber stype=sam  prob=0.1  cooldown=5 speed=0.6 img=newset/tank_blueU
         portal  > SpawnPoint img=oryx/dooropen1 portal=True
             portalBase  > stype=tank  cooldown=40   total=20
             portalAmmo  > stype=supply cooldown=10 prob=0.15
@@ -51,18 +51,19 @@ BasicGame square_size=8
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        bomb tank > spawnLeft stype=samLeft
-        bomb tank > spawnRight stype=samRight
+        bomb tank > spawnLeft stype=bombLeft
+        bomb tank > spawnRight stype=bombRight
         tank bomb > killSprite scoreChange=1
         bomb tank > killSprite
-        bomb wall EOS > killSprite
+        bomb bombLeft bombRight wall EOS > killSprite
+        bombLeft bombRight tank > killSprite scoreChange=1
 
-        bomb sam > killBoth
+        bomb bombLeft bombRight sam > killBoth
 
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack
 
-        satellite sam > killBoth scoreChange=-1
+        satellite sam bomb bombLeft bombRight > killBoth scoreChange=-1
         satellite wall EOS > stepBack
 
         avatar supply > changeResource resource=bullet value=5  killResource=True
@@ -71,6 +72,6 @@ BasicGame square_size=8
         avatar portal thermosphere troposphere > stepBack
         satellite stratosphere > stepBack
 
-        cloud sam > killBoth
+        cloud sam bomb bombLeft bombRight > killBoth
         cloud EOS > wrapAround
 

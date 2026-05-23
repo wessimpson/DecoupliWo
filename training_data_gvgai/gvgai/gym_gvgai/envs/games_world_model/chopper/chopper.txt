@@ -17,7 +17,7 @@ BasicGame square_size=8
             rightCloud  > orientation=RIGHT speed=0.05  color=WHITE
             fastRightCloud  > orientation=RIGHT speed=0.2  color=WHITE
 
-        tank   > Bomber stype=sam  prob=0.03  cooldown=5 speed=0.6 img=newset/tank_blueU
+        tank   > Bomber stype=sam  prob=0.1  cooldown=5 speed=0.6 img=newset/tank_blueU
         portal  > SpawnPoint img=oryx/dooropen1 portal=True
             portalBase  > stype=tank  cooldown=40   total=20
             portalAmmo  > stype=supply cooldown=10 prob=0.15

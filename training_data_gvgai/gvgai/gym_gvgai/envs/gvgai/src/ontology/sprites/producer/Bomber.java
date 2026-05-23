@@ -15,7 +15,7 @@ import tools.WeaponSpread;
 
 /**
  * Spawning NPC (e.g. aliens). Supports {@code fireAllWeapons=True} with comma-separated
- * {@code stype} for triple shots at +/-45° around current {@link #orientation}.
+ * {@code stype} for triple shots at +/-45° around {@link #spawnorientation} (aim), not movement {@link #orientation}.
  */
 public class Bomber extends SpawnPoint
 {
@@ -37,7 +37,6 @@ public class Bomber extends SpawnPoint
     protected void loadDefaults()
     {
         super.loadDefaults();
-        color = Types.ORANGE;
         is_static = false;
         is_oriented = true;
         orientation = Types.DRIGHT.copy();
@@ -52,8 +51,11 @@ public class Bomber extends SpawnPoint
             itypes = new int[stypes.length];
             for (int i = 0; i < stypes.length; i++)
                 itypes[i] = VGDLRegistry.GetInstance().getRegisteredSpriteValue(stypes[i].trim());
+            if (itypes.length > 0)
+                itype = itypes[0];
             counter = 0;
             is_stochastic = (prob > 0 && prob < 1);
+            loadImage();
             return;
         }
         stypes = null;
@@ -70,23 +72,45 @@ public class Bomber extends SpawnPoint
     @Override
     protected void spawnProjectile(Game game)
     {
-        if (usesAngularSpread())
+        if (itypes != null && itypes.length >= 3 && fireAllWeapons)
+            spawnSpread(game);
+        else if (usesAngularSpread())
             spawnSpread(game);
         else
             super.spawnProjectile(game);
     }
 
+    protected Vector2d spawnPositionForShot(Game game, Direction shotDir)
+    {
+        int bs = game.getBlockSize();
+        Vector2d dir = shotDir.getVector();
+        dir.normalise();
+        double x = this.rect.getCenterX() + dir.x * bs - bs / 2.0;
+        double y = this.rect.getCenterY() + dir.y * bs - bs / 2.0;
+        if (x < 0)
+            x = this.getPosition().x;
+        if (y < 0)
+            y = this.getPosition().y;
+        return new Vector2d(x, y);
+    }
+
+    /** Aim direction for spawned missiles (spawnorientation), separate from movement facing. */
+    protected Direction shootFacing()
+    {
+        if (spawnorientation != null && !spawnorientation.equals(Types.DNONE))
+            return spawnorientation.copy();
+        return this.orientation.copy();
+    }
+
     protected void spawnSpread(Game game)
     {
         int n = itypes.length;
+        Direction facing = shootFacing();
         for (int i = 0; i < n; i++) {
-            Direction shotDir = WeaponSpread.direction(i, n, this.orientation, spreadDegrees);
-            Vector2d dir = shotDir.getVector();
-            dir.normalise();
-            Vector2d pos = new Vector2d(
-                    this.rect.x + dir.x * this.lastrect.width,
-                    this.rect.y + dir.y * this.lastrect.height);
-            VGDLSprite newSprite = game.addSprite(itypes[i], pos);
+            Direction shotDir = WeaponSpread.direction(i, n, facing, spreadDegrees);
+            Vector2d pos = spawnPositionForShot(game, shotDir);
+            // force=true: same stype repeated (bomb,bomb,bomb) must bypass singleton limits.
+            VGDLSprite newSprite = game.addSprite(itypes[i], pos, true);
             if (newSprite != null && newSprite.is_oriented)
                 newSprite.orientation = shotDir.copy();
         }

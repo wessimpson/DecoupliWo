@@ -1,4 +1,4 @@
-# Variant: Enemy multishot — triple bomb at +/-45° from alien facing (same as player multishot / Bomber.fireAllWeapons).
+# Variant: Enemy multishot — aliens move RIGHT; bombs shoot DOWN in a +/-45° spread.
 BasicGame square_size=8
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
@@ -7,10 +7,7 @@ BasicGame square_size=8
         missile > Missile
             sam  > orientation=UP    color=BLUE singleton=True img=oryx/bullet1 shrinkfactor=3.0
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
-            bombL > orientation=-0.7071,0.7071 color=RED speed=0.5 img=oryx/bullet2
-            bombC > orientation=DOWN color=RED speed=0.5 img=oryx/bullet2
-            bombR > orientation=0.7071,0.7071 color=RED speed=0.5 img=oryx/bullet2
-        alien   > Bomber orientation=DOWN stype=bombL,bombC,bombR fireAllWeapons=True spreadDegrees=45 prob=0.01 cooldown=3 speed=0.8
+        alien   > Bomber stype=bomb,bomb,bomb fireAllWeapons=True spreadDegrees=45 spawnorientation=DOWN prob=0.1 cooldown=3 speed=0.8
             alienGreen > img=oryx/alien3
             alienBlue > img=oryx/alien1
         portal  > invisible=True hidden=True
@@ -34,10 +31,10 @@ BasicGame square_size=8
         alien   EOS  > turnAround
         missile EOS  > killSprite
 
-        base bomb bombL bombC bombR > killBoth
+        base bomb > killBoth
         base sam > killBoth scoreChange=1
 
         base   alien > killSprite
         avatar alien > killSprite scoreChange=-1
-        avatar bomb bombL bombC bombR > killSprite scoreChange=-1
-        alien sam bombL bombC bombR > killSprite scoreChange=2
+        avatar bomb  > killSprite scoreChange=-1
+        alien  sam   > killSprite scoreChange=2

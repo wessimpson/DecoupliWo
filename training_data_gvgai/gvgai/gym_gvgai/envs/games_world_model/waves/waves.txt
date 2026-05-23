@@ -5,9 +5,9 @@ BasicGame square_size=8
         asteroid > Immovable img=oryx/planet
 
         missile > Missile
-            rock > orientation=LEFT speed=0.95 color=BLUE img=oryx/orb3
+            rock > orientation=LEFT speed=3.8 color=BLUE img=oryx/orb3
             sam  > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
-            laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.75 img=newset/laser2_1
+            laser > orientation=LEFT speed=1.2 color=RED shrinkfactor=0.75 img=newset/laser2_1
 
         portal  >
             portalSlow  > SpawnPoint   stype=alien  cooldown=10 prob=0.05 img=newset/whirlpool2 portal=True
@@ -16,7 +16,7 @@ BasicGame square_size=8
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
         avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship3 rotateInPlace=False
-        alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser prob=0.01
+        alien > Bomber color=BROWN img=oryx/alien3 speed=0.4 orientation=LEFT stype=laser prob=0.01
     
     LevelMapping
         B > background portalSlow

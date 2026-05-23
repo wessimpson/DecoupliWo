@@ -9,7 +9,7 @@ BasicGame square_size=8
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
             blast > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
             blastCenter > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
-        alien   > Bomber       stype=bomb   prob=0.01  cooldown=3 speed=0.8
+        alien   > Bomber       stype=bomb   prob=0.1  cooldown=3 speed=0.8
             alienGreen > img=oryx/alien3
             alienBlue > img=oryx/alien1
         portal  > invisible=True hidden=True
