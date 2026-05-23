@@ -1432,39 +1432,8 @@ public abstract class Game {
 
 		}
 
-		// Secondly, we handle single sprite events (EOS). Take each sprite
-		// itype that has
-		// a EOS effect defined.
-		for (Integer intId : definedEOSEffects) {
-			// For each effect that this sprite has assigned.
-			for (Effect ef : eosEffects[intId]) {
-				// Take all the subtypes in the hierarchy of this sprite.
-				ArrayList<Integer> allTypes = iSubTypes[intId];
-				if (ef.enabled)
-					for (Integer itype : allTypes) {
-						// Add all sprites of this subtype to the list of
-						// sprites.
-						// These are sprites that could potentially collide with
-						// EOS
-						Collection<VGDLSprite> sprites = this.getSprites(itype);
-						try{
-							for (VGDLSprite sp : sprites) {
-								// Check if they are at the edge to trigger the
-								// effect. Also check that they
-								// are not dead (could happen in this same cycle).
-								if (isAtEdge(sp.rect) && !kill_list.contains(sp) && !sp.is_disabled()) {
-									executeEffect(ef, sp, null);
-								}
-							}
-						}
-						catch(ConcurrentModificationException e){
-							Logger.getInstance().addMessage(new Message(Message.WARNING, "you can't spawn sprites outside of the screen."));
-						}
-					}
-			}
-
-		}
-
+		// Pairwise sprite collisions run before EOS so ricochet-style rules can
+		// reverse a projectile before edge kill rules remove it.
 		// Now, we handle events between pairs of sprites, for each pair of
 		// sprites that
 		// has a paired effect defined:
@@ -1516,6 +1485,27 @@ public abstract class Game {
 						}
 					}
 				}
+			}
+		}
+
+		// Single sprite events (EOS), after pairwise collisions.
+		for (Integer intId : definedEOSEffects) {
+			for (Effect ef : eosEffects[intId]) {
+				ArrayList<Integer> allTypes = iSubTypes[intId];
+				if (ef.enabled)
+					for (Integer itype : allTypes) {
+						Collection<VGDLSprite> sprites = this.getSprites(itype);
+						try{
+							for (VGDLSprite sp : sprites) {
+								if (isAtEdge(sp.rect) && !kill_list.contains(sp) && !sp.is_disabled()) {
+									executeEffect(ef, sp, null);
+								}
+							}
+						}
+						catch(ConcurrentModificationException e){
+							Logger.getInstance().addMessage(new Message(Message.WARNING, "you can't spawn sprites outside of the screen."));
+						}
+					}
 			}
 		}
 
@@ -2213,6 +2203,10 @@ public abstract class Game {
 	 */
 	public int[] getSpriteOrder() {
 		return spriteOrder;
+	}
+
+	public SpriteGroup[] getSpriteGroups() {
+		return spriteGroups;
 	}
 
 	/**

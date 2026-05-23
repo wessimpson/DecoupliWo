@@ -55,7 +55,7 @@ def main(dir):
 						else:
 							fp.write(f"{normalized}\n")
 
-				subprocess.run(["javac", "-d", path, f"@{arg_file}"], check=True)
+				subprocess.run(["javac", "--release", "8", "-encoding", "UTF-8", "-d", path, f"@{arg_file}"], check=True)
 			finally:
 				if arg_file and os.path.exists(arg_file):
 					try:

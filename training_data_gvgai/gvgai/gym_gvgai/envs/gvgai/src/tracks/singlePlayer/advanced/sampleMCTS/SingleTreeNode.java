@@ -26,6 +26,7 @@ public class SingleTreeNode
     Types.ACTIONS[] actions;
     public int ROLLOUT_DEPTH = 10;
     public double K = Math.sqrt(2);
+    public int MAX_ITERATIONS = -1;
 
     public StateObservation rootState;
 
@@ -41,10 +42,17 @@ public class SingleTreeNode
         children = new SingleTreeNode[num_actions];
         totValue = 0.0;
         this.childIdx = childIdx;
-        if(parent != null)
+        if(parent != null) {
             m_depth = parent.m_depth+1;
-        else
+            ROLLOUT_DEPTH = parent.ROLLOUT_DEPTH;
+            K = parent.K;
+            MAX_ITERATIONS = parent.MAX_ITERATIONS;
+        } else {
             m_depth = 0;
+            ROLLOUT_DEPTH = intProperty("mcts.rolloutDepth", ROLLOUT_DEPTH);
+            K = doubleProperty("mcts.k", K);
+            MAX_ITERATIONS = intProperty("mcts.maxIterations", MAX_ITERATIONS);
+        }
     }
 
 
@@ -56,8 +64,8 @@ public class SingleTreeNode
         int numIters = 0;
 
         int remainingLimit = 5;
-        while(remaining > 2*avgTimeTaken && remaining > remainingLimit){
-        //while(numIters < Agent.MCTS_ITERATIONS){
+        while(remaining > 2*avgTimeTaken && remaining > remainingLimit &&
+                (MAX_ITERATIONS <= 0 || numIters < MAX_ITERATIONS)){
 
             StateObservation state = rootState.copy();
 
@@ -283,6 +291,92 @@ public class SingleTreeNode
         return selected;
     }
 
+    public int visitSoftmaxAction(double temperature) {
+        double[] scores = new double[children.length];
+        boolean hasChild = false;
+        for (int i = 0; i < children.length; i++) {
+            if (children[i] != null) {
+                scores[i] = children[i].nVisits;
+                hasChild = true;
+            } else {
+                scores[i] = Double.NEGATIVE_INFINITY;
+            }
+        }
+        if (!hasChild)
+            return 0;
+        if (temperature <= 0)
+            return mostVisitedAction();
+        return sampleSoftmax(scores, temperature);
+    }
+
+    public int valueSoftmaxAction(double temperature) {
+        double[] scores = new double[children.length];
+        boolean hasChild = false;
+        for (int i = 0; i < children.length; i++) {
+            if (children[i] != null) {
+                scores[i] = children[i].totValue / (children[i].nVisits + this.epsilon);
+                hasChild = true;
+            } else {
+                scores[i] = Double.NEGATIVE_INFINITY;
+            }
+        }
+        if (!hasChild)
+            return 0;
+        if (temperature <= 0)
+            return bestAction();
+        return sampleSoftmax(scores, temperature);
+    }
+
+    private int sampleSoftmax(double[] scores, double temperature) {
+        double max = -Double.MAX_VALUE;
+        for (double score : scores) {
+            if (!Double.isInfinite(score) && !Double.isNaN(score) && score > max)
+                max = score;
+        }
+        if (max == -Double.MAX_VALUE)
+            return 0;
+
+        double sum = 0.0;
+        double[] weights = new double[scores.length];
+        for (int i = 0; i < scores.length; i++) {
+            double score = scores[i];
+            if (Double.isInfinite(score) || Double.isNaN(score)) {
+                weights[i] = 0.0;
+            } else {
+                weights[i] = Math.exp((score - max) / Math.max(temperature, 1e-9));
+                sum += weights[i];
+            }
+        }
+        if (sum <= 0.0)
+            return 0;
+
+        double roll = m_rnd.nextDouble() * sum;
+        double acc = 0.0;
+        for (int i = 0; i < weights.length; i++) {
+            acc += weights[i];
+            if (roll <= acc)
+                return i;
+        }
+        return weights.length - 1;
+    }
+
+    private static int intProperty(String key, int def) {
+        try {
+            String value = System.getProperty(key);
+            return value == null ? def : Integer.parseInt(value.trim());
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
+
+    private static double doubleProperty(String key, double def) {
+        try {
+            String value = System.getProperty(key);
+            return value == null ? def : Double.parseDouble(value.trim());
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
 
     public boolean notFullyExpanded() {
         for (SingleTreeNode tn : children) {

@@ -28,12 +28,18 @@ public class SingleMCTSPlayer
 
     public int num_actions;
     public Types.ACTIONS[] actions;
+    public String finalSelection;
+    public double temperature;
+    public double actionEpsilon;
 
     public SingleMCTSPlayer(Random a_rnd, int num_actions, Types.ACTIONS[] actions)
     {
         this.num_actions = num_actions;
         this.actions = actions;
         m_rnd = a_rnd;
+        finalSelection = stringProperty("mcts.finalSelection", "most_visited");
+        temperature = doubleProperty("mcts.temperature", 1.0);
+        actionEpsilon = doubleProperty("mcts.actionEpsilon", 0.0);
     }
 
     /**
@@ -58,10 +64,31 @@ public class SingleMCTSPlayer
         //Do the search within the available time.
         m_root.mctsSearch(elapsedTimer);
 
-        //Determine the best action to take and return it.
-        int action = m_root.mostVisitedAction();
-        //int action = m_root.bestAction();
-        return action;
+        if (actionEpsilon > 0.0 && m_rnd.nextDouble() < actionEpsilon)
+            return m_rnd.nextInt(num_actions);
+
+        if ("best_value".equalsIgnoreCase(finalSelection) || "best".equalsIgnoreCase(finalSelection))
+            return m_root.bestAction();
+        if ("visit_softmax".equalsIgnoreCase(finalSelection) || "softmax".equalsIgnoreCase(finalSelection))
+            return m_root.visitSoftmaxAction(temperature);
+        if ("value_softmax".equalsIgnoreCase(finalSelection))
+            return m_root.valueSoftmaxAction(temperature);
+
+        return m_root.mostVisitedAction();
+    }
+
+    private static String stringProperty(String key, String def) {
+        String value = System.getProperty(key);
+        return value == null ? def : value.trim();
+    }
+
+    private static double doubleProperty(String key, double def) {
+        try {
+            String value = System.getProperty(key);
+            return value == null ? def : Double.parseDouble(value.trim());
+        } catch (Exception ignored) {
+            return def;
+        }
     }
 
 }
