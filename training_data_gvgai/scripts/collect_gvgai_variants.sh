@@ -16,6 +16,7 @@ TOTAL_TIMESTEPS=100000
 NUM_ENVS=1
 SCALE=1.0
 CHUNK_SIZE=1000
+AGENT_BUDGET_MS=40
 SEED=""
 SKIP_BUILD=0
 DRY_RUN=0
@@ -25,6 +26,10 @@ LEVELS="all"
 TRAIN_BASES="auto"
 TEST_BASES="defender,jaws,zelda"
 TEST_INCLUDE_VARIANTS=0
+SAMPLE_MCTS_AGENT="tracks.singlePlayer.advanced.sampleMCTS.Agent"
+OLETS_AGENT="tracks.singlePlayer.advanced.olets.Agent"
+RANDOM_AGENT="tracks.singlePlayer.simple.simpleRandom.Agent"
+MCTS_AGENT="auto"
 
 usage() {
   cat <<'EOF'
@@ -47,10 +52,13 @@ Options:
   --num-envs N                      Parallel envs per Java process (default: 1).
   --scale F                         Saved frame scale (default: 1.0, full 120x120 RGB).
   --chunk-size N                    Rows per shard (default: 1000).
+  --agent-budget-ms N               Per-action search budget passed to Java agents (default: 40).
   --seed N                          Base RNG seed.
   --train-bases auto|a,b,c          Train base-game dirs. auto means every discovered base dir.
   --test-bases a,b,c                Optional eval/holdout collection dirs (default: defender,jaws,zelda).
   --test-include-variants           Include *_rules_* files in test split too.
+  --mcts-agent auto|sample_mcts|olets|CLASS
+                                    Agent for mcts_* profiles. auto uses OLETS for zelda, sampleMCTS otherwise.
   --dry-run                         Print discovered jobs without running Java.
   --resume                          Skip completed stem/level/profile jobs already present in the output folder.
   --skip-build                      Do not run python build.py first.
@@ -78,10 +86,12 @@ while [[ $# -gt 0 ]]; do
     --num-envs) NUM_ENVS="$2"; shift 2 ;;
     --scale) SCALE="$2"; shift 2 ;;
     --chunk-size) CHUNK_SIZE="$2"; shift 2 ;;
+    --agent-budget-ms) AGENT_BUDGET_MS="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --train-bases) TRAIN_BASES="$2"; shift 2 ;;
     --test-bases) TEST_BASES="$2"; shift 2 ;;
     --test-include-variants) TEST_INCLUDE_VARIANTS=1; shift ;;
+    --mcts-agent) MCTS_AGENT="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --resume) RESUME=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
@@ -199,7 +209,8 @@ job_frame_count() {
   local env_dir="$1"
   local profile="$2"
   local level="$3"
-  python - "$env_dir" "$profile" "$level" <<'PY'
+  local agent="$4"
+  python - "$env_dir" "$profile" "$level" "$agent" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -208,6 +219,7 @@ import numpy as np
 root = Path(sys.argv[1])
 want_profile = sys.argv[2]
 want_level = str(sys.argv[3])
+want_agent = sys.argv[4]
 frames = 0
 if root.is_dir():
     for shard in root.glob("shard_*"):
@@ -220,6 +232,8 @@ if root.is_dir():
             if str(meta.get("profile", "")) != want_profile:
                 continue
             if str(meta.get("level_index", "")) != want_level:
+                continue
+            if str(meta.get("agent", "")) != want_agent:
                 continue
             frames += int(np.load(obs_path, mmap_mode="r").shape[0])
         except Exception:
@@ -244,9 +258,10 @@ job_is_complete() {
   local level="$3"
   local profile="$4"
   local expected_frames="$5"
+  local agent="$6"
   local out_root="${OUTPUT_ROOT:-$(default_output_root "$split")}"
   local frames
-  frames="$(job_frame_count "$out_root/$stem" "$profile" "$level")"
+  frames="$(job_frame_count "$out_root/$stem" "$profile" "$level" "$agent")"
   [[ "$frames" -ge "$expected_frames" ]]
 }
 
@@ -267,6 +282,34 @@ frames_for_level() {
   fi
 }
 
+agent_for_profile() {
+  local base="$1"
+  local profile="$2"
+  if [[ "$profile" == "random" ]]; then
+    echo "$RANDOM_AGENT"
+    return
+  fi
+
+  case "$MCTS_AGENT" in
+    auto)
+      if [[ "$base" == "zelda" ]]; then
+        echo "$OLETS_AGENT"
+      else
+        echo "$SAMPLE_MCTS_AGENT"
+      fi
+      ;;
+    sample_mcts|sampleMCTS)
+      echo "$SAMPLE_MCTS_AGENT"
+      ;;
+    olets|OLETS)
+      echo "$OLETS_AGENT"
+      ;;
+    *)
+      echo "$MCTS_AGENT"
+      ;;
+  esac
+}
+
 run_one() {
   local split="$1"
   local base="$2"
@@ -279,6 +322,8 @@ run_one() {
   local out_root="${OUTPUT_ROOT:-$(default_output_root "$split")}"
   local game_file="$SOURCE_ROOT/$base/$stem.txt"
   local level_file="$SOURCE_ROOT/$base/lvl${level}.txt"
+  local agent_class
+  agent_class="$(agent_for_profile "$base" "$profile")"
 
   if [[ "$frames" -lt 1 ]]; then
     frames=1
@@ -294,12 +339,12 @@ run_one() {
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    printf '%s\t%s\t%s\tlvl%s\t%s\t%s frames\t%s\n' "$split" "$base" "$stem" "$level" "$profile" "$frames" "$out_root"
+    printf '%s\t%s\t%s\tlvl%s\t%s\t%s frames\t%s\t%s\n' "$split" "$base" "$stem" "$level" "$profile" "$frames" "$agent_class" "$out_root"
     return
   fi
 
-  if [[ "$RESUME" -eq 1 ]] && job_is_complete "$split" "$stem" "$level" "$profile" "$frames"; then
-    echo "==> $split $stem lvl$level $profile already has >= $frames frames; skipping due to --resume"
+  if [[ "$RESUME" -eq 1 ]] && job_is_complete "$split" "$stem" "$level" "$profile" "$frames" "$agent_class"; then
+    echo "==> $split $stem lvl$level $profile already has >= $frames frames with $agent_class; skipping due to --resume"
     return
   fi
 
@@ -310,12 +355,14 @@ run_one() {
     --level "$level_file"
     --level-index "$level"
     --profile "$profile"
+    --agent "$agent_class"
     --split "$split"
     --output-root "$out_root"
     --total-timesteps "$frames"
     --num-envs "$NUM_ENVS"
     --scale "$SCALE"
     --chunk-size "$CHUNK_SIZE"
+    --agent-budget-ms "$AGENT_BUDGET_MS"
     --source-root "$SOURCE_ROOT"
     --sprite-root "$SPRITE_ROOT"
     --source-base-game "$base"
@@ -324,7 +371,7 @@ run_one() {
   if [[ -n "$SEED" ]]; then
     args+=(--seed "$SEED")
   fi
-  echo "==> $split $stem lvl$level $profile $frames frames -> $out_root/$stem"
+  echo "==> $split $stem lvl$level $profile $frames frames [$agent_class] -> $out_root/$stem"
   (cd "$GVGAI_ROOT" && java -cp "$BUILD_DIR" "${args[@]}")
 }
 
@@ -391,6 +438,8 @@ collect_train() {
   echo "Sprite root: $SPRITE_ROOT"
   echo "Output root: ${OUTPUT_ROOT:-$(default_output_root train)}"
   echo "Budget: $TOTAL_TIMESTEPS frames per stem, scope=$BUDGET_SCOPE"
+  echo "Agent budget: ${AGENT_BUDGET_MS}ms"
+  echo "MCTS agent: $MCTS_AGENT"
   for base in "${train_bases[@]}"; do
     collect_base_train "$base"
   done
@@ -405,6 +454,8 @@ collect_test() {
   echo "Sprite root: $SPRITE_ROOT"
   echo "Output root: ${OUTPUT_ROOT:-$(default_output_root test)}"
   echo "Budget: $TOTAL_TIMESTEPS frames per stem, scope=$BUDGET_SCOPE"
+  echo "Agent budget: ${AGENT_BUDGET_MS}ms"
+  echo "MCTS agent: $MCTS_AGENT"
   for base in "${test_bases[@]}"; do
     collect_base_test "$base"
   done

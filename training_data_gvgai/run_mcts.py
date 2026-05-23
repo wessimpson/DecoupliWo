@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Play a GVGAI env with sampleMCTS (UCT); display frames live or save a video/GIF.
+Play a GVGAI env with a Java search agent; display frames live or save a video/GIF.
 
 Run from repo root or this folder:
   python training_data_gvgai/run_mcts.py
@@ -35,6 +35,11 @@ from training_data_gvgai.run_random_action import (
     parse_rules_arg,
 )
 
+
+AGENT_CLASSES = {
+    "sample_mcts": "tracks.singlePlayer.advanced.sampleMCTS.Agent",
+    "olets": "tracks.singlePlayer.advanced.olets.Agent",
+}
 
 MCTS_PROFILE_PROPS = {
     "mcts_default": {},
@@ -89,6 +94,12 @@ def _apply_mcts_profile(profile: str) -> None:
             system.clearProperty(key)
 
 
+def _agent_class(agent: str, agent_class: str | None) -> str:
+    if agent_class:
+        return agent_class
+    return AGENT_CLASSES[agent]
+
+
 def _title(env: str, tick: int, reward: float, winner: str, done: bool = False) -> str:
     status = "DONE" if done else "playing"
     w = f" | {winner}" if winner else ""
@@ -119,6 +130,7 @@ def _run_episode(
     steps: int,
     mcts_ms: int,
     profile: str,
+    agent_class: str,
     scale: int,
     delay: float,
     show: bool,
@@ -146,7 +158,7 @@ def _run_episode(
         frames.append(frame)
         game_tick = int(info.get("game_tick", -1))
         print(
-            f"[{env_id}] profile={profile} reset game_tick={game_tick} "
+            f"[{env_id}] agent={agent_class} profile={profile} reset game_tick={game_tick} "
             f"winner={info.get('winner')}",
             flush=True,
         )
@@ -169,7 +181,7 @@ def _run_episode(
                 plt.pause(0.001)
                 fig.canvas.flush_events()
 
-            obs, reward, terminated, truncated, info = env.step_mcts(mcts_ms)
+            obs, reward, terminated, truncated, info = env.step_agent(agent_class, mcts_ms)
             done = terminated or truncated
             game_tick = int(info.get("game_tick", step_idx))
             frame = _upscale(_obs_rgb(obs), scale)
@@ -217,7 +229,7 @@ def _run_episode(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="sampleMCTS agent with visual playback")
+    parser = argparse.ArgumentParser(description="Java GVGAI search agent with visual playback")
     add_world_model_cli(parser)
     parser.add_argument("--steps", type=int, default=500, help="Max env steps")
     parser.add_argument(
@@ -230,7 +242,18 @@ def main() -> None:
         "--profile",
         choices=tuple(MCTS_PROFILE_PROPS),
         default="mcts_default",
-        help="MCTS profile to visualize; matches the collection profiles.",
+        help="sampleMCTS profile to visualize; OLETS ignores these properties.",
+    )
+    parser.add_argument(
+        "--agent",
+        choices=tuple(AGENT_CLASSES),
+        default="sample_mcts",
+        help="Java agent shortcut. Use --agent olets for the stronger open-loop MCTS agent.",
+    )
+    parser.add_argument(
+        "--agent-class",
+        default="",
+        help="Fully-qualified Java agent class; overrides --agent.",
     )
     parser.add_argument("--scale", type=int, default=1, help="Nearest-neighbor upscale")
     parser.add_argument("--fps", type=float, default=15.0, help="Playback / video FPS")
@@ -252,6 +275,7 @@ def main() -> None:
     ]
     multi = len(configs) > 1
     video_base = Path(args.video) if args.video else None
+    agent_class = _agent_class(args.agent, args.agent_class or None)
 
     if not show and not video_base and configs:
         print("No --video and --no-show: nothing to display.", flush=True)
@@ -264,6 +288,7 @@ def main() -> None:
             steps=args.steps,
             mcts_ms=args.mcts_ms,
             profile=args.profile,
+            agent_class=agent_class,
             scale=args.scale,
             delay=delay,
             show=show,

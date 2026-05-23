@@ -1,13 +1,14 @@
 package core.game;
 
 import core.competition.CompetitionParameters;
+import core.player.AbstractPlayer;
 import core.player.Player;
-import tracks.singlePlayer.advanced.sampleMCTS.Agent;
 import core.vgdl.SpriteGroup;
 import core.vgdl.VGDLFactory;
 import core.vgdl.VGDLParser;
 import core.vgdl.VGDLRegistry;
 import ontology.Types;
+import tracks.ArcadeMachine;
 import tools.ElapsedCpuTimer;
 
 import javax.imageio.ImageIO;
@@ -40,6 +41,8 @@ public class GVGAIBridge {
     private final String[] levelFiles;
     private double lastScore;
     private PythonPlayer pythonPlayer;
+    private AbstractPlayer searchAgent;
+    private String searchAgentClass;
     private Dimension screenSize;
     private int currentSeed = 0;
 
@@ -114,6 +117,8 @@ public class GVGAIBridge {
         this.game.buildLevel(levelFiles[levelIdx], randomSeed);
         this.game.initRandomGenerator(randomSeed);
         this.lastScore = 0.0;
+        this.searchAgent = null;
+        this.searchAgentClass = null;
         this.screenSize = game.getScreenSize();
 
         // ---- Replicate Game.prepareGame() (private) ----
@@ -176,13 +181,33 @@ public class GVGAIBridge {
      * @param budgetMs per-action MCTS search budget in milliseconds
      */
     public void stepMCTS(long budgetMs) {
+        stepAgent("tracks.singlePlayer.advanced.sampleMCTS.Agent", budgetMs);
+    }
+
+    /**
+     * Advances the game by one step using any single-player Java GVGAI agent.
+     *
+     * @param agentClass fully-qualified class name, e.g. tracks.singlePlayer.advanced.olets.Agent
+     * @param budgetMs per-action search budget in milliseconds
+     */
+    public void stepAgent(String agentClass, long budgetMs) {
         if (game == null || game.isEnded) return;
+        if (agentClass == null || agentClass.trim().isEmpty())
+            throw new IllegalArgumentException("agentClass must be a fully-qualified Java agent class");
 
         StateObservation obs = game.getObservation();
         ElapsedCpuTimer timer = new ElapsedCpuTimer();
         timer.setMaxTimeMillis(budgetMs);
-        Agent agent = new Agent(obs, timer);
-        Types.ACTIONS action = agent.act(obs, timer);
+
+        String normalizedAgentClass = agentClass.trim();
+        if (searchAgent == null || searchAgentClass == null || !searchAgentClass.equals(normalizedAgentClass)) {
+            searchAgent = ArcadeMachine.createPlayer(normalizedAgentClass, null, obs, currentSeed, false);
+            searchAgentClass = normalizedAgentClass;
+            if (searchAgent != null)
+                searchAgent.setPlayerID(0);
+        }
+
+        Types.ACTIONS action = searchAgent.act(obs, timer);
         applyAction(action);
     }
 

@@ -62,6 +62,7 @@ public class RunDataCollectionAgent {
 		double scale = 1.0;
 		long totalTimesteps = -1;
 		int numEnvs = 1;
+		long agentBudgetMs = 40;
 		String mctsK = null;
 		String mctsRolloutDepth = null;
 		String mctsMaxIterations = null;
@@ -114,6 +115,8 @@ public class RunDataCollectionAgent {
 				totalTimesteps = Long.parseLong(args[++i]);
 			} else if ("--num-envs".equals(a) && i + 1 < args.length) {
 				numEnvs = Integer.parseInt(args[++i]);
+			} else if ("--agent-budget-ms".equals(a) && i + 1 < args.length) {
+				agentBudgetMs = Long.parseLong(args[++i]);
 			} else if ("--mcts-k".equals(a) && i + 1 < args.length) {
 				mctsK = args[++i];
 			} else if ("--mcts-rollout-depth".equals(a) && i + 1 < args.length) {
@@ -164,7 +167,7 @@ public class RunDataCollectionAgent {
 		}
 		String metadataJson = buildMetadataJson(profile, mctsProfile, agent, game, level, gameStem,
 				split, scale, chunkSize, seed, numEnvs, totalTimesteps,
-				levelIndex, sourceRoot, sourceBaseGame, sourceRuleTag);
+				levelIndex, sourceRoot, sourceBaseGame, sourceRuleTag, agentBudgetMs);
 
 		System.out.println("Game:  " + game);
 		System.out.println("Level: " + level);
@@ -178,13 +181,13 @@ public class RunDataCollectionAgent {
 				System.out.printf("Target: %d frames, %d parallel env(s), chunk_size=%d%n",
 						totalTimesteps, numEnvs, chunkSize);
 				collectParallel(game, level, visuals, agent, seed, transitionRoots,
-						gameStem, chunkSize, scale, totalTimesteps, numEnvs, metadataJson);
+						gameStem, chunkSize, scale, totalTimesteps, numEnvs, metadataJson, agentBudgetMs);
 			} else {
 				System.out.println("Mode: single episode");
 				int randomSeed = seed != null ? seed : new Random().nextInt();
 				AtomicLong gf = new AtomicLong();
 				runOneEpisode(game, level, visuals, agent, randomSeed, transitionRoots,
-						gameStem, chunkSize, scale, null, gf, true, metadataJson, -1);
+						gameStem, chunkSize, scale, null, gf, true, metadataJson, -1, agentBudgetMs);
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -198,7 +201,7 @@ public class RunDataCollectionAgent {
 
 	static void collectParallel(String gameFile, String levelFile, boolean visuals, String agentName,
 			Integer baseSeed, Path[] transitionRoots, String envStem, int chunkSize, double scale,
-			long totalTimesteps, int numEnvs, String metadataJson) throws InterruptedException, IOException {
+			long totalTimesteps, int numEnvs, String metadataJson, long agentBudgetMs) throws InterruptedException, IOException {
 
 		// Init singletons once on the main thread before spawning workers.
 		VGDLFactory.GetInstance().init();
@@ -237,7 +240,7 @@ public class RunDataCollectionAgent {
 						int epSeed = seedRng.nextInt();
 						runOneEpisode(gameFile, levelFile, false, agentName, epSeed,
 								transitionRoots, envStem, chunkSize, scale, recorders, globalFrames, false, metadataJson,
-								totalTimesteps);
+								totalTimesteps, agentBudgetMs);
 						episodeCounter.incrementAndGet();
 					}
 
@@ -280,7 +283,7 @@ public class RunDataCollectionAgent {
 			int randomSeed, Path[] transitionRoots, String envStem, int chunkSize, double scale,
 			GvgaiTransitionShardRecorder[] sharedRecorders,
 			AtomicLong globalFrames,
-			boolean verbose, String metadataJson, long maxGlobalFrames) throws IOException {
+			boolean verbose, String metadataJson, long maxGlobalFrames, long agentBudgetMs) throws IOException {
 
 		Game toPlay;
 		AbstractPlayer inner;
@@ -329,7 +332,8 @@ public class RunDataCollectionAgent {
 					+ " (scale=" + scale + ")");
 		}
 
-		TransitionRecordingPlayer wrapped = new TransitionRecordingPlayer(inner, globalFrames, maxGlobalFrames, recorders);
+		TransitionRecordingPlayer wrapped = new TransitionRecordingPlayer(
+				inner, globalFrames, maxGlobalFrames, agentBudgetMs, recorders);
 		wrapped.setPlayerID(0);
 
 		// Actual gameplay runs outside the lock — fully parallel across workers.
@@ -542,7 +546,7 @@ public class RunDataCollectionAgent {
 	static String buildMetadataJson(String profile, MctsProfile cfg, String agent, String game,
 			String level, String envStem, String split, double scale, int chunkSize, Integer seed,
 			int numEnvs, long totalTimesteps, String levelIndex, String sourceRoot,
-			String sourceBaseGame, String sourceRuleTag) {
+			String sourceBaseGame, String sourceRuleTag, long agentBudgetMs) {
 		StringBuilder sb = new StringBuilder();
 		sb.append("{\n");
 		appendJson(sb, "profile", profile).append(",\n");
@@ -563,6 +567,7 @@ public class RunDataCollectionAgent {
 		sb.append("  \"base_seed\": ").append(seed == null ? "null" : seed.toString()).append(",\n");
 		sb.append("  \"num_envs\": ").append(numEnvs).append(",\n");
 		sb.append("  \"total_timesteps\": ").append(totalTimesteps).append(",\n");
+		sb.append("  \"agent_budget_ms\": ").append(agentBudgetMs).append(",\n");
 		sb.append("  \"mcts\": {\n");
 		appendJson(sb, "k", System.getProperty("mcts.k")).append(",\n");
 		appendJson(sb, "rollout_depth", System.getProperty("mcts.rolloutDepth")).append(",\n");
@@ -620,6 +625,7 @@ public class RunDataCollectionAgent {
 		System.out.println("  --split <name>          Output split when --output-root is omitted (default: train).");
 		System.out.println("  --total-timesteps <n>   Collect n frames across multiple episodes (required for parallel).");
 		System.out.println("  --num-envs <int>        Parallel environments (default: 1).");
+		System.out.println("  --agent-budget-ms <int> Per-action search budget passed to the agent (default: 40).");
 		System.out.println("  --scale <float>         Render scale 0..1 (default: 1.0, full-resolution RGB).");
 		System.out.println("  --chunk-size <int>      Frames per shard (default: 1000).");
 		System.out.println("  --seed <int>            Base RNG seed.");

@@ -20,6 +20,7 @@ public final class TransitionRecordingPlayer extends AbstractPlayer {
 	private final GvgaiTransitionShardRecorder[] recorders;
 	private final AtomicLong globalFrames;
 	private final long maxGlobalFrames;
+	private final long agentBudgetMs;
 	private boolean firstStepInEpisode = true;
 
 	public TransitionRecordingPlayer(AbstractPlayer inner, AtomicLong globalFrames,
@@ -29,9 +30,15 @@ public final class TransitionRecordingPlayer extends AbstractPlayer {
 
 	public TransitionRecordingPlayer(AbstractPlayer inner, AtomicLong globalFrames, long maxGlobalFrames,
 			GvgaiTransitionShardRecorder... recorders) {
+		this(inner, globalFrames, maxGlobalFrames, -1, recorders);
+	}
+
+	public TransitionRecordingPlayer(AbstractPlayer inner, AtomicLong globalFrames, long maxGlobalFrames,
+			long agentBudgetMs, GvgaiTransitionShardRecorder... recorders) {
 		this.inner = inner;
 		this.globalFrames = globalFrames;
 		this.maxGlobalFrames = maxGlobalFrames;
+		this.agentBudgetMs = agentBudgetMs;
 		this.recorders = recorders.clone();
 	}
 
@@ -40,7 +47,12 @@ public final class TransitionRecordingPlayer extends AbstractPlayer {
 		for (GvgaiTransitionShardRecorder r : recorders)
 			r.captureFrame();
 
-		Types.ACTIONS a = inner.act(stateObs, elapsedTimer);
+		ElapsedCpuTimer agentTimer = elapsedTimer;
+		if (agentBudgetMs > 0) {
+			agentTimer = new ElapsedCpuTimer();
+			agentTimer.setMaxTimeMillis(agentBudgetMs);
+		}
+		Types.ACTIONS a = inner.act(stateObs, agentTimer);
 
 		try {
 			boolean restartedStep = firstStepInEpisode;
