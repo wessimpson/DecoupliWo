@@ -11,17 +11,17 @@ BasicGame square_size=8
             laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.75 img=newset/laser2_1
 
         portal  >
-            portalSlow  > SpawnPoint   stype=alienBlue  cooldown=10 prob=0.05 img=newset/whirlpool2 portal=True
+            portalSlow  > SpawnPoint   stype=alienRed  cooldown=10 prob=0.05 img=newset/whirlpool2 portal=True
             rockPortal  > SpawnPoint   stype=rock  cooldown=10 prob=0.2 img=newset/whirlpool1 portal=True
 
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
         avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship3 rotateInPlace=False
-        alien > Bomber color=BROWN speed=0.1 orientation=LEFT stype=laser prob=0.01
-            alienBlue > img=oryx/alien1
+        alien > Bomber color=BROWN speed=0.4 orientation=LEFT stype=laser prob=0.05
             alienRed > img=oryx/alien3
-        ruleAlien > Bomber color=BROWN speed=0.1 orientation=LEFT stype=laser prob=0.01
-            ruleAlienDamaged > img=oryx/alien3
+            alienBlue > img=oryx/alien1
+        ruleAlien > Bomber color=BROWN speed=0.4 orientation=LEFT stype=laser prob=0.05
+            ruleAlienDamaged > img=oryx/alien1
     
     LevelMapping
         B > background portalSlow
@@ -40,7 +40,6 @@ BasicGame square_size=8
         missile EOS  > killSprite
 
         ruleAlienDamaged sam > killSprite scoreChange=2
-        alienBlue sam > transformTo stype=ruleAlienDamaged scoreChange=1 killSecond=True forceOrientation=True
         alienRed sam > transformTo stype=ruleAlienDamaged scoreChange=1 killSecond=True forceOrientation=True
 
         sam laser > transformTo stype=shield killSecond=True

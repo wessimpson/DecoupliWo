@@ -4,7 +4,8 @@ Play a GVGAI env with random actions; display frames live or save a video/GIF.
 
 Run from repo root or this folder:
   python training_data_gvgai/run_random_action.py
-  python run_random_action.py --env gvgai-aliens_rules_multishot-lvl0-v0
+  python run_random_action.py --env aliens --rules multishot --level 0 --show
+  python run_random_action.py --env waves --rules split_orthogonal --level 0 --show
 """
 from __future__ import annotations
 
@@ -163,32 +164,31 @@ def _save_video(frames: list[np.ndarray], path: Path, fps: float) -> None:
     print(f"Saved {len(frames)} frames → {path}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Random agent with visual playback")
-    parser.add_argument(
-        "--env",
-        default="gvgai-aliens-lvl0-v0",
-        help="Env id under games_world_model (e.g. gvgai-aliens_rules_multishot-lvl0-v0)",
-    )
-    parser.add_argument("--steps", type=int, default=500, help="Max env steps")
-    parser.add_argument("--scale", type=int, default=4, help="Nearest-neighbor upscale")
-    parser.add_argument("--fps", type=float, default=15.0, help="Playback / video FPS")
-    parser.add_argument("--delay", type=float, default=None, help="Seconds between frames when showing")
-    parser.add_argument("--show", action="store_true", help="Open live matplotlib window (default)")
-    parser.add_argument("--no-show", action="store_true", help="No live window (use with --video)")
-    parser.add_argument("--video", default="", help="Write replay (.mp4 or .gif)")
-    args = parser.parse_args()
-    delay = args.delay if args.delay is not None else (1.0 / args.fps)
-    show = args.show if args.show else not args.no_show
+def _video_out_path(base: Path, env_id: str, multi: bool) -> Path:
+    if not multi:
+        return base
+    tag = env_id.removeprefix("gvgai-")
+    suffix = base.suffix or ".mp4"
+    return base.with_name(f"{base.stem}_{tag}{suffix}")
 
-    _ensure_build()
-    game_file, level_files, level = _paths_from_env_id(args.env)
+
+def _run_episode(
+    env_id: str,
+    *,
+    steps: int,
+    scale: int,
+    delay: float,
+    show: bool,
+    video: Path | None,
+    fps: float,
+) -> None:
+    game_file, level_files, level = _paths_from_env_id(env_id)
     env = GVGAIFileEnv(
         game_file,
         level_files,
         level=level,
         gvgai_root=GVGAI_JAVA_ROOT,
-        max_episode_steps=args.steps,
+        max_episode_steps=steps,
     )
 
     frames: list[np.ndarray] = []
@@ -198,7 +198,7 @@ def main() -> None:
 
     try:
         obs, info = env.reset()
-        frame = _upscale(_obs_rgb(obs), args.scale)
+        frame = _upscale(_obs_rgb(obs), scale)
         frames.append(frame)
 
         if show:
@@ -207,22 +207,22 @@ def main() -> None:
             plt.ion()
             fig, ax = plt.subplots(figsize=(10, 5))
             im = ax.imshow(frame)
-            ax.set_title(_title(args.env, 0, 0.0, info.get("winner", "")))
+            ax.set_title(_title(env_id, 0, 0.0, info.get("winner", "")))
             ax.axis("off")
             fig.tight_layout()
             plt.pause(max(delay, 0.001))
 
-        for t in range(args.steps):
+        for t in range(steps):
             action_id = int(env.action_space.sample())
             obs, reward, terminated, truncated, info = env.step(action_id)
             done = terminated or truncated
-            frame = _upscale(_obs_rgb(obs), args.scale)
+            frame = _upscale(_obs_rgb(obs), scale)
             frames.append(frame)
 
             if show and im is not None and plt is not None:
                 im.set_data(frame)
                 im.axes.set_title(
-                    _title(args.env, t + 1, reward, info.get("winner", ""), done)
+                    _title(env_id, t + 1, reward, info.get("winner", ""), done)
                 )
                 fig.canvas.draw_idle()
                 plt.pause(delay)
@@ -235,12 +235,52 @@ def main() -> None:
             plt.ioff()
             plt.show()
 
-        if args.video:
-            _save_video(frames, Path(args.video), args.fps)
-        elif not show:
-            print("No --video and --no-show: nothing to display.")
+        if video is not None:
+            _save_video(frames, video, fps)
     finally:
         env.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Random agent with visual playback")
+    add_world_model_cli(parser)
+    parser.add_argument("--steps", type=int, default=500, help="Max env steps")
+    parser.add_argument("--scale", type=int, default=4, help="Nearest-neighbor upscale")
+    parser.add_argument("--fps", type=float, default=15.0, help="Playback / video FPS")
+    parser.add_argument("--delay", type=float, default=None, help="Seconds between frames when showing")
+    parser.add_argument("--show", action="store_true", help="Open live matplotlib window (default)")
+    parser.add_argument("--no-show", action="store_true", help="No live window (use with --video)")
+    parser.add_argument("--video", default="", help="Write replay (.mp4 or .gif)")
+    args = parser.parse_args()
+    delay = args.delay if args.delay is not None else (1.0 / args.fps)
+    show = args.show if args.show else not args.no_show
+
+    _ensure_build()
+    rule_tags = parse_rules_arg(args.rules)
+    levels = parse_levels_arg([str(x) for x in args.level])
+    configs = [
+        build_env_id(args.env, tag, lvl, args.version)
+        for tag in rule_tags
+        for lvl in levels
+    ]
+    multi = len(configs) > 1
+    video_base = Path(args.video) if args.video else None
+
+    if not show and not video_base and configs:
+        print("No --video and --no-show: nothing to display.")
+        return
+
+    for env_id in configs:
+        out = _video_out_path(video_base, env_id, multi) if video_base else None
+        _run_episode(
+            env_id,
+            steps=args.steps,
+            scale=args.scale,
+            delay=delay,
+            show=show,
+            video=out,
+            fps=args.fps,
+        )
 
 
 def _title(env: str, tick: int, reward: float, winner: str, done: bool = False) -> str:

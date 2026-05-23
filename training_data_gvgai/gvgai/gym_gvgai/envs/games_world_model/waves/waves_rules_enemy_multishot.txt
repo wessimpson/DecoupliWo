@@ -19,7 +19,7 @@ BasicGame square_size=8
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
         avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship3 rotateInPlace=False
-        alien > Bomber color=BROWN img=oryx/alien3 speed=0.1 orientation=LEFT stype=laser,laser,laser fireAllWeapons=True spreadDegrees=45 prob=0.01
+        alien > Bomber color=BROWN img=oryx/alien3 speed=0.4 orientation=LEFT stype=laser,laser,laser fireAllWeapons=True spreadDegrees=45 prob=0.05
     
     LevelMapping
         B > background portalSlow
@@ -49,7 +49,7 @@ BasicGame square_size=8
         avatar alien > changeResource resource=shield value=-1 killResource=True
 
         avatar laser laserUp laserDown > killIfHasLess resource=shield limit=0
-        avatar laser > changeResource resource=shield value=-1 killResource=True
+        avatar laser laserUp laserDown > changeResource resource=shield value=-1 killResource=True
 
         asteroid sam laser > killSprite
         rock asteroid > killSprite
