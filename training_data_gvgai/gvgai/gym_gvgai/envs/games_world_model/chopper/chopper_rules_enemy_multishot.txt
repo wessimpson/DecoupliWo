@@ -13,10 +13,10 @@ BasicGame square_size=8
             bomb > orientation=DOWN color=RED speed=0.75 img=newset/bomb singleton=True shrinkfactor=0.5
 
         cloud  > Missile img=newset/cloud2
-            leftCloud  > orientation=LEFT speed=0.05  color=WHITE
-            fastLeftCloud  > orientation=LEFT speed=0.2  color=WHITE
-            rightCloud  > orientation=RIGHT speed=0.05  color=WHITE
-            fastRightCloud  > orientation=RIGHT speed=0.2  color=WHITE
+            leftCloud  > orientation=LEFT speed=0.2  color=WHITE
+            fastLeftCloud  > orientation=LEFT speed=0.8  color=WHITE
+            rightCloud  > orientation=RIGHT speed=0.2  color=WHITE
+            fastRightCloud  > orientation=RIGHT speed=0.8  color=WHITE
 
         tank   > Bomber stype=sam,sam,sam fireAllWeapons=True spreadDegrees=45 spawnorientation=UP prob=0.1 cooldown=5 speed=0.6 img=newset/tank_blueU
         portal  > SpawnPoint img=oryx/dooropen1 portal=True

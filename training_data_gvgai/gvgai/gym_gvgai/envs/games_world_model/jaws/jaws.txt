@@ -2,19 +2,19 @@ BasicGame square_size=8
     SpriteSet
         water > Immovable img=newset/water2
         holes > SpawnPoint color=LIGHTGRAY img=newset/whirlpool2 portal=True
-            sharkhole  >  stype=shark  prob=0.025 total=1
-            whalehole  >  stype=whale  prob=0.1 cooldown=10
-            piranhahole  >  stype=piranha  prob=0.1 cooldown=10
+            sharkhole  >  stype=shark  prob=0.1 total=1
+            whalehole  >  stype=whale  prob=0.05 cooldown=10
+            piranhahole  >  stype=piranha  prob=0.05 cooldown=10
 
         moving >
             avatar  > ShootAvatar color=YELLOW  stype=torpedo img=newset/submarine
-            torpedo > Missile color=YELLOW shrinkfactor=0.3 img=oryx/orb2
+            torpedo > Missile color=YELLOW shrinkfactor=0.5 img=oryx/orb2
             fish >
-                shark  > Chaser speed=0.4 color=ORANGE img=newset/shark2 stype=avatar
-                whale  > Missile  orientation=RIGHT  speed=0.4 color=BROWN img=newset/whale
-                piranha > Missile orientation=LEFT speed=0.4 color=RED img=newset/piranha1
+                shark  > Chaser speed=0.2 color=ORANGE img=newset/shark2 stype=avatar
+                whale  > Missile  orientation=RIGHT  speed=0.2 color=BROWN img=newset/whale
+                piranha > Missile orientation=LEFT speed=0.2 color=RED img=newset/piranha1
 
-        shell > Resource color=GOLD limit=20 img=oryx/amulat1 shrinkfactor=0.5
+        shell > Resource color=GOLD limit=20 img=oryx/amulat1 shrinkfactor=1.0
         sharkFang > Resource color=GOLD limit=1 img=oryx/sword4 shrinkfactor=0.5
 
 

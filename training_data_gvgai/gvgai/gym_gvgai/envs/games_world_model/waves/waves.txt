@@ -16,7 +16,7 @@ BasicGame square_size=8
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
         avatar  > ShootAvatar color=YELLOW stype=sam speed=1.0 img=oryx/spaceship3 rotateInPlace=False
-        alien > Bomber color=BROWN img=oryx/alien3 speed=0.4 orientation=LEFT stype=laser prob=0.05
+        alien > Bomber color=BROWN img=oryx/alien3 speed=0.2 orientation=LEFT stype=laser prob=0.05
     
     LevelMapping
         B > background portalSlow
