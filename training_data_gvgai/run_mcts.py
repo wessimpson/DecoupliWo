@@ -36,6 +36,59 @@ from training_data_gvgai.run_random_action import (
 )
 
 
+MCTS_PROFILE_PROPS = {
+    "mcts_default": {},
+    "mcts_exploit": {
+        "mcts.k": "0.50",
+        "mcts.rolloutDepth": "12",
+        "mcts.maxIterations": "150",
+        "mcts.finalSelection": "best_value",
+        "mcts.temperature": "0.25",
+        "mcts.actionEpsilon": "0.0",
+    },
+    "mcts_balanced": {
+        "mcts.k": "1.41421356237",
+        "mcts.rolloutDepth": "10",
+        "mcts.maxIterations": "100",
+        "mcts.finalSelection": "visit_softmax",
+        "mcts.temperature": "0.35",
+        "mcts.actionEpsilon": "0.02",
+    },
+    "mcts_explore": {
+        "mcts.k": "2.50",
+        "mcts.rolloutDepth": "12",
+        "mcts.maxIterations": "80",
+        "mcts.finalSelection": "visit_softmax",
+        "mcts.temperature": "1.00",
+        "mcts.actionEpsilon": "0.05",
+    },
+    "mcts_scout": {
+        "mcts.k": "4.00",
+        "mcts.rolloutDepth": "6",
+        "mcts.maxIterations": "40",
+        "mcts.finalSelection": "visit_softmax",
+        "mcts.temperature": "1.50",
+        "mcts.actionEpsilon": "0.15",
+    },
+}
+
+MCTS_PROPERTY_KEYS = tuple(
+    sorted({key for props in MCTS_PROFILE_PROPS.values() for key in props})
+)
+
+
+def _apply_mcts_profile(profile: str) -> None:
+    from jpype import JClass
+
+    props = MCTS_PROFILE_PROPS[profile]
+    system = JClass("java.lang.System")
+    for key in MCTS_PROPERTY_KEYS:
+        if key in props:
+            system.setProperty(key, props[key])
+        else:
+            system.clearProperty(key)
+
+
 def _title(env: str, tick: int, reward: float, winner: str, done: bool = False) -> str:
     status = "DONE" if done else "playing"
     w = f" | {winner}" if winner else ""
@@ -65,6 +118,7 @@ def _run_episode(
     *,
     steps: int,
     mcts_ms: int,
+    profile: str,
     scale: int,
     delay: float,
     show: bool,
@@ -79,6 +133,7 @@ def _run_episode(
         gvgai_root=GVGAI_JAVA_ROOT,
         max_episode_steps=steps,
     )
+    _apply_mcts_profile(profile)
 
     frames: list[np.ndarray] = []
     plt = None
@@ -90,7 +145,11 @@ def _run_episode(
         frame = _upscale(_obs_rgb(obs), scale)
         frames.append(frame)
         game_tick = int(info.get("game_tick", -1))
-        print(f"[{env_id}] reset game_tick={game_tick} winner={info.get('winner')}", flush=True)
+        print(
+            f"[{env_id}] profile={profile} reset game_tick={game_tick} "
+            f"winner={info.get('winner')}",
+            flush=True,
+        )
 
         if show:
             import matplotlib.pyplot as plt
@@ -167,6 +226,12 @@ def main() -> None:
         default=40,
         help="Per-action MCTS CPU budget in milliseconds",
     )
+    parser.add_argument(
+        "--profile",
+        choices=tuple(MCTS_PROFILE_PROPS),
+        default="mcts_default",
+        help="MCTS profile to visualize; matches the collection profiles.",
+    )
     parser.add_argument("--scale", type=int, default=1, help="Nearest-neighbor upscale")
     parser.add_argument("--fps", type=float, default=15.0, help="Playback / video FPS")
     parser.add_argument("--delay", type=float, default=None, help="Seconds between frames when showing")
@@ -198,6 +263,7 @@ def main() -> None:
             env_id,
             steps=args.steps,
             mcts_ms=args.mcts_ms,
+            profile=args.profile,
             scale=args.scale,
             delay=delay,
             show=show,
