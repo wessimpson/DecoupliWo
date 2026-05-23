@@ -52,7 +52,7 @@ Options:
   --test-bases a,b,c                Optional eval/holdout collection dirs (default: defender,jaws,zelda).
   --test-include-variants           Include *_rules_* files in test split too.
   --dry-run                         Print discovered jobs without running Java.
-  --resume                          Skip stems whose output folder already has at least --total-timesteps frames.
+  --resume                          Skip completed stem/level/profile jobs already present in the output folder.
   --skip-build                      Do not run python build.py first.
   -h, --help                        Show this help.
 
@@ -195,6 +195,39 @@ print(frames)
 PY
 }
 
+job_frame_count() {
+  local env_dir="$1"
+  local profile="$2"
+  local level="$3"
+  python - "$env_dir" "$profile" "$level" <<'PY'
+from pathlib import Path
+import json
+import sys
+import numpy as np
+
+root = Path(sys.argv[1])
+want_profile = sys.argv[2]
+want_level = str(sys.argv[3])
+frames = 0
+if root.is_dir():
+    for shard in root.glob("shard_*"):
+        obs_path = shard / "obs.npy"
+        meta_path = shard / "metadata.json"
+        if not obs_path.is_file() or not meta_path.is_file():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if str(meta.get("profile", "")) != want_profile:
+                continue
+            if str(meta.get("level_index", "")) != want_level:
+                continue
+            frames += int(np.load(obs_path, mmap_mode="r").shape[0])
+        except Exception:
+            pass
+print(frames)
+PY
+}
+
 stem_is_complete() {
   local split="$1"
   local stem="$2"
@@ -202,6 +235,18 @@ stem_is_complete() {
   local out_root="${OUTPUT_ROOT:-$(default_output_root "$split")}"
   local frames
   frames="$(stem_frame_count "$out_root/$stem")"
+  [[ "$frames" -ge "$expected_frames" ]]
+}
+
+job_is_complete() {
+  local split="$1"
+  local stem="$2"
+  local level="$3"
+  local profile="$4"
+  local expected_frames="$5"
+  local out_root="${OUTPUT_ROOT:-$(default_output_root "$split")}"
+  local frames
+  frames="$(job_frame_count "$out_root/$stem" "$profile" "$level")"
   [[ "$frames" -ge "$expected_frames" ]]
 }
 
@@ -253,6 +298,11 @@ run_one() {
     return
   fi
 
+  if [[ "$RESUME" -eq 1 ]] && job_is_complete "$split" "$stem" "$level" "$profile" "$frames"; then
+    echo "==> $split $stem lvl$level $profile already has >= $frames frames; skipping due to --resume"
+    return
+  fi
+
   mkdir -p "$out_root"
   local args=(
     "$CLASS"
@@ -292,10 +342,6 @@ collect_base_train() {
     expected_frames=$(( TOTAL_TIMESTEPS * ${#levels[@]} ))
   fi
   for stem in "${stems[@]}"; do
-    if [[ "$RESUME" -eq 1 ]] && stem_is_complete train "$stem" "$expected_frames"; then
-      echo "==> train $stem already has >= $expected_frames frames; skipping due to --resume"
-      continue
-    fi
     for profile_idx in "${!profiles[@]}"; do
       weighted_total=$(( TOTAL_TIMESTEPS * weights[profile_idx] / 100 ))
       for level_idx in "${!levels[@]}"; do
@@ -321,10 +367,6 @@ collect_base_test() {
     expected_frames=$(( TOTAL_TIMESTEPS * ${#levels[@]} ))
   fi
   for stem in "${stems[@]}"; do
-    if [[ "$RESUME" -eq 1 ]] && stem_is_complete test "$stem" "$expected_frames"; then
-      echo "==> test $stem already has >= $expected_frames frames; skipping due to --resume"
-      continue
-    fi
     for level_idx in "${!levels[@]}"; do
       level="${levels[$level_idx]}"
       frames="$(frames_for_level "$TOTAL_TIMESTEPS" "$level_idx" "${#levels[@]}")"

@@ -342,9 +342,8 @@ public class RunDataCollectionAgent {
 		} catch (TransitionRecordingPlayer.FrameBudgetReachedException done) {
 			// Expected in fixed-frame collection mode.
 		} finally {
-			if (ownRecorders)
-				for (GvgaiTransitionShardRecorder r : recorders)
-					r.close();
+			for (GvgaiTransitionShardRecorder r : recorders)
+				r.flushEpisode();
 
 			ArcadeMachine.tearPlayerDown(toPlay, players, null, randomSeed, true);
 			if (verbose) { toPlay.handleResult(); toPlay.printResult(); }

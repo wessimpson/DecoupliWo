@@ -117,6 +117,10 @@ final class GvgaiTransitionShardRecorder {
 		flushShard();
 	}
 
+	void flushEpisode() throws IOException {
+		flushShard();
+	}
+
 	long getGlobalFrames() {
 		return globalFrames.get();
 	}
@@ -254,33 +258,59 @@ final class GvgaiTransitionShardRecorder {
 	}
 
 	/**
-	 * Reserves the next shard directory name under {@code envDir} using an exclusive
-	 * file lock so separate processes never pick the same {@code shard_%05d}.
+	 * Reserves the next shard directory name under {@code envDir} using a locked
+	 * per-folder counter so separate workers or JVMs never pick the same shard id.
 	 */
 	private static Path reserveNextShardDir(Path envDir) throws IOException {
 		synchronized (SHARD_ALLOC_LOCK) {
 			Files.createDirectories(envDir);
 			Path lockPath = envDir.resolve(".shard_alloc.lock");
+			Path counterPath = envDir.resolve(".next_shard_index");
 			try (FileChannel ch = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.READ,
 					StandardOpenOption.WRITE); FileLock ignored = ch.lock()) {
-				int maxIdx = -1;
-				try (DirectoryStream<Path> stream = Files.newDirectoryStream(envDir, "shard_*")) {
-					for (Path p : stream) {
-						String name = p.getFileName().toString();
-						Matcher m = SHARD_DIR_PATTERN.matcher(name);
-						if (!m.matches())
-							continue;
-						int v = Integer.parseInt(m.group(1));
-						if (v > maxIdx)
-							maxIdx = v;
-					}
-				}
-				int idx = maxIdx + 1;
-				Path shard = envDir.resolve(String.format("shard_%05d", idx));
+				int idx = Math.max(readNextShardIndex(counterPath), maxExistingShardIndex(envDir) + 1);
+				Path shard;
+				do {
+					shard = envDir.resolve(String.format("shard_%05d", idx));
+					idx++;
+				} while (Files.exists(shard));
 				Files.createDirectories(shard);
+				writeNextShardIndex(counterPath, idx);
 				return shard;
 			}
 		}
+	}
+
+	private static int readNextShardIndex(Path counterPath) {
+		try {
+			if (!Files.isRegularFile(counterPath))
+				return 0;
+			String raw = new String(Files.readAllBytes(counterPath), StandardCharsets.US_ASCII).trim();
+			return raw.isEmpty() ? 0 : Integer.parseInt(raw);
+		} catch (Exception ignored) {
+			return 0;
+		}
+	}
+
+	private static int maxExistingShardIndex(Path envDir) throws IOException {
+		int maxIdx = -1;
+		try (DirectoryStream<Path> stream = Files.newDirectoryStream(envDir, "shard_*")) {
+			for (Path p : stream) {
+				String name = p.getFileName().toString();
+				Matcher m = SHARD_DIR_PATTERN.matcher(name);
+				if (!m.matches())
+					continue;
+				int v = Integer.parseInt(m.group(1));
+				if (v > maxIdx)
+					maxIdx = v;
+			}
+		}
+		return maxIdx;
+	}
+
+	private static void writeNextShardIndex(Path counterPath, int nextIdx) throws IOException {
+		Files.write(counterPath, (Integer.toString(nextIdx) + "\n").getBytes(StandardCharsets.US_ASCII),
+				StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
 	}
 
 	private void flushShard() throws IOException {
