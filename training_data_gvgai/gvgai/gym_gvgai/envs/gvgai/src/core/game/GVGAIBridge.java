@@ -14,6 +14,8 @@ import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.TreeSet;
 
 /**
  * JPype bridge for GVGAI game engine.
@@ -277,6 +279,54 @@ public class GVGAIBridge {
         return lastObsJSON;
     }
 
+    /**
+     * Returns JSON-serialised collision/event records for the current game tick.
+     *
+     * GVGAI's event history is cumulative, but frame labelling needs only the
+     * events caused by the latest step. Each record includes numeric ids and
+     * registered sprite keys so Python does not need to reverse-map VGDL ids.
+     */
+    public String getLastTickEventsJSON() {
+        return getEventsSinceJSON(getGameTick());
+    }
+
+    /**
+     * Returns JSON-serialised collision/event records from minTick onward.
+     */
+    public String getEventsSinceJSON(int minTick) {
+        ArrayList<HashMap<String, Object>> rows = new ArrayList<HashMap<String, Object>>();
+        if (game == null) {
+            return "[]";
+        }
+        try {
+            StateObservation obs = game.getObservation();
+            TreeSet<Event> events = obs.getEventsHistory();
+            for (Event event : events) {
+                if (event.gameStep < minTick) continue;
+
+                HashMap<String, Object> row = new HashMap<String, Object>();
+                row.put("game_step", event.gameStep);
+                row.put("from_avatar", event.fromAvatar);
+                row.put("active_type_id", event.activeTypeId);
+                row.put("active_type_key", spriteTypeKey(event.activeTypeId));
+                row.put("passive_type_id", event.passiveTypeId);
+                row.put("passive_type_key", spriteTypeKey(event.passiveTypeId));
+                row.put("active_sprite_id", event.activeSpriteId);
+                row.put("passive_sprite_id", event.passiveSpriteId);
+                if (event.position != null) {
+                    row.put("position", new double[]{event.position.x, event.position.y});
+                } else {
+                    row.put("position", new double[]{-1, -1});
+                }
+                rows.add(row);
+            }
+        } catch (Exception e) {
+            return "[]";
+        }
+        tools.com.google.gson.Gson gson = new tools.com.google.gson.Gson();
+        return gson.toJson(rows);
+    }
+
     // ------------------------------------------------------------------ //
     // Rendering
     // ------------------------------------------------------------------ //
@@ -337,6 +387,15 @@ public class GVGAIBridge {
             return gson.toJson(sso);
         } catch (Exception e) {
             return "{}";
+        }
+    }
+
+    private String spriteTypeKey(int typeId) {
+        try {
+            String key = VGDLRegistry.GetInstance().getRegisteredSpriteKey(typeId);
+            return key == null ? "" : key;
+        } catch (Exception e) {
+            return "";
         }
     }
 }

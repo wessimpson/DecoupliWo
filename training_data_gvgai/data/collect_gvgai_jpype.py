@@ -12,6 +12,13 @@ import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
+from training_data_gvgai.data.frame_metadata import (
+	FRAME_METADATA_SCHEMA_VERSION,
+	FrameLabeler,
+	action_semantic,
+	build_frame_metadata,
+	prepare_frame_inputs,
+)
 from training_data_gvgai.data.gvgai_jpype_env import GVGAIFileEnv
 
 
@@ -30,6 +37,7 @@ class VariantJob:
 	level_files: tuple[Path, ...] | None
 	levels: tuple[int, ...]
 	rule_flags: dict[str, float | int | bool]
+	variant_label_rules: dict[str, dict[str, Any]]
 	description: str
 
 	@property
@@ -93,6 +101,7 @@ def load_jobs(catalog_path: Path, selected_games: set[str] | None, selected_vari
 				level_files=level_files,
 				levels=_as_tuple_ints(variant_spec.get("levels", game_levels)),
 				rule_flags=dict(variant_spec.get("rule_flags", {})),
+				variant_label_rules=dict(variant_spec.get("variant_label_rules", {})),
 				description=str(variant_spec.get("description", "")),
 			))
 
@@ -178,6 +187,13 @@ class ShardWriter:
 			dtype=np.float32,
 		)
 		rule_flags = np.repeat(flag_vector[None, :], len(self.rows), axis=0)
+		active_rule_flags = np.asarray(
+			[
+				[float(row["active_rule_flags"].get(name, 0.0)) for name in self.flag_names]
+				for row in self.rows
+			],
+			dtype=np.float32,
+		)
 
 		np.save(shard_dir / "obs.npy", obs)
 		np.save(shard_dir / "next_obs.npy", next_obs)
@@ -191,20 +207,29 @@ class ShardWriter:
 		np.save(shard_dir / "seed.npy", seed)
 		np.save(shard_dir / "avatar_xy.npy", avatar_xy)
 		np.save(shard_dir / "rule_flags.npy", rule_flags)
+		np.save(shard_dir / "active_rule_flags.npy", active_rule_flags)
 		np.save(shard_dir / "n_actions.npy", np.asarray(int(max(row["n_actions"] for row in self.rows)), dtype=np.int64))
+
+		with (shard_dir / "frame_metadata.jsonl").open("w", encoding="utf-8") as handle:
+			for row in self.rows:
+				handle.write(json.dumps(row["frame_metadata"], sort_keys=True) + "\n")
 
 		metadata = {
 			"schema_version": SCHEMA_VERSION,
+			"frame_metadata_schema_version": FRAME_METADATA_SCHEMA_VERSION,
 			"split": self.split,
 			"game": self.job.game,
 			"variant": self.job.variant,
 			"env_key": self.job.env_key,
 			"description": self.job.description,
 			"rule_flags": self.job.rule_flags,
+			"variant_label_rules": self.job.variant_label_rules,
 			"flag_names": list(self.flag_names),
 			"source": self.source,
 			"num_rows": len(self.rows),
 			"obs_shape": list(obs.shape[1:]),
+			"has_active_rule_flags": True,
+			"has_frame_metadata": True,
 			"has_next_obs": True,
 			"action_meanings": self.rows[0]["action_meanings"],
 			"created_at_unix": time.time(),
@@ -222,6 +247,8 @@ class ShardWriter:
 			"path": str(shard_dir),
 			"obs_shape": list(obs.shape[1:]),
 			"rule_flags": self.job.rule_flags,
+			"has_active_rule_flags": True,
+			"has_frame_metadata": True,
 		}
 		with self.manifest_path.open("a", encoding="utf-8") as handle:
 			handle.write(json.dumps(record, sort_keys=True) + "\n")
@@ -261,6 +288,39 @@ def choose_action(policy: str, action_space: gym.Space, rng: random.Random, last
 	return rng.randrange(int(action_space.n))
 
 
+def render_metadata_preview(metadata: dict[str, Any], mode: str, max_ascii_lines: int) -> str:
+	if mode == "json":
+		return json.dumps(metadata, sort_keys=True)
+
+	summary = {
+		"game": metadata["game"],
+		"level": metadata["level"],
+		"episode_id": metadata["episode_id"],
+		"step_in_episode": metadata["step_in_episode"],
+		"tick": metadata["tick"],
+		"next_tick": metadata["next_tick"],
+		"action": metadata["action"],
+		"configured_variants": metadata["configured_variants"],
+		"active_variants": metadata["active_variants"],
+		"labels": metadata["labels"],
+		"score": metadata["frame"]["score"],
+		"event_labels": [
+			label
+			for event in metadata["events"]
+			for label in event["labels"]
+		],
+	}
+	lines = [json.dumps(summary, sort_keys=True)]
+	if mode == "ascii":
+		ascii_obj = metadata["frame"].get("ascii", {})
+		ascii_grid = ascii_obj.get("grid", "") if isinstance(ascii_obj, dict) else str(ascii_obj)
+		ascii_lines = str(ascii_grid).splitlines()
+		if max_ascii_lines > 0:
+			ascii_lines = ascii_lines[:max_ascii_lines]
+		lines.extend(f"  {line}" for line in ascii_lines)
+	return "\n".join(lines)
+
+
 def collect_job(
 	job: VariantJob,
 	split: str,
@@ -273,6 +333,9 @@ def collect_job(
 	max_episode_steps: int,
 	flag_names: tuple[str, ...],
 	source: dict[str, Any],
+	metadata_preview: str,
+	metadata_preview_every: int,
+	metadata_preview_max_ascii_lines: int,
 ) -> None:
 	out_dir = out_root / split / job.game / job.variant
 	out_dir.mkdir(parents=True, exist_ok=True)
@@ -281,6 +344,7 @@ def collect_job(
 	frames = 0
 	episode_count = 0
 	episode_base = writer.shard_idx * 1_000_000
+	labeler = FrameLabeler(job.rule_flags, job.variant_label_rules)
 
 	with tqdm(total=total_frames, desc=f"{split}/{job.game}/{job.variant}", unit="frame") as progress:
 		while frames < total_frames:
@@ -291,6 +355,7 @@ def collect_job(
 			try:
 				reset_out = env.reset(seed=episode_seed, options={"level": level})
 				obs, _info = reset_out if isinstance(reset_out, tuple) else (reset_out, {})
+				labeler.reset_episode()
 				last_action: int | None = None
 				step_in_episode = 0
 				done = False
@@ -306,6 +371,37 @@ def collect_job(
 					avatar_xy = np.asarray(info.get("avatar_xy", info.get("player_xy", [-1.0, -1.0])), dtype=np.float32)
 					if avatar_xy.shape != (2,):
 						avatar_xy = np.asarray([-1.0, -1.0], dtype=np.float32)
+					_, semantic_action = action_semantic(int(action), action_meanings)
+					objects_t, objects_next, classified_events = prepare_frame_inputs(_info, info)
+					active_variants = labeler.active_variants(
+						frame_index=frames,
+						action=semantic_action,
+						objects_t=objects_t,
+						objects_next=objects_next,
+						classified_events=classified_events,
+					)
+					frame_metadata = build_frame_metadata(
+						game=job.game,
+						rollout_variant=job.variant,
+						level=int(level),
+						episode_id=int(episode_id),
+						step_in_episode=int(step_in_episode),
+						seed=int(episode_seed),
+						action_id=int(action),
+						action_meanings=action_meanings,
+						info_t=_info,
+						info_next=info,
+						static_rule_flags=job.rule_flags,
+						active_variants=active_variants,
+						classified_events=classified_events,
+						objects_t=objects_t,
+					)
+					if metadata_preview != "none" and frames % max(1, metadata_preview_every) == 0:
+						tqdm.write(render_metadata_preview(
+							frame_metadata,
+							metadata_preview,
+							metadata_preview_max_ascii_lines,
+						))
 
 					writer.append({
 						"obs": as_rgb(obs),
@@ -321,10 +417,13 @@ def collect_job(
 						"avatar_xy": avatar_xy,
 						"n_actions": int(getattr(env.action_space, "n", len(action_meanings))),
 						"action_meanings": action_meanings,
+						"active_rule_flags": frame_metadata["rule_flags_active"],
+						"frame_metadata": frame_metadata,
 					})
 					frames += 1
 					progress.update(1)
 					obs = next_obs
+					_info = info
 					last_action = action
 					step_in_episode += 1
 					done = bool(terminated or truncated)
@@ -354,6 +453,24 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--seed", type=int, default=0)
 	parser.add_argument("--gvgai-root", type=Path, default=None)
 	parser.add_argument("--max-episode-steps", type=int, default=2_000)
+	parser.add_argument(
+		"--metadata-preview",
+		choices=["none", "summary", "ascii", "json"],
+		default="none",
+		help="Print live frame metadata while collecting. Use json for full records.",
+	)
+	parser.add_argument(
+		"--metadata-preview-every",
+		type=int,
+		default=1,
+		help="Print one metadata preview every N collected frames.",
+	)
+	parser.add_argument(
+		"--metadata-preview-max-ascii-lines",
+		type=int,
+		default=20,
+		help="Maximum ASCII grid lines shown when --metadata-preview=ascii.",
+	)
 	return parser.parse_args()
 
 
@@ -379,6 +496,9 @@ def main() -> None:
 			max_episode_steps=args.max_episode_steps,
 			flag_names=flag_names,
 			source=source,
+			metadata_preview=args.metadata_preview,
+			metadata_preview_every=args.metadata_preview_every,
+			metadata_preview_max_ascii_lines=args.metadata_preview_max_ascii_lines,
 		)
 
 

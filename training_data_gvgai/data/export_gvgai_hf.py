@@ -49,6 +49,8 @@ def build_export(data_root: Path, export_dir: Path, repo_id: str | None, dataset
 			"num_rows": metadata["num_rows"],
 			"obs_shape": metadata["obs_shape"],
 			"rule_flags": metadata.get("rule_flags", {}),
+			"has_active_rule_flags": bool(metadata.get("has_active_rule_flags", False)),
+			"has_frame_metadata": bool(metadata.get("has_frame_metadata", False)),
 			"schema_version": metadata["schema_version"],
 		})
 
@@ -103,8 +105,9 @@ Variant-aware GVGAI rollout dataset for world-model training.
 - Variants: {", ".join(variants) if variants else "none"}
 
 Each shard directory contains `obs.npy`, `next_obs.npy`, `action.npy`, `reward.npy`,
-episode boundary fields, level/seed fields, `rule_flags.npy`, and `metadata.json`.
-The `rule_flags.npy` columns are ordered by `metadata.json["flag_names"]`.
+episode boundary fields, level/seed fields, `rule_flags.npy`, `active_rule_flags.npy`,
+`frame_metadata.jsonl`, and `metadata.json`. The rule-flag arrays are ordered by
+`metadata.json["flag_names"]`.
 
 Use `manifest.jsonl` as the stable index. Large `.npy` files are stored with Git LFS.
 """
