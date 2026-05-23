@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from typing import Sequence
 
@@ -163,12 +164,20 @@ class GVGAIFileEnv(gym.Env):
 	def _info(self) -> dict:
 		avatar = np.asarray(self._bridge.getAvatarPosition(), dtype=np.float32)
 		ascii_state = str(self._bridge.getObservationString())
+		events = []
+		if hasattr(self._bridge, "getLastTickEventsJSON"):
+			try:
+				events = json.loads(str(self._bridge.getLastTickEventsJSON()))
+			except Exception:
+				events = []
 		return {
 			"actions": list(self._actions),
 			"ascii": ascii_state,
 			"avatar_xy": avatar,
 			"block_size": int(self._bridge.getBlockSize()),
+			"events": events,
 			"game_tick": int(self._bridge.getGameTick()),
+			"observation_json": str(self._bridge.getObservationJSON()),
 			"score": float(self._bridge.getGameScore()),
 			"winner": str(self._bridge.getWinner()),
 		}
