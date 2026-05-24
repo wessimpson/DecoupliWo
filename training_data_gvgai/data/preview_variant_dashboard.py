@@ -54,6 +54,29 @@ DESCRIPTIONS = {
     "two_hit_color": "Enemies need two hits and change color/state after the first hit.",
 }
 
+PROJECTILE_TAGS = (
+    "big_shot",
+    "multishot",
+    "pierce_shot",
+    "big_explosion",
+    "wall_on_death",
+    "enemy_explode",
+    "ricochet",
+    "shoot_walls",
+    "split_orthogonal",
+    "two_hit_color",
+)
+MOTION_TAGS = (
+    "quick_dash",
+    "enemy_speed",
+    "car_speed",
+    "ghost_speed",
+    "ghost_freeze_on_powerup",
+    "oil_slowdown",
+    "shield_reflect",
+    "enemy_multishot",
+)
+
 
 def load_world_model_paths():
     spec = importlib.util.spec_from_file_location("world_model_paths", WORLD_MODEL_PATHS)
@@ -112,6 +135,66 @@ def save_gif(frames: list[np.ndarray], path: Path, max_side: int, frame_ms: int)
     )
 
 
+def _action_index(actions: list[str], action: str) -> int | None:
+    try:
+        return actions.index(action)
+    except ValueError:
+        return None
+
+
+def _first_available(actions: list[str], candidates: list[str]) -> int:
+    for action in candidates:
+        idx = _action_index(actions, action)
+        if idx is not None:
+            return idx
+    return 0
+
+
+def _demo_action(actions: list[str], tag: str, tick: int) -> int | None:
+    """Pick actions that make the named rule visible in short GIF rollouts."""
+    if tag == "default":
+        return None
+
+    if tag.startswith(PROJECTILE_TAGS) or tag == "multishot":
+        aim_fire_loop = [
+            "ACTION_UP",
+            "ACTION_USE",
+            "ACTION_USE",
+            "ACTION_RIGHT",
+            "ACTION_USE",
+            "ACTION_USE",
+            "ACTION_DOWN",
+            "ACTION_USE",
+            "ACTION_USE",
+            "ACTION_LEFT",
+            "ACTION_USE",
+            "ACTION_USE",
+        ]
+        action = aim_fire_loop[tick % len(aim_fire_loop)]
+        idx = _action_index(actions, action)
+        if idx is not None:
+            return idx
+        return _first_available(actions, ["ACTION_USE", "ACTION_UP", "ACTION_RIGHT", "ACTION_DOWN", "ACTION_LEFT"])
+
+    if tag.startswith(MOTION_TAGS):
+        movement_loop = [
+            "ACTION_RIGHT",
+            "ACTION_RIGHT",
+            "ACTION_RIGHT",
+            "ACTION_DOWN",
+            "ACTION_DOWN",
+            "ACTION_LEFT",
+            "ACTION_LEFT",
+            "ACTION_LEFT",
+            "ACTION_UP",
+            "ACTION_UP",
+        ]
+        action = movement_loop[tick % len(movement_loop)]
+        return _first_available(actions, [action, "ACTION_RIGHT", "ACTION_DOWN", "ACTION_LEFT", "ACTION_UP"])
+
+    return None
+
+
 def run_variant(
     resolver,
     stem: str,
@@ -119,6 +202,7 @@ def run_variant(
     *,
     steps: int,
     mcts_ms: int,
+    policy: str,
 ) -> tuple[list[np.ndarray], str]:
     game_file, level_files = resolver.resolve_gvgai_paths(str(GAMES_ROOT.parent.resolve()), stem, 0)
     env = GVGAIFileEnv(
@@ -133,18 +217,28 @@ def run_variant(
         obs, info = env.reset()
         frames.append(_obs_rgb(obs))
         status = f"reset {info.get('winner', '')}"
-        for _ in range(steps):
-            obs, reward, terminated, truncated, info = env.step_mcts(mcts_ms)
+        actions = env.get_action_meanings()
+        tag = tag_for(stem.split("_rules_", 1)[0], stem)
+        scripted_steps = 0
+        mcts_steps = 0
+        for tick in range(steps):
+            action = _demo_action(actions, tag, tick) if policy == "demo" else None
+            if action is None:
+                obs, reward, terminated, truncated, info = env.step_mcts(mcts_ms)
+                mcts_steps += 1
+            else:
+                obs, reward, terminated, truncated, info = env.step(action)
+                scripted_steps += 1
             frames.append(_obs_rgb(obs))
             status = f"t{info.get('game_tick', '?')} r={reward:.0f} {info.get('winner', '')}"
             if terminated or truncated:
                 break
-        return frames, f"{len(frames)} frames, {status}"
+        return frames, f"{len(frames)} frames, {policy} policy ({scripted_steps} scripted/{mcts_steps} MCTS), {status}"
     finally:
         env.close()
 
 
-def render_html(records: list[dict[str, object]], failures: list[dict[str, object]], steps: int) -> str:
+def render_html(records: list[dict[str, object]], failures: list[dict[str, object]], steps: int, policy: str) -> str:
     records_json = json.dumps(records)
     failures_json = json.dumps(failures)
     return f"""<!doctype html>
@@ -174,7 +268,7 @@ main {{ padding: 18px; }}
 </head>
 <body>
 <header>
-<h1>GVGAI Variant Live Runs - {steps}-step rollouts</h1>
+<h1>GVGAI Variant Rule Demos - {steps}-step {policy} rollouts</h1>
 <div class="controls">
 <select id="game"></select>
 <input id="query" placeholder="Filter variants" />
@@ -206,7 +300,7 @@ function render() {{
   const q = query.value.toLowerCase().trim();
   const game = gameSelect.value;
   const shown = records.filter(r => (!game || r.game === game) && (!q || r.tag.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)));
-  summary.textContent = `${{records.length}} animated {steps}-step runs generated. Showing ${{shown.length}}. Failures: ${{failures.length}}.`;
+  summary.textContent = `${{records.length}} animated {steps}-step {policy} runs generated. Showing ${{shown.length}}. Failures: ${{failures.length}}.`;
   failBox.innerHTML = failures.length ? `<div class="fail">${{failures.map(f => `${{f.game}}/${{f.tag}}: ${{f.error}}`).join('<br>')}}</div>` : '';
   grid.innerHTML = '';
   for (const r of shown) {{
@@ -239,8 +333,14 @@ def serve_dashboard(output_dir: Path, port: int) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--games", default="", help="Comma-separated games to render; default is all.")
-    parser.add_argument("--steps", type=int, default=60, help="MCTS steps per animated run.")
+    parser.add_argument("--steps", type=int, default=120, help="Environment steps per animated run.")
     parser.add_argument("--mcts-ms", type=int, default=5, help="MCTS budget per step in milliseconds.")
+    parser.add_argument(
+        "--policy",
+        choices=("demo", "mcts"),
+        default="demo",
+        help="Action policy for GIFs. demo intentionally fires/moves to reveal rule variants; mcts uses only Java sampleMCTS.",
+    )
     parser.add_argument("--level", type=int, default=None, help="Level index to preview; default is the first level present per game.")
     parser.add_argument("--output-dir", default="/tmp/decoupliwo_variant_live", help="Directory for index.html and GIF assets.")
     parser.add_argument("--max-side", type=int, default=192, help="Maximum source frame side before nearest-neighbor scaling.")
@@ -285,7 +385,14 @@ def main() -> None:
                 tag = tag_for(base, stem)
                 gif_name = f"{base}__{tag}.gif".replace("/", "_")
                 try:
-                    frames, status = run_variant(resolver, stem, level, steps=args.steps, mcts_ms=args.mcts_ms)
+                    frames, status = run_variant(
+                        resolver,
+                        stem,
+                        level,
+                        steps=args.steps,
+                        mcts_ms=args.mcts_ms,
+                        policy=args.policy,
+                    )
                     save_gif(frames, asset_dir / gif_name, args.max_side, args.frame_ms)
                     records.append(
                         {
@@ -307,10 +414,11 @@ def main() -> None:
         os.close(orig_out)
         os.close(orig_err)
 
-    (output_dir / "index.html").write_text(render_html(records, failures, args.steps), encoding="utf-8")
+    (output_dir / "index.html").write_text(render_html(records, failures, args.steps, args.policy), encoding="utf-8")
     summary = {
         "records": len(records),
         "steps": args.steps,
+        "policy": args.policy,
         "failures": failures,
         "by_game": dict(sorted(Counter(record["game"] for record in records).items())),
         "html": str(output_dir / "index.html"),

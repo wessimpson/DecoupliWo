@@ -30,15 +30,18 @@ python training_data_gvgai/gvgai/build.py
 pip install -r training_data_gvgai/requirements.txt
 pip install -e training_data_gvgai/gvgai
 python -m training_data_gvgai.data.preview_variant_dashboard \
-  --steps 60 \
+  --steps 120 \
   --output-dir /tmp/decoupliwo_variant_live \
   --serve \
   --port 8769
 ```
 
-Open `http://127.0.0.1:8769/index.html`. The page shows one animated MCTS
+Open `http://127.0.0.1:8769/index.html`. The page shows one animated rule-demo
 rollout for each default game and implemented rule variant, with filters by
-game and variant name.
+game and variant name. The default `--policy demo` mode intentionally acts out
+the rule: projectile variants aim and fire repeatedly, dash variants move in
+sustained directions, and speed/hazard variants keep the avatar moving so the
+changed behavior is visible in the GIF.
 
 Useful options:
 
@@ -48,6 +51,9 @@ python -m training_data_gvgai.data.preview_variant_dashboard --games aliens,wave
 
 # Longer rollouts for inspecting later effects.
 python -m training_data_gvgai.data.preview_variant_dashboard --steps 120 --serve
+
+# Compare against the Java sampleMCTS policy instead of the scripted rule demos.
+python -m training_data_gvgai.data.preview_variant_dashboard --policy mcts --steps 120 --serve
 
 # Generate static files only, then serve with any local web server.
 python -m training_data_gvgai.data.preview_variant_dashboard --output-dir /tmp/decoupliwo_variant_live
