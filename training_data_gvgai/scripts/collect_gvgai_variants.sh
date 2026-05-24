@@ -113,12 +113,10 @@ weights=(20 40 20 10 10)
 
 split_csv() {
   local raw="$1"
-  local -n out_ref="$2"
-  out_ref=()
   local item
-  IFS=',' read -r -a out_ref <<< "$raw"
-  for item in "${!out_ref[@]}"; do
-    out_ref[$item]="$(echo "${out_ref[$item]}" | xargs)"
+  echo "$raw" | tr ',' '\n' | while IFS= read -r item; do
+    item="$(echo "$item" | xargs)"
+    [[ -n "$item" ]] && printf '%s\n' "$item"
   done
 }
 
@@ -133,7 +131,7 @@ contains_item() {
 }
 
 all_base_dirs() {
-  find "$SOURCE_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+  find "$SOURCE_ROOT" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
 }
 
 level_indices_for_base() {
@@ -142,7 +140,7 @@ level_indices_for_base() {
     echo "$LEVELS" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | sort -n
     return
   fi
-  find "$SOURCE_ROOT/$base" -maxdepth 1 -type f -name 'lvl*.txt' -printf '%f\n' \
+  find "$SOURCE_ROOT/$base" -maxdepth 1 -type f -name 'lvl*.txt' -exec basename {} \; \
     | sed -n 's/^lvl\([0-9][0-9]*\)\.txt$/\1/p' \
     | sort -n
 }
@@ -154,7 +152,7 @@ stems_for_base() {
     [[ -f "$SOURCE_ROOT/$base/$base.txt" ]] && echo "$base"
     return
   fi
-  find "$SOURCE_ROOT/$base" -maxdepth 1 -type f -name '*.txt' ! -name 'lvl*.txt' -printf '%f\n' \
+  find "$SOURCE_ROOT/$base" -maxdepth 1 -type f -name '*.txt' ! -name 'lvl*.txt' -exec basename {} \; \
     | sed 's/\.txt$//' \
     | sort
 }
@@ -330,8 +328,10 @@ run_one() {
 
 collect_base_train() {
   local base="$1"
-  mapfile -t levels < <(level_indices_for_base "$base")
-  mapfile -t stems < <(stems_for_base "$base" 1)
+  local levels=()
+  while IFS= read -r level; do levels+=("$level"); done < <(level_indices_for_base "$base")
+  local stems=()
+  while IFS= read -r stem; do stems+=("$stem"); done < <(stems_for_base "$base" 1)
   if [[ "${#levels[@]}" -eq 0 || "${#stems[@]}" -eq 0 ]]; then
     echo "Skipping $base: no levels or game files discovered." >&2
     return
@@ -355,8 +355,10 @@ collect_base_train() {
 
 collect_base_test() {
   local base="$1"
-  mapfile -t levels < <(level_indices_for_base "$base")
-  mapfile -t stems < <(stems_for_base "$base" "$TEST_INCLUDE_VARIANTS")
+  local levels=()
+  while IFS= read -r level; do levels+=("$level"); done < <(level_indices_for_base "$base")
+  local stems=()
+  while IFS= read -r stem; do stems+=("$stem"); done < <(stems_for_base "$base" "$TEST_INCLUDE_VARIANTS")
   if [[ "${#levels[@]}" -eq 0 || "${#stems[@]}" -eq 0 ]]; then
     echo "Skipping $base: no levels or game files discovered." >&2
     return
@@ -383,7 +385,9 @@ collect_train() {
       train_bases+=("$base")
     done < <(all_base_dirs)
   else
-    split_csv "$TRAIN_BASES" train_bases
+    while IFS= read -r base; do
+      train_bases+=("$base")
+    done < <(split_csv "$TRAIN_BASES")
   fi
 
   echo "Train bases: ${train_bases[*]}"
@@ -399,7 +403,9 @@ collect_train() {
 collect_test() {
   local test_bases=()
   local base
-  split_csv "$TEST_BASES" test_bases
+  while IFS= read -r base; do
+    test_bases+=("$base")
+  done < <(split_csv "$TEST_BASES")
   echo "Test bases: ${test_bases[*]}"
   echo "Source root: $SOURCE_ROOT"
   echo "Sprite root: $SPRITE_ROOT"

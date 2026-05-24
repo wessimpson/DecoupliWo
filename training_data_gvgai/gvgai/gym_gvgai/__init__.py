@@ -24,6 +24,7 @@ def marker_version_ok(marker_path: str) -> bool:
         "v12_grid_10x10_square_8",
         "v13_grid_15x15_square_8",
         "v14_world_model_variants_mixed_grids",
+        "v15_world_model_variants_15x15",
     )
 
 

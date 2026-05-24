@@ -10,7 +10,9 @@ GAMES_ROOT = ROOT / "training_data_gvgai" / "gvgai" / "gym_gvgai" / "envs" / "ga
 WM_ROOT = ROOT / "training_data_gvgai" / "gvgai" / "gym_gvgai" / "envs" / "games_world_model"
 CATALOG_PATH = ROOT / "training_data_gvgai" / "data" / "gvgai_variant_catalog.world_model.json"
 MARKER_PATH = WM_ROOT / ".built_from_data_collection"
-MARKER_VERSION = "v14_world_model_variants_mixed_grids"
+MARKER_VERSION = "v15_world_model_variants_15x15"
+LEVEL_SIZE = 15
+LEVELS = tuple(range(5))
 
 
 LEGACY_ONLY = ("ikaruga", "seaquest", "missilecommand", "frogs", "pacman", "roadfighter", "sheriff")
@@ -34,6 +36,43 @@ PROJECTILES = {
     "seaquest": ("avatar", "torpedo"),
     "missilecommand": ("avatar", "explosion"),
     "sheriff": ("avatar", "bullet"),
+}
+
+CRITICAL_LEVEL_CHARS = {
+    "frogs": set("ABg1234-xl_="),
+    "ikaruga": set("Aqwerzx"),
+    "missilecommand": set("Acmf"),
+    "pacman": set("A01234f"),
+    "roadfighter": set("Aftsctx"),
+    "seaquest": set("A1234"),
+    "sheriff": set("A01234udlrs"),
+}
+
+UNIQUE_LEVEL_CHARS = {
+    "frogs": set("AB"),
+    "ikaruga": set("A"),
+    "missilecommand": set("A"),
+    "pacman": set("A"),
+    "roadfighter": set("A"),
+    "seaquest": set("A"),
+    "sheriff": set("A"),
+}
+
+LEVEL_CHAR_PRIORITY = {
+    ".": 0,
+    "+": 1,
+    "a": 1,
+    "w": 3,
+    "W": 3,
+    "o": 3,
+    "0": 20,
+    "1": 30,
+    "2": 30,
+    "3": 30,
+    "4": 30,
+    "A": 100,
+    "B": 100,
+    "g": 80,
 }
 
 
@@ -60,15 +99,133 @@ def ensure_square_size_8(text: str) -> str:
     return "\n".join([first, *rest])
 
 
+def normalize_legacy_base_text(game: str, text: str) -> str:
+    text = ensure_square_size_8(text)
+    if game == "missilecommand" and not re.search(r"(?m)^\s*w\s*>", text):
+        text = text.replace("    A > floor avatar", "    A > floor avatar\n    w > floor wall", 1)
+    return text
+
+
+def normalize_level_mapping_value(value: str) -> str:
+    return " ".join(value.split("#", 1)[0].split())
+
+
+def parse_level_mapping(text: str) -> dict[str, str]:
+    start, end = section_bounds(text, "LevelMapping")
+    mapping: dict[str, str] = {}
+    for line in text[start:end].splitlines():
+        match = re.match(r"\s*(\S)\s*>\s*(.*)$", line)
+        if match:
+            mapping[match.group(1)] = normalize_level_mapping_value(match.group(2))
+    return mapping
+
+
+def level_char_map(source_game: str, target_game: str) -> dict[str, str]:
+    source_map = parse_level_mapping(read_text(GAMES_ROOT / f"{source_game}_v0" / f"{source_game}.txt"))
+    target_map = parse_level_mapping(read_text(WM_ROOT / target_game / f"{target_game}.txt"))
+    target_by_value = {value: char for char, value in target_map.items()}
+    return {
+        source_char: target_by_value.get(value, source_char if source_char in target_map else source_char)
+        for source_char, value in source_map.items()
+    }
+
+
+def normalize_level_rows(text: str, char_map: dict[str, str]) -> list[list[str]]:
+    rows = [
+        [char_map.get(ch, ch) for ch in line]
+        for line in text.replace("\r", "").splitlines()
+        if line
+    ]
+    if not rows:
+        raise ValueError("Cannot resize an empty level")
+    width = max(len(row) for row in rows)
+    fill = max((ch for row in rows for ch in row), key=lambda ch: sum(r.count(ch) for r in rows))
+    return [row + [fill] * (width - len(row)) for row in rows]
+
+
+def choose_level_char(cells: list[str], critical: set[str]) -> str:
+    counts = {ch: cells.count(ch) for ch in set(cells)}
+    return max(
+        counts,
+        key=lambda ch: (
+            counts[ch],
+            LEVEL_CHAR_PRIORITY.get(ch, 40 if ch in critical else 10),
+        ),
+    )
+
+
+def place_preserved_char(grid: list[list[str]], char: str, target_y: int, target_x: int, critical: set[str]) -> None:
+    size = len(grid)
+    if grid[target_y][target_x] not in critical or grid[target_y][target_x] == char:
+        grid[target_y][target_x] = char
+        return
+
+    for radius in range(1, size):
+        for y in range(max(0, target_y - radius), min(size, target_y + radius + 1)):
+            for x in range(max(0, target_x - radius), min(size, target_x + radius + 1)):
+                if abs(y - target_y) + abs(x - target_x) > radius:
+                    continue
+                if grid[y][x] not in critical:
+                    grid[y][x] = char
+                    return
+
+
+def resize_level_to_15(game: str, text: str, char_map: dict[str, str]) -> str:
+    rows = normalize_level_rows(text, char_map)
+    height = len(rows)
+    width = len(rows[0])
+    critical = CRITICAL_LEVEL_CHARS.get(game, set())
+    unique = UNIQUE_LEVEL_CHARS.get(game, set())
+    grid: list[list[str]] = []
+
+    for target_y in range(LEVEL_SIZE):
+        source_y0 = target_y * height // LEVEL_SIZE
+        source_y1 = max(source_y0 + 1, ((target_y + 1) * height + LEVEL_SIZE - 1) // LEVEL_SIZE)
+        row: list[str] = []
+        for target_x in range(LEVEL_SIZE):
+            source_x0 = target_x * width // LEVEL_SIZE
+            source_x1 = max(source_x0 + 1, ((target_x + 1) * width + LEVEL_SIZE - 1) // LEVEL_SIZE)
+            cells = [
+                rows[y][x]
+                for y in range(source_y0, min(source_y1, height))
+                for x in range(source_x0, min(source_x1, width))
+            ]
+            row.append(choose_level_char(cells, critical))
+        grid.append(row)
+
+    source_unique_counts = {
+        char: sum(row.count(char) for row in rows)
+        for char in unique
+    }
+    replacement = choose_level_char([ch for row in grid for ch in row if ch not in unique] or ["."], critical)
+    for y, row in enumerate(grid):
+        for x, char in enumerate(row):
+            if char in unique and source_unique_counts.get(char) == 1:
+                grid[y][x] = replacement
+
+    for source_y, row in enumerate(rows):
+        for source_x, char in enumerate(row):
+            if char not in critical:
+                continue
+            target_y = min(LEVEL_SIZE - 1, int((source_y + 0.5) * LEVEL_SIZE / height))
+            target_x = min(LEVEL_SIZE - 1, int((source_x + 0.5) * LEVEL_SIZE / width))
+            place_preserved_char(grid, char, target_y, target_x, critical)
+
+    return "\n".join("".join(row) for row in grid)
+
+
 def copy_legacy_games() -> None:
     for game in LEGACY_ONLY:
         src_dir = GAMES_ROOT / f"{game}_v0"
         dst_dir = WM_ROOT / game
         dst_dir.mkdir(parents=True, exist_ok=True)
-        write_text(dst_dir / f"{game}.txt", ensure_square_size_8(read_text(src_dir / f"{game}.txt")))
-        for i in range(5):
-            write_text(dst_dir / f"lvl{i}.txt", read_text(src_dir / f"{game}_lvl{i}.txt"))
-        write_text(dst_dir / "lvl5.txt", read_text(src_dir / f"{game}_lvl0.txt"))
+        write_text(dst_dir / f"{game}.txt", normalize_legacy_base_text(game, read_text(src_dir / f"{game}.txt")))
+        char_map = level_char_map(game, game)
+        for i in LEVELS:
+            level = resize_level_to_15(game, read_text(src_dir / f"{game}_lvl{i}.txt"), char_map)
+            write_text(dst_dir / f"lvl{i}.txt", level)
+        for stale_level in dst_dir.glob("lvl[5-9]*.txt"):
+            stale_level.unlink()
 
 
 def base_text(game: str) -> str:
@@ -142,7 +299,16 @@ def clone_projectile_variant(text: str, avatar_sprite: str, projectile_sprite: s
     avatar_line = avatar_match.group("line")
     avatar_line = re.sub(rf"stype={re.escape(projectile_sprite)}\b", f"stype={','.join(names)}", avatar_line)
     if "fireAllWeapons=True" not in avatar_line:
-        avatar_line += " fireAllWeapons=True spreadPixels=0"
+        avatar_line += " fireAllWeapons=True"
+    if "spreadPixels=" not in avatar_line and "spreadDegrees=" not in avatar_line:
+        if projectile_sprite == "whiteBullet":
+            avatar_line += " spreadPixels=8"
+        elif projectile_sprite == "sam" and count == 3:
+            avatar_line += " spreadPixels=4"
+        else:
+            avatar_line += " spreadPixels=0"
+    if projectile_sprite == "sam" and count != 3 and "spreadDegrees=" not in avatar_line:
+        avatar_line += " spreadDegrees=22.5" if count == 5 else " spreadDegrees=45"
     text = text[: avatar_match.start("line")] + avatar_line + text[avatar_match.end("line") :]
 
     proj_pattern = re.compile(rf"(?m)^(?P<indent>\s*){re.escape(projectile_sprite)}\s*>\s*(?P<body>.*)$")
@@ -193,7 +359,7 @@ def write_catalog() -> None:
         }
 
     payload = {
-        "defaults": {"levels": [0, 1, 2, 3, 4, 5]},
+        "defaults": {"levels": list(LEVELS)},
         "games": games,
         "metadata": {
             "games_world_model_root": "training_data_gvgai/gvgai/gym_gvgai/envs/games_world_model",
@@ -212,8 +378,8 @@ def write_marker() -> None:
         MARKER_VERSION,
         f"games={total_games}",
         f"variants={total_variants}",
-        "levels=lvl0..lvl5",
-        "grid=mixed",
+        "levels=lvl0..lvl4",
+        "grid=15x15",
         "square_size=8",
         "source=training_data_gvgai/scripts/generate_world_model_rule_variants.py",
     ]
