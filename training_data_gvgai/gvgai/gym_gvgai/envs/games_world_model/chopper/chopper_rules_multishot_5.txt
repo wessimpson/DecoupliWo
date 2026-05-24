@@ -1,4 +1,3 @@
-# Chopper: triple bomb per USE — center straight down, flanks at 45° (down-left / down-right). Same win/lose and world as chopper.txt; requires ShootAvatar.fireAllWeapons and orientation x,y (VGDLFactory).
 BasicGame square_size=8
     SpriteSet
         layers > Immovable hidden=True
@@ -7,13 +6,14 @@ BasicGame square_size=8
             troposphere > img=oryx/backGrey
 
         satellite   > RandomNPC    color=WHITE img=newset/satellite cons=1
-        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bombL,bombC,bombR alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=newset/helicopter
+        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb1,bomb2,bomb3,bomb4,bomb5 alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=newset/helicopter
         missile > Missile
             sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
-            bombL > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
-            bombC > orientation=DOWN color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
-            bombR > orientation=0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
-
+            bomb1 > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
+            bomb2 > orientation=-0.3827,0.9239 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
+            bomb3 > orientation=DOWN color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
+            bomb4 > orientation=0.3827,0.9239 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
+            bomb5 > orientation=0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
         cloud  > Missile img=newset/cloud2
             leftCloud  > orientation=LEFT speed=0.2  color=WHITE
             fastLeftCloud  > orientation=LEFT speed=0.8  color=WHITE
@@ -51,16 +51,14 @@ BasicGame square_size=8
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        tank bombL > killSprite scoreChange=1
-        tank bombC > killSprite scoreChange=1
-        tank bombR > killSprite scoreChange=1
-        bombL tank wall EOS > killSprite
-        bombC tank wall EOS > killSprite
-        bombR tank wall EOS > killSprite
+        tank bomb1 bomb2 bomb3 bomb4 bomb5 > killSprite scoreChange=1
+        bomb1 tank wall EOS > killSprite
+        bomb2 tank wall EOS > killSprite
+        bomb3 tank wall EOS > killSprite
+        bomb4 tank wall EOS > killSprite
+        bomb5 tank wall EOS > killSprite
 
-        bombL sam > killBoth
-        bombC sam > killBoth
-        bombR sam > killBoth
+        bomb bomb1 bomb2 bomb3 bomb4 bomb5 sam > killBoth
 
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack

@@ -33,9 +33,9 @@
           ],
           "rule_flags": {}
         },
-        "enemy_explode": {
-          "description": "aliens with rule tag enemy_explode.",
-          "env_id": "gvgai-aliens_rules_enemy_explode-lvl{level}-v0",
+        "enemy_explode_1rad": {
+          "description": "aliens with rule tag enemy_explode_1rad (orthogonal blast tiles).",
+          "env_id": "gvgai-aliens_rules_enemy_explode_1rad-lvl{level}-v0",
           "levels": [
             0,
             1,
@@ -45,7 +45,37 @@
             5
           ],
           "rule_flags": {
-            "enemy_explode": 1
+            "enemy_explode_1rad": 1
+          }
+        },
+        "enemy_explode_3rad": {
+          "description": "aliens with rule tag enemy_explode_3rad (fire explosion, shrinkfactor 3).",
+          "env_id": "gvgai-aliens_rules_enemy_explode_3rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode_3rad": 1
+          }
+        },
+        "enemy_explode_5rad": {
+          "description": "aliens with rule tag enemy_explode_5rad (fire explosion, shrinkfactor 5).",
+          "env_id": "gvgai-aliens_rules_enemy_explode_5rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode_5rad": 1
           }
         },
         "enemy_multishot": {
@@ -163,9 +193,9 @@
           ],
           "rule_flags": {}
         },
-        "enemy_explode": {
-          "description": "chopper with rule tag enemy_explode.",
-          "env_id": "gvgai-chopper_rules_enemy_explode-lvl{level}-v0",
+        "enemy_explode_1rad": {
+          "description": "chopper with rule tag enemy_explode_1rad (orthogonal blast tiles).",
+          "env_id": "gvgai-chopper_rules_enemy_explode_1rad-lvl{level}-v0",
           "levels": [
             0,
             1,
@@ -175,7 +205,37 @@
             5
           ],
           "rule_flags": {
-            "enemy_explode": 1
+            "enemy_explode_1rad": 1
+          }
+        },
+        "enemy_explode_3rad": {
+          "description": "chopper with rule tag enemy_explode_3rad (fire explosion, shrinkfactor 3).",
+          "env_id": "gvgai-chopper_rules_enemy_explode_3rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode_3rad": 1
+          }
+        },
+        "enemy_explode_5rad": {
+          "description": "chopper with rule tag enemy_explode_5rad (fire explosion, shrinkfactor 5).",
+          "env_id": "gvgai-chopper_rules_enemy_explode_5rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode_5rad": 1
           }
         },
         "enemy_multishot": {
@@ -1628,9 +1688,9 @@
           ],
           "rule_flags": {}
         },
-        "enemy_explode": {
-          "description": "waves with rule tag enemy_explode.",
-          "env_id": "gvgai-waves_rules_enemy_explode-lvl{level}-v0",
+        "enemy_explode_1rad": {
+          "description": "waves with rule tag enemy_explode_1rad (orthogonal blast tiles).",
+          "env_id": "gvgai-waves_rules_enemy_explode_1rad-lvl{level}-v0",
           "levels": [
             0,
             1,
@@ -1640,7 +1700,37 @@
             5
           ],
           "rule_flags": {
-            "enemy_explode": 1
+            "enemy_explode_1rad": 1
+          }
+        },
+        "enemy_explode_3rad": {
+          "description": "waves with rule tag enemy_explode_3rad (fire explosion, shrinkfactor 3).",
+          "env_id": "gvgai-waves_rules_enemy_explode_3rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode_3rad": 1
+          }
+        },
+        "enemy_explode_5rad": {
+          "description": "waves with rule tag enemy_explode_5rad (fire explosion, shrinkfactor 5).",
+          "env_id": "gvgai-waves_rules_enemy_explode_5rad-lvl{level}-v0",
+          "levels": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rule_flags": {
+            "enemy_explode_5rad": 1
           }
         },
         "enemy_multishot": {

@@ -1,4 +1,4 @@
-# Variant: Enemy death explosion effect
+# Variant: Enemy death explosion, ~3-tile radius (fire blast sprite)
 BasicGame square_size=8
     SpriteSet
         background > Immovable img=oryx/space1 hidden=True
@@ -7,14 +7,14 @@ BasicGame square_size=8
         missile > Missile
             sam  > orientation=UP    color=BLUE singleton=True img=oryx/bullet1 shrinkfactor=3.0
             bomb > orientation=DOWN  color=RED  speed=0.5 img=oryx/bullet2
-            blast > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
-            blastCenter > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
         alien   > Bomber       stype=bomb   prob=0.1  cooldown=3 speed=0.8
             alienGreen > img=oryx/alien3
             alienBlue > img=oryx/alien1
         portal  > invisible=True hidden=True
         	portalSlow  > SpawnPoint   stype=alienBlue  cooldown=16   total=20 img=portal
-        	portalFast  > SpawnPoint   stype=alienGreen  cooldown=12   total=20 img=portal
+        	portalFast  > SpawnPoint   stype=alienBlue  cooldown=12   total=20 img=portal
+        explosion > Flicker limit=6 singleton=True img=oryx/fire1 shrinkfactor=1
+
 
     LevelMapping
         . > background
@@ -38,10 +38,7 @@ BasicGame square_size=8
 
         base   alien > killSprite
         avatar alien > killSprite scoreChange=-1
-        avatar bomb blast > killSprite scoreChange=-1
-        alien sam > killSprite scoreChange=2
-        sam alien > spawn stype=blastCenter
-        sam alien > spawnAbove stype=blast
-        sam alien > spawnBelow stype=blast
-        sam alien > spawnLeft stype=blast
-        sam alien > spawnRight stype=blast
+        avatar bomb explosion > killSprite scoreChange=-1
+        alien  sam   > transformTo stype=explosion killSecond=True scoreChange=2
+        alien explosion > killSprite
+        missile explosion > killSprite

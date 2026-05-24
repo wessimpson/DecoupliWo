@@ -6,11 +6,12 @@ BasicGame square_size=8
             troposphere > img=oryx/backGrey
 
         satellite   > RandomNPC    color=WHITE img=newset/satellite cons=1
-        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb img=newset/helicopter rotateInPlace=False
+        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bombL,bombC,bombR alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=newset/helicopter
         missile > Missile
             sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
-            bomb > orientation=DOWN color=RED speed=0.75 img=newset/bomb singleton=True shrinkfactor=1
-
+            bombL > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
+            bombC > orientation=DOWN color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
+            bombR > orientation=0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
         cloud  > Missile img=newset/cloud2
             leftCloud  > orientation=LEFT speed=0.2  color=WHITE
             fastLeftCloud  > orientation=LEFT speed=0.8  color=WHITE
@@ -24,7 +25,7 @@ BasicGame square_size=8
 
         supply > Missile orientation=LEFT speed=0.25 img=oryx/goldsack shrinkfactor=1.0
         bullet > Resource limit=20
-    
+
     LevelMapping
         g > avatar stratosphere
         h > satellite thermosphere
@@ -42,16 +43,18 @@ BasicGame square_size=8
         SpriteCounter      stype=avatar               limit=0 win=False
         SpriteCounter      stype=satellite               limit=0 win=False
         MultiSpriteCounter stype1=portalBase stype2=tank limit=0 win=True
-        
+
     InteractionSet
         avatar wall EOS > stepBack
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        tank bomb > killSprite scoreChange=1
-        bomb tank wall EOS > killSprite
+        tank bombL bombC bombR > killSprite scoreChange=1
+        bombL tank wall EOS > killSprite
+        bombC tank wall EOS > killSprite
+        bombR tank wall EOS > killSprite
 
-        bomb sam > killBoth
+        bomb bombL bombC bombR sam > killBoth
 
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack
