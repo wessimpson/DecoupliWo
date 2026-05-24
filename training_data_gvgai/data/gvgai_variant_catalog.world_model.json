@@ -5,8 +5,7 @@
       1,
       2,
       3,
-      4,
-      5
+      4
     ]
   },
   "games": {
@@ -16,8 +15,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "default": {
@@ -28,8 +26,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -41,8 +38,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_explode_1rad": 1
@@ -86,8 +82,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_multishot": 1
@@ -101,8 +96,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot": 1
@@ -116,8 +110,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "ricochet": 1
@@ -131,8 +124,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "shoot_walls": 1
@@ -146,8 +138,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "split_orthogonal": 1
@@ -161,8 +152,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "two_hit_color": 1
@@ -176,8 +166,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "default": {
@@ -188,8 +177,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -201,8 +189,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_explode_1rad": 1
@@ -246,8 +233,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_multishot": 1
@@ -261,8 +247,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot": 1
@@ -276,8 +261,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "ricochet": 1
@@ -291,8 +275,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "split_orthogonal": 1
@@ -306,8 +289,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "big_shot_1x": {
@@ -318,8 +300,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_1x": 1
@@ -333,8 +314,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_2x": 1
@@ -348,8 +328,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_4x": 1
@@ -363,8 +342,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -376,8 +354,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_speed_2x": 1
@@ -391,8 +368,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_2": 1
@@ -406,8 +382,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_3": 1
@@ -421,8 +396,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_5": 1
@@ -436,8 +410,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "pierce_shot": 1
@@ -451,8 +424,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -466,8 +438,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -481,8 +452,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -496,8 +466,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "shield_reflect": 1
@@ -511,8 +480,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "car_speed_2x": {
@@ -523,8 +491,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "car_speed_2x": 1
@@ -538,8 +505,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -551,8 +517,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -566,8 +531,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -581,8 +545,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -596,8 +559,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "big_explosion_3rad": {
@@ -608,8 +570,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_explosion_3rad": 1
@@ -623,8 +584,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_1x": 1
@@ -638,8 +598,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_2x": 1
@@ -653,8 +612,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_4x": 1
@@ -668,8 +626,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -681,8 +638,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_2": 1
@@ -696,8 +652,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_3": 1
@@ -711,8 +666,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_5": 1
@@ -726,8 +680,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "pierce_shot": 1
@@ -741,8 +694,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -756,8 +708,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -771,8 +722,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -786,8 +736,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "shield_reflect": 1
@@ -801,8 +750,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "default": {
@@ -813,8 +761,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -826,8 +773,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_speed_2x": 1
@@ -841,8 +787,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -856,8 +801,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -871,8 +815,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -886,8 +829,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "big_explosion_3rad": {
@@ -898,8 +840,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_explosion_3rad": 1
@@ -913,8 +854,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_explosion_5rad": 1
@@ -928,8 +868,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_1x": 1
@@ -943,8 +882,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_2x": 1
@@ -958,8 +896,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_4x": 1
@@ -973,8 +910,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -986,8 +922,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_2": 1
@@ -1001,8 +936,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_3": 1
@@ -1016,8 +950,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_5": 1
@@ -1031,8 +964,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "pierce_shot": 1
@@ -1046,8 +978,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "default": {
@@ -1058,8 +989,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -1071,8 +1001,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "ghost_freeze_on_powerup": 1
@@ -1086,8 +1015,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "ghost_speed_2x": 1
@@ -1101,8 +1029,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -1116,8 +1043,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -1131,8 +1057,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -1146,8 +1071,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "wall_on_death": 1
@@ -1161,8 +1085,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "car_speed_2x": {
@@ -1173,8 +1096,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "car_speed_2x": 1
@@ -1188,8 +1110,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -1201,8 +1122,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "oil_slowdown": 1
@@ -1216,8 +1136,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -1231,8 +1150,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -1246,8 +1164,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -1261,8 +1178,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "big_shot_1x": {
@@ -1273,8 +1189,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_1x": 1
@@ -1288,8 +1203,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_2x": 1
@@ -1303,8 +1217,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_4x": 1
@@ -1318,8 +1231,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -1331,8 +1243,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_speed_2x": 1
@@ -1346,8 +1257,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_2": 1
@@ -1361,8 +1271,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_3": 1
@@ -1376,8 +1285,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_5": 1
@@ -1391,8 +1299,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "pierce_shot": 1
@@ -1406,8 +1313,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -1421,8 +1327,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -1436,8 +1341,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -1451,8 +1355,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "shield_reflect": 1
@@ -1466,8 +1369,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "big_explosion_3rad": {
@@ -1478,8 +1380,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_explosion_3rad": 1
@@ -1493,8 +1394,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_1x": 1
@@ -1508,8 +1408,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_2x": 1
@@ -1523,8 +1422,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_shot_4x": 1
@@ -1538,8 +1436,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -1551,8 +1448,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_2": 1
@@ -1566,8 +1462,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_3": 1
@@ -1581,8 +1476,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot_5": 1
@@ -1596,8 +1490,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "pierce_shot": 1
@@ -1611,8 +1504,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -1626,8 +1518,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -1641,8 +1532,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -1656,8 +1546,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "wall_on_death": 1
@@ -1671,8 +1560,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "default": {
@@ -1683,8 +1571,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -1696,8 +1583,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_explode_1rad": 1
@@ -1741,8 +1627,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_multishot": 1
@@ -1756,8 +1641,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "multishot": 1
@@ -1771,8 +1655,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "ricochet": 1
@@ -1786,8 +1669,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "shoot_walls": 1
@@ -1801,8 +1683,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "split_orthogonal": 1
@@ -1816,8 +1697,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "two_hit_color": 1
@@ -1831,8 +1711,7 @@
         1,
         2,
         3,
-        4,
-        5
+        4
       ],
       "variants": {
         "big_explosion_3rad": {
@@ -1843,8 +1722,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "big_explosion_3rad": 1
@@ -1858,8 +1736,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {}
         },
@@ -1871,8 +1748,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "enemy_speed_2x": 1
@@ -1886,8 +1762,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_2tile": 1
@@ -1901,8 +1776,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_3tile": 1
@@ -1916,8 +1790,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "quick_dash_5tile": 1
@@ -1931,8 +1804,7 @@
             1,
             2,
             3,
-            4,
-            5
+            4
           ],
           "rule_flags": {
             "wall_on_death": 1
@@ -1943,7 +1815,7 @@
   },
   "metadata": {
     "games_world_model_root": "training_data_gvgai/gvgai/gym_gvgai/envs/games_world_model",
-    "marker_version": "v14_world_model_variants_mixed_grids",
+    "marker_version": "v15_world_model_variants_15x15",
     "source": "training_data_gvgai/scripts/generate_world_model_rule_variants.py"
   }
 }

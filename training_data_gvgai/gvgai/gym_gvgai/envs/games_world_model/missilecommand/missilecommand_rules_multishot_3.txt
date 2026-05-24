@@ -20,6 +20,7 @@ BasicGame square_size=8
     f > floor incoming_fast
     . > floor
     A > floor avatar
+    w > floor wall
 
   InteractionSet
     movable wall  > stepBack

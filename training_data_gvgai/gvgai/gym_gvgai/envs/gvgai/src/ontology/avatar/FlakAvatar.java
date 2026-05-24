@@ -60,6 +60,8 @@ public class FlakAvatar extends HorizontalAvatar
         fireAllWeapons = false;
         spreadPixels = 10;
         color = Types.GREEN;
+        stypes = null;
+        itypes = null;
     }
 
 

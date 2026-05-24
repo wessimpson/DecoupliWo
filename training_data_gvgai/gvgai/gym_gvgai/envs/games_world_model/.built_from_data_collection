@@ -1,7 +1,7 @@
-v14_world_model_variants_mixed_grids
+v15_world_model_variants_15x15
 games=13
 variants=101
-levels=lvl0..lvl5
-grid=mixed
+levels=lvl0..lvl4
+grid=15x15
 square_size=8
 source=training_data_gvgai/scripts/generate_world_model_rule_variants.py
