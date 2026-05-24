@@ -14,6 +14,10 @@ MARKER_VERSION = "v15_world_model_variants_15x15"
 LEVEL_SIZE = 15
 LEVELS = tuple(range(5))
 
+PACMAN_WALL = "w"
+PACMAN_GHOST = set("1234")
+PACMAN_CRITICAL = set("A01234f")
+
 
 LEGACY_ONLY = ("ikaruga", "seaquest", "missilecommand", "frogs", "pacman", "roadfighter", "sheriff")
 BASES = ("defender", "jaws", "zelda", *LEGACY_ONLY)
@@ -99,10 +103,19 @@ def ensure_square_size_8(text: str) -> str:
     return "\n".join([first, *rest])
 
 
+def rescale_missilecommand_incoming_speeds(text: str) -> str:
+    """square_size=8 truncates 0.1/0.3 to zero grid steps; use 1.0/3.0 (same 1:3 ratio)."""
+    text = text.replace("incoming_slow  > Chaser stype=city color=ORANGE speed=0.1", "incoming_slow  > Chaser stype=city color=ORANGE speed=1.0")
+    text = text.replace("incoming_fast  > Chaser stype=city color=YELLOW speed=0.3", "incoming_fast  > Chaser stype=city color=YELLOW speed=3.0")
+    return text
+
+
 def normalize_legacy_base_text(game: str, text: str) -> str:
     text = ensure_square_size_8(text)
-    if game == "missilecommand" and not re.search(r"(?m)^\s*w\s*>", text):
-        text = text.replace("    A > floor avatar", "    A > floor avatar\n    w > floor wall", 1)
+    if game == "missilecommand":
+        text = rescale_missilecommand_incoming_speeds(text)
+        if not re.search(r"(?m)^\s*w\s*>", text):
+            text = text.replace("    A > floor avatar", "    A > floor avatar\n    w > floor wall", 1)
     return text
 
 
@@ -214,16 +227,146 @@ def resize_level_to_15(game: str, text: str, char_map: dict[str, str]) -> str:
     return "\n".join("".join(row) for row in grid)
 
 
+def _level_block(rows: list[list[str]], ty: int, tx: int, height: int, width: int) -> list[str]:
+    source_y0 = ty * height // LEVEL_SIZE
+    source_y1 = max(source_y0 + 1, ((ty + 1) * height + LEVEL_SIZE - 1) // LEVEL_SIZE)
+    source_x0 = tx * width // LEVEL_SIZE
+    source_x1 = max(source_x0 + 1, ((tx + 1) * width + LEVEL_SIZE - 1) // LEVEL_SIZE)
+    return [
+        rows[y][x]
+        for y in range(source_y0, min(source_y1, height))
+        for x in range(source_x0, min(source_x1, width))
+    ]
+
+
+def _level_center_index(ty: int, tx: int, height: int, width: int) -> tuple[int, int]:
+    return (
+        min(height - 1, int((ty + 0.5) * height / LEVEL_SIZE)),
+        min(width - 1, int((tx + 0.5) * width / LEVEL_SIZE)),
+    )
+
+
+def _nearest_open_cell(
+    grid: list[list[str]],
+    target_y: int,
+    target_x: int,
+    occupied: set[tuple[int, int]],
+) -> tuple[int, int]:
+    size = len(grid)
+    if grid[target_y][target_x] != PACMAN_WALL and (target_y, target_x) not in occupied:
+        return target_y, target_x
+    for radius in range(1, size):
+        for y in range(max(0, target_y - radius), min(size, target_y + radius + 1)):
+            for x in range(max(0, target_x - radius), min(size, target_x + radius + 1)):
+                if abs(y - target_y) + abs(x - target_x) > radius:
+                    continue
+                if grid[y][x] != PACMAN_WALL and (y, x) not in occupied:
+                    return y, x
+    return target_y, target_x
+
+
+def _place_pacman_ghost_spawns(grid: list[list[str]]) -> None:
+    plus_cells = [
+        (y, x)
+        for y in range(LEVEL_SIZE)
+        for x in range(LEVEL_SIZE)
+        if grid[y][x] == "+"
+    ]
+    if len(plus_cells) < 4:
+        return
+    rows = sorted({y for y, _ in plus_cells})
+    mid_row = rows[len(rows) // 2]
+    slots = sorted(
+        [(y, x) for y, x in plus_cells if y == mid_row],
+        key=lambda cell: cell[1],
+    )
+    if len(slots) < 4:
+        slots = sorted(plus_cells, key=lambda cell: (cell[0], cell[1]))
+    start = max(0, (len(slots) - 4) // 2)
+    for index, char in enumerate("1234"):
+        y, x = slots[start + index]
+        grid[y][x] = char
+
+
+def resize_pacman_level_to_15(text: str, char_map: dict[str, str]) -> str:
+    """Downsample pacman mazes to 15x15 while keeping corridors and the ghost box."""
+    rows = normalize_level_rows(text, char_map)
+    height = len(rows)
+    width = len(rows[0])
+    grid: list[list[str]] = [["." for _ in range(LEVEL_SIZE)] for _ in range(LEVEL_SIZE)]
+    ghost_zone = [[False] * LEVEL_SIZE for _ in range(LEVEL_SIZE)]
+
+    for target_y in range(LEVEL_SIZE):
+        for target_x in range(LEVEL_SIZE):
+            cells = _level_block(rows, target_y, target_x, height, width)
+            center_y, center_x = _level_center_index(target_y, target_x, height, width)
+            center = rows[center_y][center_x]
+            wall_fraction = cells.count(PACMAN_WALL) / len(cells)
+            if wall_fraction >= 0.62 or (wall_fraction >= 0.45 and center == PACMAN_WALL):
+                grid[target_y][target_x] = PACMAN_WALL
+            elif "+" in cells or any(char in PACMAN_GHOST for char in cells):
+                grid[target_y][target_x] = "+"
+                ghost_zone[target_y][target_x] = True
+            else:
+                grid[target_y][target_x] = "."
+
+    for index in range(LEVEL_SIZE):
+        grid[0][index] = grid[LEVEL_SIZE - 1][index] = PACMAN_WALL
+        grid[index][0] = grid[index][LEVEL_SIZE - 1] = PACMAN_WALL
+
+    _place_pacman_ghost_spawns(grid)
+
+    occupied: set[tuple[int, int]] = set()
+    for source_y, row in enumerate(rows):
+        for source_x, char in enumerate(row):
+            if char not in PACMAN_CRITICAL or char in PACMAN_GHOST:
+                continue
+            target_y = min(LEVEL_SIZE - 1, int((source_y + 0.5) * LEVEL_SIZE / height))
+            target_x = min(LEVEL_SIZE - 1, int((source_x + 0.5) * LEVEL_SIZE / width))
+            cell_y, cell_x = _nearest_open_cell(grid, target_y, target_x, occupied)
+            if grid[cell_y][cell_x] == "+":
+                grid[cell_y][cell_x] = "."
+            grid[cell_y][cell_x] = char
+            occupied.add((cell_y, cell_x))
+
+    special = PACMAN_CRITICAL | {"+"}
+    for target_y in range(LEVEL_SIZE):
+        for target_x in range(LEVEL_SIZE):
+            if grid[target_y][target_x] == PACMAN_WALL:
+                continue
+            if grid[target_y][target_x] in special:
+                continue
+            grid[target_y][target_x] = "+" if ghost_zone[target_y][target_x] else "."
+
+    return "\n".join("".join(row) for row in grid)
+
+
 def copy_legacy_games() -> None:
+    import importlib.util
+
+    pacman_levels_path = (
+        Path(__file__).resolve().parent.parent / "gvgai" / "scripts" / "pacman_levels_15x15.py"
+    )
+    pacman_spec = importlib.util.spec_from_file_location("pacman_levels_15x15", pacman_levels_path)
+    pacman_levels = importlib.util.module_from_spec(pacman_spec)
+    assert pacman_spec.loader is not None
+    pacman_spec.loader.exec_module(pacman_levels)
+
     for game in LEGACY_ONLY:
         src_dir = GAMES_ROOT / f"{game}_v0"
         dst_dir = WM_ROOT / game
         dst_dir.mkdir(parents=True, exist_ok=True)
-        write_text(dst_dir / f"{game}.txt", normalize_legacy_base_text(game, read_text(src_dir / f"{game}.txt")))
+        base = normalize_legacy_base_text(game, read_text(src_dir / f"{game}.txt"))
+        if game == "pacman":
+            base = apply_pacman_power_rules(base)
+        write_text(dst_dir / f"{game}.txt", ensure_square_size_8(base))
         char_map = level_char_map(game, game)
-        for i in LEVELS:
-            level = resize_level_to_15(game, read_text(src_dir / f"{game}_lvl{i}.txt"), char_map)
-            write_text(dst_dir / f"lvl{i}.txt", level)
+        if game == "pacman":
+            pacman_levels.write_pacman_levels(dst_dir)
+        else:
+            for i in LEVELS:
+                level = resize_level_to_15(game, read_text(src_dir / f"{game}_lvl{i}.txt"), char_map)
+                write_text(dst_dir / f"lvl{i}.txt", level)
         for stale_level in dst_dir.glob("lvl[5-9]*.txt"):
             stale_level.unlink()
 
@@ -281,13 +424,135 @@ def replace_in_interaction(text: str, old: str, new: str) -> str:
     return text[:start] + block + text[end:]
 
 
+def sheriff_explosion_variant(base: str, radius: int) -> str:
+    """Enemy death blast like aliens enemy_explode_* (fire sprite inside SpriteSet)."""
+    explosion_line = (
+        f"        explosion > Flicker limit=6 singleton=True img=oryx/fire1 shrinkfactor={radius}"
+    )
+    wall_line = "        wall > Immovable autotiling=True img=oryx/dirtwall"
+    if re.search(r"(?m)^\s*explosion\s*>", base):
+        text = re.sub(r"(?m)^\s*explosion\s*>.*$", explosion_line, base, count=1)
+    else:
+        text = base.replace(wall_line, explosion_line + "\n" + wall_line, 1)
+    blast_rules = (
+        "        bandit bullet > transformTo stype=explosion killSecond=True scoreChange=1\n"
+        "        bandit explosion > killSprite\n"
+        "        missile explosion > killSprite\n"
+        "        bullet explosion > killSprite\n"
+        "        avatar explosion > killSprite scoreChange=-1"
+    )
+    return replace_in_interaction(
+        text,
+        "        bandit bullet > killBoth scoreChange=1",
+        blast_rules,
+    )
+
+
+PACMAN_POWER_TIMER = 120
+
+_PACMAN_GHOST_OK_SCARED = (
+    ("redOk", "redSc"),
+    ("pinkOk", "pinkSc"),
+    ("blueOk", "blueSc"),
+    ("orangeOk", "orangeSc"),
+)
+_PACMAN_GHOST_OK_FREEZE = (
+    ("redOk", "redFreeze"),
+    ("pinkOk", "pinkFreeze"),
+    ("blueOk", "blueFreeze"),
+    ("orangeOk", "orangeFreeze"),
+)
+
+
+def _pacman_power_mode_lines(timer: int, ok_scared: tuple[tuple[str, str], ...]) -> list[str]:
+    """Hungry-only power entry (matches pacman_v0); no powered-power re-scare (avoids dupes)."""
+    lines: list[str] = []
+    for ok, scared in ok_scared:
+        lines.append(f"        hungry power > transformToAll stype={ok} stypeTo={scared}")
+    for ok, scared in ok_scared:
+        lines.append(
+            f"        hungry power > addTimer timer={timer} ftype=transformToAll stype={scared} stypeTo={ok} killSecond=True"
+        )
+    lines.append(f"        hungry power > addTimer timer={timer} ftype=transformToAll stype=powered stypeTo=hungry")
+    lines.append("        hungry power > transformTo stype=powered")
+    return lines
+
+
+def fix_pacman_ghost_singleton(text: str) -> str:
+    """Singleton on *Ok only so redSc->redOk transform works while a scared ghost exists."""
+    for color in ("red", "blue", "pink", "orange"):
+        text = re.sub(rf"(?m)^(\s*{color}\s*>)\s*singleton=True\s*$", r"\1", text, count=1)
+    def _ok_singleton(line: re.Match[str]) -> str:
+        body = line.group(0).rstrip()
+        return body if "singleton=True" in body else body + " singleton=True"
+
+    return re.sub(r"(?m)^\s*(?:red|blue|pink|orange)Ok\s*>.*$", _ok_singleton, text)
+
+
+def _strip_powered_power_mode_lines(text: str) -> str:
+    text = re.sub(r"(?m)^[ \t]*powered power > transformToAll.*\n", "", text)
+    return re.sub(r"(?m)^[ \t]*powered power > addTimer.*\n", "", text)
+
+
+def _pacman_ghost_eaten_lines(ok_scared: tuple[tuple[str, str], ...]) -> list[str]:
+    return [f"        {scared} powered > transformTo stype={ok} scoreChange=40" for ok, scared in ok_scared]
+
+
+def apply_pacman_power_rules(text: str, timer: int = PACMAN_POWER_TIMER, use_freeze: bool = False) -> str:
+    """Finite power-up; eaten ghosts become chasers (transformTo), not removed."""
+    ok_scared = _PACMAN_GHOST_OK_FREEZE if use_freeze else _PACMAN_GHOST_OK_SCARED
+    power_block = "\n".join(_pacman_power_mode_lines(timer, ok_scared))
+    eat_block = "\n".join(_pacman_ghost_eaten_lines(ok_scared))
+    text = _strip_powered_power_mode_lines(text)
+    power_pattern = re.compile(
+        r"(?ms)^[ \t]*hungry power > transformToAll.*?^[ \t]*hungry power > transformTo stype=powered[ \t]*$"
+    )
+    if power_pattern.search(text):
+        text = power_pattern.sub(power_block, text, count=1)
+    text = re.sub(
+        r"(?m)^[ \t]*ghost powered > .*$",
+        eat_block,
+        text,
+        count=1,
+    )
+    for ok, scared in ok_scared:
+        text = text.replace(
+            f"        {scared} powered > killSprite scoreChange=40",
+            f"        {scared} powered > transformTo stype={ok} scoreChange=40",
+        )
+    return fix_pacman_ghost_singleton(text)
+
+
+def sheriff_multishot_variant(base: str, count: int) -> str:
+    """Fan centered on avatar facing (spreadDegrees); fixed UP orientations miss left/right/down."""
+    if count not in (2, 3, 5):
+        raise ValueError(f"unsupported sheriff multishot count: {count}")
+    spread = "22.5" if count == 5 else "45"
+    stype_field = ",".join(["bullet"] * count)
+    text = re.sub(
+        r"(?m)^\s*bullet\s*>.*$",
+        "        bullet > Missile img=oryx/orb3 shrinkfactor=0.5 speed=1.0",
+        base,
+        count=1,
+    )
+    avatar_line = (
+        f"        avatar  > ShootAvatar stype={stype_field} img=newset/sheriff1 "
+        f"speed=1.0 alignShotToOrientation=True fireAllWeapons=True spreadPixels=0 "
+        f"spreadDegrees={spread} rotateInPlace=False"
+    )
+    return re.sub(r"(?m)^\s*avatar\s*>.*$", avatar_line, text, count=1)
+
+
 def add_sprite_before_levels(text: str, line: str, sprite_name: str) -> str:
     if re.search(rf"(?m)^\s*{re.escape(sprite_name)}\s*>", text):
         return text
     match = re.search(r"(?m)^\s*LevelMapping\s*$", text)
     if not match:
         raise ValueError("Missing LevelMapping section")
-    return text[: match.start()] + line.rstrip() + "\n\n" + text[match.start() :]
+    sprite_line = line.rstrip()
+    if not sprite_line.startswith("        "):
+        sprite_line = "        " + sprite_line.lstrip()
+    return text[: match.start()] + sprite_line + "\n\n" + text[match.start() :]
 
 
 def clone_projectile_variant(text: str, avatar_sprite: str, projectile_sprite: str, count: int) -> str:
@@ -398,15 +663,107 @@ def big_shot_variants() -> None:
         _, projectile = PROJECTILES[game]
         base = base_text(game)
         for mult in (1, 2, 4):
-            write_variant(game, f"{game}_rules_big_shot_{mult}x", scale_shrinkfactor(base, projectile, mult))
+            text = scale_shrinkfactor(base, projectile, mult)
+            # Ikaruga: black ship uses blackBullet (base 0.5); scale both polarities together.
+            if game == "ikaruga":
+                text = scale_shrinkfactor(text, "blackBullet", mult)
+            write_variant(game, f"{game}_rules_big_shot_{mult}x", text)
+
+
+def ikaruga_multishot_variant(base: str, count: int) -> str:
+    """FlakAvatar multishot: explicit up-fan orientations, both polarities, no singleton on fan bullets."""
+    if count == 2:
+        white_names = ["whiteBulletL", "whiteBulletR"]
+        black_names = ["blackBulletL", "blackBulletR"]
+        white_lines = (
+            "            whiteBulletL > orientation=-0.7071,-0.7071 color=BLUE img=oryx/cspell1\n"
+            "            whiteBulletR > orientation=0.7071,-0.7071 color=BLUE img=oryx/cspell1\n"
+        )
+        black_lines = (
+            "            blackBulletL > orientation=-0.7071,-0.7071 color=BLUE img=oryx/orb3 shrinkfactor=0.5\n"
+            "            blackBulletR > orientation=0.7071,-0.7071 color=BLUE img=oryx/orb3 shrinkfactor=0.5\n"
+        )
+    elif count == 3:
+        white_names = ["whiteBulletL", "whiteBulletC", "whiteBulletR"]
+        black_names = ["blackBulletL", "blackBulletC", "blackBulletR"]
+        white_lines = (
+            "            whiteBulletL > orientation=-0.7071,-0.7071 color=BLUE img=oryx/cspell1\n"
+            "            whiteBulletC > orientation=UP    color=BLUE img=oryx/cspell1\n"
+            "            whiteBulletR > orientation=0.7071,-0.7071 color=BLUE img=oryx/cspell1\n"
+        )
+        black_lines = (
+            "            blackBulletL > orientation=-0.7071,-0.7071 color=BLUE img=oryx/orb3 shrinkfactor=0.5\n"
+            "            blackBulletC > orientation=UP    color=BLUE img=oryx/orb3 shrinkfactor=0.5\n"
+            "            blackBulletR > orientation=0.7071,-0.7071 color=BLUE img=oryx/orb3 shrinkfactor=0.5\n"
+        )
+    elif count == 5:
+        white_names = [f"whiteBullet{i}" for i in range(1, 6)]
+        black_names = [f"blackBullet{i}" for i in range(1, 6)]
+        orientations = [
+            "-0.7071,-0.7071",
+            "-0.3827,-0.9239",
+            "UP",
+            "0.3827,-0.9239",
+            "0.7071,-0.7071",
+        ]
+        white_lines = "".join(
+            f"            {n} > orientation={o} color=BLUE img=oryx/cspell1\n"
+            for n, o in zip(white_names, orientations)
+        )
+        black_lines = "".join(
+            f"            {n} > orientation={o} color=BLUE img=oryx/orb3 shrinkfactor=0.5\n"
+            for n, o in zip(black_names, orientations)
+        )
+    else:
+        raise ValueError(f"unsupported ikaruga multishot count: {count}")
+
+    text = base
+    text = re.sub(
+        r"(?m)^(\s*)whiteAvatar\s*>.*$",
+        f"\\1whiteAvatar > stype={','.join(white_names)} fireAllWeapons=True spreadPixels=0 img=oryx/spaceship1",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"(?m)^(\s*)blackAvatar\s*>.*$",
+        f"\\1blackAvatar > stype={','.join(black_names)} fireAllWeapons=True spreadPixels=0 img=oryx/spaceship2",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"(?m)^\s*whiteBullet\s*>.*\n\s*blackBullet\s*>.*\n",
+        white_lines + black_lines,
+        text,
+        count=1,
+    )
+    white_list = " ".join(white_names)
+    black_list = " ".join(black_names)
+    start, end = section_bounds(text, "InteractionSet")
+    block = text[start:end]
+    block = block.replace("bomb        whiteBullet > killBoth", f"bomb        {white_list} {black_list} > killBoth")
+    block = block.replace(
+        "blackAlien  blackBullet > killBoth scoreChange=1",
+        f"blackAlien  {black_list} > killBoth scoreChange=1",
+    )
+    block = block.replace(
+        "whiteAlien  whiteBullet > killBoth scoreChange=1",
+        f"whiteAlien  {white_list} > killBoth scoreChange=1",
+    )
+    return text[:start] + block + text[end:]
 
 
 def multishot_variants() -> None:
     for game in ("defender", "ikaruga", "seaquest", "missilecommand", "sheriff"):
-        avatar, projectile = PROJECTILES[game]
         base = base_text(game)
         for count in (2, 3, 5):
-            write_variant(game, f"{game}_rules_multishot_{count}", clone_projectile_variant(base, avatar, projectile, count))
+            if game == "ikaruga":
+                text = ikaruga_multishot_variant(base, count)
+            elif game == "sheriff":
+                text = sheriff_multishot_variant(base, count)
+            else:
+                avatar, projectile = PROJECTILES[game]
+                text = clone_projectile_variant(base, avatar, projectile, count)
+            write_variant(game, f"{game}_rules_multishot_{count}", text)
 
 
 def pierce_variants() -> None:
@@ -516,8 +873,21 @@ def explosion_variants() -> None:
     zelda = replace_in_interaction(zelda, "enemy sword > killSprite scoreChange=2", "enemy sword > transformTo stype=explosion killSecond=True scoreChange=2\n    enemy explosion > killSprite")
     write_variant("zelda", "zelda_rules_big_explosion_3rad", zelda)
 
-    ikaruga = add_sprite_before_levels(base_text("ikaruga"), "    explosion > Flicker limit=5 singleton=True img=oryx/circleEffect1 shrinkfactor=3", "explosion")
-    ikaruga = replace_in_interaction(ikaruga, "blackAlien  blackBullet > killBoth scoreChange=1", "blackAlien  blackBullet > transformTo stype=explosion killSecond=True scoreChange=1\n        whiteAlien  whiteBullet > transformTo stype=explosion killSecond=True scoreChange=1\n        alien explosion > killSprite")
+    ikaruga = add_sprite_before_levels(
+        base_text("ikaruga"),
+        "explosion > Flicker limit=6 singleton=True img=oryx/fire1 shrinkfactor=3",
+        "explosion",
+    )
+    ikaruga = replace_in_interaction(
+        ikaruga,
+        "        blackAlien  blackBullet > killBoth scoreChange=1\n        whiteAlien  whiteBullet > killBoth scoreChange=1",
+        "        blackAlien  blackBullet > transformTo stype=explosion killSecond=True scoreChange=1\n        whiteAlien  whiteBullet > transformTo stype=explosion killSecond=True scoreChange=1\n        alien       explosion   > killSprite\n        missile     explosion   > killSprite",
+    )
+    ikaruga = replace_in_interaction(
+        ikaruga,
+        "        avatar      bomb        > killBoth scoreChange=-1",
+        "        avatar      bomb        > killBoth scoreChange=-1\n        avatar      explosion   > killSprite scoreChange=-1",
+    )
     write_variant("ikaruga", "ikaruga_rules_big_explosion_3rad", ikaruga)
 
     sheriff = add_sprite_before_levels(base_text("sheriff"), "    explosion > Flicker limit=5 singleton=True img=oryx/circleEffect1 shrinkfactor=3", "explosion")
@@ -543,12 +913,22 @@ def pacman_freeze_variant() -> None:
         "                orangeFreeze > RandomPathAltChaser stype1=hungry stype2=powered cooldown=999 speed=0 img=oryx/ghost1 cons=4\n"
     )
     pac = pac.replace(marker, insert, 1)
-    pac = replace_in_interaction(
-        pac,
-        "        hungry power > transformToAll stype=redOk stypeTo=redSc\n        hungry power > transformToAll stype=pinkOk stypeTo=pinkSc\n        hungry power > transformToAll stype=blueOk stypeTo=blueSc\n        hungry power > transformToAll stype=orangeOk stypeTo=orangeSc\n\n        hungry power > addTimer timer=200 ftype=transformToAll stype=redSc stypeTo=redOk killSecond=True\n        hungry power > addTimer timer=200 ftype=transformToAll stype=pinkSc stypeTo=pinkOk killSecond=True\n        hungry power > addTimer timer=200 ftype=transformToAll stype=blueSc stypeTo=blueOk killSecond=True\n        hungry power > addTimer timer=200 ftype=transformToAll stype=orangeSc stypeTo=orangeOk killSecond=True\n\n        hungry power > addTimer timer=200 ftype=transformToAll stype=powered stypeTo=hungry\n        hungry power > transformTo stype=powered",
-        "        hungry power > transformToAll stype=redOk stypeTo=redFreeze\n        hungry power > transformToAll stype=pinkOk stypeTo=pinkFreeze\n        hungry power > transformToAll stype=blueOk stypeTo=blueFreeze\n        hungry power > transformToAll stype=orangeOk stypeTo=orangeFreeze\n\n        hungry power > addTimer timer=80 ftype=transformToAll stype=redFreeze stypeTo=redOk killSecond=True\n        hungry power > addTimer timer=80 ftype=transformToAll stype=pinkFreeze stypeTo=pinkOk killSecond=True\n        hungry power > addTimer timer=80 ftype=transformToAll stype=blueFreeze stypeTo=blueOk killSecond=True\n        hungry power > addTimer timer=80 ftype=transformToAll stype=orangeFreeze stypeTo=orangeOk killSecond=True\n\n        hungry power > addTimer timer=80 ftype=transformToAll stype=powered stypeTo=hungry\n        hungry power > transformTo stype=powered",
-    )
+    pac = apply_pacman_power_rules(pac, timer=80, use_freeze=True)
     write_variant("pacman", "pacman_rules_ghost_freeze_on_powerup", pac)
+
+
+def refresh_pacman_variants() -> None:
+    """Re-apply power rules to base and all pacman rule variants (except intentional wall_on_death eat)."""
+    base = apply_pacman_power_rules(read_text(WM_ROOT / "pacman" / "pacman.txt"))
+    write_text(WM_ROOT / "pacman" / "pacman.txt", ensure_square_size_8(base))
+    view_path = WM_ROOT / "pacman" / "pacman_view.txt"
+    if view_path.is_file():
+        write_text(view_path, ensure_square_size_8(apply_pacman_power_rules(read_text(view_path))))
+    for path in sorted((WM_ROOT / "pacman").glob("pacman_rules_*.txt")):
+        if "wall_on_death" in path.name or "ghost_freeze" in path.name:
+            continue
+        write_text(path, ensure_square_size_8(apply_pacman_power_rules(read_text(path))))
+    pacman_freeze_variant()
 
 
 def oil_slowdown_variant() -> None:
@@ -588,7 +968,7 @@ def main() -> None:
     speed_variants()
     shield_reflect_variants()
     explosion_variants()
-    pacman_freeze_variant()
+    refresh_pacman_variants()
     oil_slowdown_variant()
     write_catalog()
     write_marker()

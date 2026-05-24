@@ -62,8 +62,25 @@ def build_env_id(
     return f"gvgai-{stem}-lvl{level}-v{version}"
 
 
-def parse_rules_arg(rules: str | None) -> list[str | None]:
+def list_rule_tags(base: str) -> list[str]:
+    """Return sorted rule tags for games_world_model/{base}/."""
+    game_dir = GAMES_ROOT / base.strip()
+    if not game_dir.is_dir():
+        return []
+    prefix = f"{base.strip()}_rules_"
+    return [
+        p.stem[len(prefix) :]
+        for p in sorted(game_dir.glob(f"{base.strip()}_rules_*.txt"))
+    ]
+
+
+def parse_rules_arg(rules: str | None, base: str | None = None) -> list[str | None]:
     """Comma/slash-separated rule tags; empty string => base game only."""
+    if rules is not None and str(rules).strip().lower() == "all":
+        if not base:
+            raise ValueError("--rules all requires --env <game>")
+        tags = list_rule_tags(base)
+        return tags or [None]
     if rules is None or not str(rules).strip():
         return [None]
     parts = re.split(r"[,/]+", str(rules).strip())
@@ -97,8 +114,8 @@ def add_world_model_cli(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rules",
         default="",
-        help="Rule variant tag(s), comma- or slash-separated "
-        "(multishot, ricochet, enemy_explode, ...). Omit for base game.",
+        help="Rule variant tag(s), comma- or slash-separated, or 'all' for every "
+        "variant in games_world_model/<env>/ (multishot, ricochet, ...). Omit for base.",
     )
     parser.add_argument(
         "--level",
@@ -181,6 +198,7 @@ def _run_episode(
     show: bool,
     video: Path | None,
     fps: float,
+    block_on_close: bool = True,
 ) -> None:
     game_file, level_files, level = _paths_from_env_id(env_id)
     env = GVGAIFileEnv(
@@ -231,13 +249,23 @@ def _run_episode(
                 break
 
         if show and plt is not None:
-            print("Close the window to exit.")
-            plt.ioff()
-            plt.show()
+            if block_on_close:
+                print("Close the window to exit.")
+                plt.ioff()
+                plt.show()
+            else:
+                plt.pause(0.05)
 
         if video is not None:
             _save_video(frames, video, fps)
     finally:
+        if show:
+            import matplotlib.pyplot as plt
+
+            if fig is not None:
+                plt.close(fig)
+            elif plt is not None:
+                plt.close("all")
         env.close()
 
 
@@ -256,7 +284,7 @@ def main() -> None:
     show = args.show if args.show else not args.no_show
 
     _ensure_build()
-    rule_tags = parse_rules_arg(args.rules)
+    rule_tags = parse_rules_arg(args.rules, args.env)
     levels = parse_levels_arg([str(x) for x in args.level])
     configs = [
         build_env_id(args.env, tag, lvl, args.version)
@@ -267,20 +295,26 @@ def main() -> None:
     video_base = Path(args.video) if args.video else None
 
     if not show and not video_base and configs:
-        print("No --video and --no-show: nothing to display.")
-        return
+        print("Running headless (no window, no video).", flush=True)
 
     for env_id in configs:
         out = _video_out_path(video_base, env_id, multi) if video_base else None
-        _run_episode(
-            env_id,
-            steps=args.steps,
-            scale=args.scale,
-            delay=delay,
-            show=show,
-            video=out,
-            fps=args.fps,
-        )
+        try:
+            _run_episode(
+                env_id,
+                steps=args.steps,
+                scale=args.scale,
+                delay=delay,
+                show=show,
+                video=out,
+                fps=args.fps,
+                block_on_close=not multi,
+            )
+        except Exception as exc:
+            print(f"[{env_id}] ERROR: {exc}", flush=True)
+            if not multi:
+                raise
+            print(f"[{env_id}] skipping to next variant.", flush=True)
 
 
 def _title(env: str, tick: int, reward: float, winner: str, done: bool = False) -> str:

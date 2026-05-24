@@ -1746,6 +1746,8 @@ public abstract class Game {
 		boolean anyother = false;
 		if (!force) {
 			for (Integer typeInt : content.itypes) {
+				if (typeInt == null || typeInt < 0 || typeInt >= singletons.length)
+					continue;
 				// If this type is a singleton and we have one already
 				if (singletons[typeInt] && getNumSprites(typeInt) > 0) {
 					// that's it, no more creations of this type.

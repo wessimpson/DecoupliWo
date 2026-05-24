@@ -1,8 +1,8 @@
 package core.game;
 
 import core.competition.CompetitionParameters;
+import core.player.AbstractPlayer;
 import core.player.Player;
-import tracks.singlePlayer.advanced.sampleMCTS.Agent;
 import core.vgdl.SpriteGroup;
 import core.vgdl.VGDLFactory;
 import core.vgdl.VGDLParser;
@@ -14,6 +14,7 @@ import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Constructor;
 import java.util.ArrayList;
 
 /**
@@ -45,6 +46,10 @@ public class GVGAIBridge {
 
     /** Cached observation JSON string (populated by step / reset). */
     private String lastObsJSON = "";
+
+    /** Reused across steps for planning agents (OLETS, RHEA, …). */
+    private AbstractPlayer planningAgent = null;
+    private String planningAgentClass = null;
 
     // ------------------------------------------------------------------ //
     // Inner class: Python-controlled player
@@ -137,6 +142,8 @@ public class GVGAIBridge {
         }
         // -----------------------------------------------
 
+        planningAgent = null;
+        planningAgentClass = null;
         lastObsJSON = buildObsJSON();
     }
 
@@ -176,14 +183,51 @@ public class GVGAIBridge {
      * @param budgetMs per-action MCTS search budget in milliseconds
      */
     public void stepMCTS(long budgetMs) {
+        stepAgent("tracks.singlePlayer.advanced.sampleMCTS.Agent", budgetMs);
+    }
+
+    /**
+     * Advances the game by one step using a Java planning agent within a CPU-time budget.
+     *
+     * @param agentClassName fully-qualified agent class (e.g.
+     *                       {@code tracks.singlePlayer.advanced.olets.Agent})
+     * @param budgetMs       per-action search budget in milliseconds
+     */
+    public void stepAgent(String agentClassName, long budgetMs) {
         if (game == null || game.isEnded) return;
 
         StateObservation obs = game.getObservation();
         ElapsedCpuTimer timer = new ElapsedCpuTimer();
         timer.setMaxTimeMillis(budgetMs);
-        Agent agent = new Agent(obs, timer);
+
+        AbstractPlayer agent = getOrCreatePlanningAgent(agentClassName, obs);
         Types.ACTIONS action = agent.act(obs, timer);
         applyAction(action);
+    }
+
+    private AbstractPlayer getOrCreatePlanningAgent(String agentClassName, StateObservation obs) {
+        if (planningAgent != null && agentClassName.equals(planningAgentClass)) {
+            return planningAgent;
+        }
+
+        try {
+            ElapsedCpuTimer initTimer = new ElapsedCpuTimer();
+            initTimer.setMaxTimeMillis(CompetitionParameters.INITIALIZATION_TIME);
+
+            Class<? extends AbstractPlayer> controllerClass =
+                Class.forName(agentClassName).asSubclass(AbstractPlayer.class);
+            Constructor<? extends AbstractPlayer> ctor =
+                controllerClass.getConstructor(StateObservation.class, ElapsedCpuTimer.class);
+            AbstractPlayer agent = ctor.newInstance(obs, initTimer.copy());
+            agent.setPlayerID(0);
+            agent.setup(null, currentSeed, false);
+
+            planningAgent = agent;
+            planningAgentClass = agentClassName;
+            return agent;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create planning agent: " + agentClassName, e);
+        }
     }
 
     // ------------------------------------------------------------------ //

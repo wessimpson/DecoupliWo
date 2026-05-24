@@ -12,20 +12,19 @@ BasicGame square_size=8
         changer > Missile orientation=DOWN color=RED cooldown=2 speed=0.5
             whiteChanger > img=oryx/mineral1
             blackChanger > img=oryx/mineral3
-        alien   > Bomber stype=bomb prob=0.01  cooldown=6 speed=0.9 orientation=DOWN
+        alien   > Bomber stype=bomb prob=0.008  cooldown=8 speed=0.75 orientation=DOWN
             blackAlien > img=oryx/bird3
             whiteAlien > img=oryx/bird1
         portal  > SpawnPoint invisible=True hidden=True img=portal
-        	whitePortal1   > stype=whiteAlien   cooldown=28  total=10 
-        	blackPortal1   > stype=blackAlien   cooldown=28  total=10
-        	whitePortal2   > stype=whiteAlien   cooldown=56  total=5
-        	blackPortal2   > stype=blackAlien   cooldown=56  total=5
-        portal2 > SpawnPoint invisible=True hidden=True cooldown=100  total=40 img=portal
+        	whitePortal1   > stype=whiteAlien   cooldown=42  total=4 
+        	blackPortal1   > stype=blackAlien   cooldown=42  total=4
+        	whitePortal2   > stype=whiteAlien   cooldown=72  total=2
+        	blackPortal2   > stype=blackAlien   cooldown=72  total=2
+        portal2 > SpawnPoint invisible=True hidden=True cooldown=120  total=12 img=portal
         	wChangerPortal > stype=whiteChanger
         	bChangerPortal > stype=blackChanger
-    explosion > Flicker limit=5 singleton=True img=oryx/circleEffect1 shrinkfactor=3
+        explosion > Flicker limit=6 singleton=True img=oryx/fire1 shrinkfactor=3
 
-    
     LevelMapping
         o > wall background
         q > whitePortal1 background
@@ -57,7 +56,8 @@ BasicGame square_size=8
         
         avatar      alien       > killSprite scoreChange=-1
         avatar      bomb        > killBoth scoreChange=-1
+        avatar      explosion   > killSprite scoreChange=-1
         blackAlien  blackBullet > transformTo stype=explosion killSecond=True scoreChange=1
         whiteAlien  whiteBullet > transformTo stype=explosion killSecond=True scoreChange=1
-        alien explosion > killSprite
-        whiteAlien  whiteBullet > killBoth scoreChange=1
+        alien       explosion   > killSprite
+        missile     explosion   > killSprite

@@ -6,9 +6,10 @@ BasicGame square_size=8
             troposphere > img=oryx/backGrey
 
         satellite   > RandomNPC    color=WHITE img=newset/satellite cons=1
-        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb1,bomb2,bomb3,bomb4,bomb5 alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=newset/helicopter
+        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb1,bomb2,bomb3,bomb4,bomb5 speed=1.0 alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=newset/helicopter
         missile > Missile
             sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
+            bomb > orientation=DOWN color=RED speed=0.75 img=newset/bomb singleton=True shrinkfactor=0.5
             bomb1 > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
             bomb2 > orientation=-0.3827,0.9239 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
             bomb3 > orientation=DOWN color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
@@ -51,19 +52,24 @@ BasicGame square_size=8
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        tank bomb1 bomb2 bomb3 bomb4 bomb5 > killSprite scoreChange=1
-        bomb1 tank wall EOS > killSprite
-        bomb2 tank wall EOS > killSprite
-        bomb3 tank wall EOS > killSprite
-        bomb4 tank wall EOS > killSprite
-        bomb5 tank wall EOS > killSprite
+        missile EOS > killSprite
 
-        bomb bomb1 bomb2 bomb3 bomb4 bomb5 sam > killBoth
+        tank bomb1 > killSprite scoreChange=1
+        tank bomb2 > killSprite scoreChange=1
+        tank bomb3 > killSprite scoreChange=1
+        tank bomb4 > killSprite scoreChange=1
+        tank bomb5 > killSprite scoreChange=1
+
+        bomb1 sam > killBoth
+        bomb2 sam > killBoth
+        bomb3 sam > killBoth
+        bomb4 sam > killBoth
+        bomb5 sam > killBoth
 
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack
 
-        satellite sam > killBoth scoreChange=-1
+        satellite sam bomb1 bomb2 bomb3 bomb4 bomb5 > killBoth scoreChange=-1
         satellite wall EOS > stepBack
 
         avatar supply > changeResource resource=bullet value=5  killResource=True
@@ -72,5 +78,5 @@ BasicGame square_size=8
         avatar portal thermosphere troposphere > stepBack
         satellite stratosphere > stepBack
 
-        cloud sam > killBoth
+        cloud sam bomb1 bomb2 bomb3 bomb4 bomb5 > killBoth
         cloud EOS > wrapAround

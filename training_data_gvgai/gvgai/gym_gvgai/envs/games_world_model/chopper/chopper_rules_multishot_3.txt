@@ -6,9 +6,10 @@ BasicGame square_size=8
             troposphere > img=oryx/backGrey
 
         satellite   > RandomNPC    color=WHITE img=newset/satellite cons=1
-        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bombL,bombC,bombR alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=newset/helicopter
+        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bombL,bombC,bombR speed=1.0 alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=newset/helicopter
         missile > Missile
             sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
+            bomb > orientation=DOWN color=RED speed=0.75 img=newset/bomb singleton=True shrinkfactor=0.5
             bombL > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
             bombC > orientation=DOWN color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
             bombR > orientation=0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5
@@ -49,17 +50,20 @@ BasicGame square_size=8
         avatar sam > killSprite
         sam avatar wall EOS > killSprite
 
-        tank bombL bombC bombR > killSprite scoreChange=1
-        bombL tank wall EOS > killSprite
-        bombC tank wall EOS > killSprite
-        bombR tank wall EOS > killSprite
+        missile EOS > killSprite
 
-        bomb bombL bombC bombR sam > killBoth
+        tank bombL > killSprite scoreChange=1
+        tank bombC > killSprite scoreChange=1
+        tank bombR > killSprite scoreChange=1
+
+        bombL sam > killBoth
+        bombC sam > killBoth
+        bombR sam > killBoth
 
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack
 
-        satellite sam > killBoth scoreChange=-1
+        satellite sam bombL bombC bombR > killBoth scoreChange=-1
         satellite wall EOS > stepBack
 
         avatar supply > changeResource resource=bullet value=5  killResource=True
@@ -68,5 +72,5 @@ BasicGame square_size=8
         avatar portal thermosphere troposphere > stepBack
         satellite stratosphere > stepBack
 
-        cloud sam > killBoth
+        cloud sam bombL bombC bombR > killBoth
         cloud EOS > wrapAround

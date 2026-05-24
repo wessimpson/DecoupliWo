@@ -39,7 +39,15 @@ def resolve_gvgai_paths(base_dir: str, game: str, version: int) -> tuple[str, li
     base = game_base_from_stem(game)
     wm_dir = path.join(base_dir, "games_world_model", base)
     game_file = path.join(wm_dir, f"{game}.txt")
-    if path.isdir(wm_dir) and path.isfile(game_file):
+    if path.isdir(wm_dir):
+        if not path.isfile(game_file):
+            available = sorted(
+                name[len(f"{base}_rules_") :]
+                for name in os.listdir(wm_dir)
+                if name.startswith(f"{base}_rules_") and name.endswith(".txt")
+            )
+            hint = f" Available {base} rules: {', '.join(available) or '(none)'}"
+            raise FileNotFoundError(f"GVGAI game file not found: {game_file}.{hint}")
         level_files = _world_model_level_files(wm_dir)
         if not level_files:
             raise FileNotFoundError(f"No lvl*.txt files in {wm_dir}")

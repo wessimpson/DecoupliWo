@@ -184,6 +184,11 @@ class GVGAIFileEnv(gym.Env):
 		self._bridge.stepMCTS(int(budget_ms))
 		return self._finish_step()
 
+	def step_agent(self, agent_class: str, budget_ms: int = 40):
+		"""Advance one tick using a Java planning agent within ``budget_ms``."""
+		self._bridge.stepAgent(str(agent_class), int(budget_ms))
+		return self._finish_step()
+
 	def _finish_step(self):
 		self._elapsed_steps += 1
 		reward = float(self._bridge.getScoreDelta())

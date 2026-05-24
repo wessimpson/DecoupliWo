@@ -6,23 +6,12 @@ REPO_ROOT="$(cd "$PACKAGE_ROOT/.." && pwd)"
 GVGAI_ROOT="$PACKAGE_ROOT/gvgai"
 BUILD_DIR="$GVGAI_ROOT/gym_gvgai/envs/gvgai/GVGAI_Build"
 CLASS="tracks.singlePlayer.RunDataCollectionAgent"
-if [[ -n "${PYTHON:-}" ]]; then
-  :
-elif [[ -x "$REPO_ROOT/venv/Scripts/python.exe" ]]; then
-  PYTHON="$REPO_ROOT/venv/Scripts/python.exe"
-elif [[ -x "$REPO_ROOT/venv/bin/python" ]]; then
-  PYTHON="$REPO_ROOT/venv/bin/python"
-elif command -v python3 >/dev/null 2>&1; then
-  PYTHON="python3"
-else
-  PYTHON="python"
-fi
 
 MODE="train"
 SOURCE_ROOT="$GVGAI_ROOT/gym_gvgai/envs/games_world_model"
 SPRITE_ROOT="$GVGAI_ROOT/gym_gvgai/envs/gvgai/sprites"
-OUTPUT_BASE="$REPO_ROOT/data/transitions"
-OUTPUT_ROOT="$REPO_ROOT/data/transitions"
+OUTPUT_BASE="/hdd2/soyuj/transition_data"
+OUTPUT_ROOT=""
 TOTAL_TIMESTEPS=100000
 NUM_ENVS=1
 SCALE=1.0
@@ -34,7 +23,7 @@ RESUME=0
 BUDGET_SCOPE="stem"
 LEVELS="all"
 TRAIN_BASES="auto"
-TEST_BASES=""
+TEST_BASES="defender,jaws,zelda"
 TEST_INCLUDE_VARIANTS=0
 
 usage() {
@@ -50,8 +39,8 @@ Options:
   --mode train|test|all             Split/matrix to collect (default: train).
   --source-root DIR                 games_world_model root to discover.
   --sprite-root DIR                 GVGAI sprite image asset root.
-  --output-base DIR                 Base output dir (default: <repo>/data/transitions).
-  --output-root DIR                 Exact output root (default: <repo>/data/transitions).
+  --output-base DIR                 Base output dir (default: /hdd2/soyuj/transition_data).
+  --output-root DIR                 Override exact split output root. For --mode all, pass separate runs.
   --total-timesteps N               Frames per game/rule stem before profile weighting (default: 100000).
   --budget-scope stem|level         stem: split budget across levels; level: N frames per level (default: stem).
   --levels all|0,1,2                Levels to collect from each base game (default: all discovered lvl*.txt).
@@ -116,7 +105,7 @@ case "$BUDGET_SCOPE" in
 esac
 
 if [[ "$DRY_RUN" -eq 0 && "$SKIP_BUILD" -eq 0 ]]; then
-  (cd "$GVGAI_ROOT" && "$PYTHON" build.py)
+  (cd "$GVGAI_ROOT" && python build.py)
 fi
 
 profiles=(mcts_exploit mcts_balanced mcts_explore mcts_scout random)
@@ -187,7 +176,7 @@ default_output_root() {
 
 stem_frame_count() {
   local env_dir="$1"
-  "$PYTHON" - "$env_dir" <<'PY'
+  python - "$env_dir" <<'PY'
 from pathlib import Path
 import sys
 import numpy as np
@@ -208,7 +197,7 @@ job_frame_count() {
   local env_dir="$1"
   local profile="$2"
   local level="$3"
-  "$PYTHON" - "$env_dir" "$profile" "$level" <<'PY'
+  python - "$env_dir" "$profile" "$level" <<'PY'
 from pathlib import Path
 import json
 import sys

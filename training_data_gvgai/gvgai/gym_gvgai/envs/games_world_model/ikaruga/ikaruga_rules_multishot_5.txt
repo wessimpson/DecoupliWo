@@ -3,28 +3,32 @@ BasicGame square_size=8
         background > Immovable img=oryx/space1 hidden=True
         wall    > Immovable    color=WHITE img=oryx/planet
         avatar  > FlakAvatar rotateInPlace=False
-            whiteAvatar > stype=whiteBullet1,whiteBullet2,whiteBullet3,whiteBullet4,whiteBullet5 img=oryx/spaceship1 fireAllWeapons=True spreadPixels=8
-            blackAvatar > stype=blackBullet img=oryx/spaceship2
+            whiteAvatar > stype=whiteBullet1,whiteBullet2,whiteBullet3,whiteBullet4,whiteBullet5 fireAllWeapons=True spreadPixels=0 img=oryx/spaceship1
+            blackAvatar > stype=blackBullet1,blackBullet2,blackBullet3,blackBullet4,blackBullet5 fireAllWeapons=True spreadPixels=0 img=oryx/spaceship2
         missile > Missile
-            whiteBullet1 > orientation=UP    color=BLUE singleton=True img=oryx/cspell1
-            whiteBullet2 > orientation=UP    color=BLUE singleton=True img=oryx/cspell1
-            whiteBullet3 > orientation=UP    color=BLUE singleton=True img=oryx/cspell1
-            whiteBullet4 > orientation=UP    color=BLUE singleton=True img=oryx/cspell1
-            whiteBullet5 > orientation=UP    color=BLUE singleton=True img=oryx/cspell1
-            blackBullet  > orientation=UP    color=BLUE singleton=True img=oryx/orb3 shrinkfactor=0.5
+            whiteBullet1 > orientation=-0.7071,-0.7071 color=BLUE img=oryx/cspell1
+            whiteBullet2 > orientation=-0.3827,-0.9239 color=BLUE img=oryx/cspell1
+            whiteBullet3 > orientation=UP    color=BLUE img=oryx/cspell1
+            whiteBullet4 > orientation=0.3827,-0.9239 color=BLUE img=oryx/cspell1
+            whiteBullet5 > orientation=0.7071,-0.7071 color=BLUE img=oryx/cspell1
+            blackBullet1 > orientation=-0.7071,-0.7071 color=BLUE img=oryx/orb3 shrinkfactor=0.5
+            blackBullet2 > orientation=-0.3827,-0.9239 color=BLUE img=oryx/orb3 shrinkfactor=0.5
+            blackBullet3 > orientation=UP    color=BLUE img=oryx/orb3 shrinkfactor=0.5
+            blackBullet4 > orientation=0.3827,-0.9239 color=BLUE img=oryx/orb3 shrinkfactor=0.5
+            blackBullet5 > orientation=0.7071,-0.7071 color=BLUE img=oryx/orb3 shrinkfactor=0.5
             bomb         > orientation=DOWN  color=RED cooldown=4 speed=1 img=newset/bomb
         changer > Missile orientation=DOWN color=RED cooldown=2 speed=0.5
             whiteChanger > img=oryx/mineral1
             blackChanger > img=oryx/mineral3
-        alien   > Bomber stype=bomb prob=0.01  cooldown=6 speed=0.9 orientation=DOWN
+        alien   > Bomber stype=bomb prob=0.008  cooldown=8 speed=0.75 orientation=DOWN
             blackAlien > img=oryx/bird3
             whiteAlien > img=oryx/bird1
         portal  > SpawnPoint invisible=True hidden=True img=portal
-        	whitePortal1   > stype=whiteAlien   cooldown=28  total=10 
-        	blackPortal1   > stype=blackAlien   cooldown=28  total=10
-        	whitePortal2   > stype=whiteAlien   cooldown=56  total=5
-        	blackPortal2   > stype=blackAlien   cooldown=56  total=5
-        portal2 > SpawnPoint invisible=True hidden=True cooldown=100  total=40 img=portal
+        	whitePortal1   > stype=whiteAlien   cooldown=42  total=4 
+        	blackPortal1   > stype=blackAlien   cooldown=42  total=4
+        	whitePortal2   > stype=whiteAlien   cooldown=72  total=2
+        	blackPortal2   > stype=blackAlien   cooldown=72  total=2
+        portal2 > SpawnPoint invisible=True hidden=True cooldown=120  total=12 img=portal
         	wChangerPortal > stype=whiteChanger
         	bChangerPortal > stype=blackChanger
     
@@ -49,8 +53,7 @@ BasicGame square_size=8
         alien       EOS         > killSprite
         changer     EOS         > killSprite
         missile     EOS         > killSprite
-        bomb        whiteBullet1 whiteBullet2 whiteBullet3 whiteBullet4 whiteBullet5 > killBoth
-        bomb        blackBullet > killBoth
+        bomb        whiteBullet1 whiteBullet2 whiteBullet3 whiteBullet4 whiteBullet5 blackBullet1 blackBullet2 blackBullet3 blackBullet4 blackBullet5 > killBoth
         
         blackAvatar  whiteChanger > transformTo stype=whiteAvatar
         whiteChanger blackAvatar  > killSprite
@@ -59,5 +62,5 @@ BasicGame square_size=8
         
         avatar      alien       > killSprite scoreChange=-1
         avatar      bomb        > killBoth scoreChange=-1
-        blackAlien  blackBullet > killBoth scoreChange=1
+        blackAlien  blackBullet1 blackBullet2 blackBullet3 blackBullet4 blackBullet5 > killBoth scoreChange=1
         whiteAlien  whiteBullet1 whiteBullet2 whiteBullet3 whiteBullet4 whiteBullet5 > killBoth scoreChange=1

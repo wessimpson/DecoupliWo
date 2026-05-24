@@ -3,13 +3,9 @@ BasicGame square_size=8
 
         floor > Immovable img=oryx/backBiege
         base    > Immovable    color=WHITE img=oryx/wall4
-        avatar  > ShootAvatar stype=bullet1,bullet2,bullet3,bullet4,bullet5 img=newset/sheriff1 fireAllWeapons=True spreadPixels=0
+        avatar  > ShootAvatar stype=bullet,bullet,bullet,bullet,bullet img=newset/sheriff1 speed=1.0 alignShotToOrientation=True fireAllWeapons=True spreadPixels=0 spreadDegrees=22.5 rotateInPlace=False
         surround > Immovable    color=YELLOW img=dirt invisible=True
-        bullet1 > Missile img=oryx/orb3 shrinkfactor=0.5 singleton=True
-        bullet2 > Missile img=oryx/orb3 shrinkfactor=0.5 singleton=True
-        bullet3 > Missile img=oryx/orb3 shrinkfactor=0.5 singleton=True
-        bullet4 > Missile img=oryx/orb3 shrinkfactor=0.5 singleton=True
-        bullet5 > Missile img=oryx/orb3 shrinkfactor=0.5 singleton=True
+        bullet > Missile img=oryx/orb3 shrinkfactor=0.5 speed=1.0
 
         turn > Immovable invisible=True hidden=True
             turnup > orientation=UP img=dirt
@@ -50,15 +46,15 @@ BasicGame square_size=8
     InteractionSet
         avatar surround base wall > stepBack
 
-        base missile bullet1 bullet2 bullet3 bullet4 bullet5 > killBoth
-        EOS missile bullet1 bullet2 bullet3 bullet4 bullet5 > killSprite
+        base missile bullet > killBoth
+        EOS missile bullet > killSprite
 
         bleft turndown > transformTo stype=bdown
         bright turnup > transformTo stype=bup
         bdown turnright > transformTo stype=bright
         bup turnleft > transformTo stype=bleft
 
-        bandit bullet1 bullet2 bullet3 bullet4 bullet5 > killBoth scoreChange=1
+        bandit bullet > killBoth scoreChange=1
         avatar missile > killBoth scoreChange=-1
 
-        bullet1 bullet2 bullet3 bullet4 bullet5 wall > killSprite
+        bullet wall > killSprite

@@ -389,6 +389,9 @@ class EncodedRolloutVideoDataset(Dataset):
 # Folders **without** ``_rules_*`` map to ``NULL``: all-zero vector (baseline / classifier-free ``rule`` dropout target).
 RULE_TAGS: tuple[str, ...] = (
 	"enemy_explode",
+	"enemy_explode_1rad",
+	"enemy_explode_3rad",
+	"enemy_explode_5rad",
 	"enemy_multishot",
 	"multishot",
 	"ricochet",

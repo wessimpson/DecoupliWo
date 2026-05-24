@@ -7,8 +7,8 @@ wwwwgwwwwwwwww2
 0==00==0======3
 ww+w++ww++w+ww4
 w.xx..xx+xx+xww
-...............
-.-.-------.---.
+.-.............
+-x.-------.---.
 .x...x..xxx.xxx
 .+++A+++++++++x
 wwwwwwwwwwwwwww

@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 """
-Play a GVGAI env with sampleMCTS (UCT); display frames live or save a video/GIF.
+Play a GVGAI env with a Java planning agent; display frames live or save a video/GIF.
 
 Run from repo root or this folder:
   python training_data_gvgai/run_mcts.py
-  python run_mcts.py --env aliens --rules multishot --level 0 --mcts-ms 40
-  python run_mcts.py --env aliens --rules multishot/ricochet --level 0,1,2
+  python run_mcts.py --env pacman --rules base --level 0 --agent olets --mcts-ms 100 --show --scale 4
+  python run_mcts.py --env aliens --rules multishot --level 0 --agent mcts --mcts-ms 40
+  python run_mcts.py --env aliens --rules multishot/ricochet --level 0,1,2 --agent rhea
 """
 from __future__ import annotations
 
@@ -76,6 +77,24 @@ MCTS_PROPERTY_KEYS = tuple(
     sorted({key for props in MCTS_PROFILE_PROPS.values() for key in props})
 )
 
+AGENT_ALIASES = {
+    "mcts": "tracks.singlePlayer.advanced.sampleMCTS.Agent",
+    "olets": "tracks.singlePlayer.advanced.olets.Agent",
+    "rhea": "tracks.singlePlayer.advanced.sampleRHEA.Agent",
+    "repeat_olets": "tracks.singlePlayer.tools.repeatOLETS.Agent",
+    "ucb": "tracks.singlePlayer.tools.ucbOptimizerAgent.Agent",
+}
+
+
+def _resolve_agent(agent: str) -> str:
+    key = agent.strip().lower()
+    if key in AGENT_ALIASES:
+        return AGENT_ALIASES[key]
+    if agent.startswith("tracks."):
+        return agent
+    choices = ", ".join(sorted(AGENT_ALIASES))
+    raise ValueError(f"Unknown agent {agent!r}; choose one of: {choices}, or pass a full Java class name")
+
 
 def _apply_mcts_profile(profile: str) -> None:
     from jpype import JClass
@@ -124,12 +143,14 @@ def _run_episode(
     *,
     steps: int,
     mcts_ms: int,
+    agent: str,
     profile: str,
     scale: int,
     delay: float,
     show: bool,
     video: Path | None,
     fps: float,
+    block_on_close: bool = True,
 ) -> None:
     game_file, level_files, level = _paths_from_env_id(env_id)
     env = GVGAIFileEnv(
@@ -139,7 +160,11 @@ def _run_episode(
         gvgai_root=GVGAI_JAVA_ROOT,
         max_episode_steps=steps,
     )
-    _apply_mcts_profile(profile)
+    agent_class = _resolve_agent(agent)
+    if agent_class == AGENT_ALIASES["mcts"]:
+        _apply_mcts_profile(profile)
+    else:
+        _apply_mcts_profile("mcts_default")
 
     frames: list[np.ndarray] = []
     plt = None
@@ -153,7 +178,7 @@ def _run_episode(
         frames.append(frame)
         game_tick = int(info.get("game_tick", -1))
         print(
-            f"[{env_id}] profile={profile} reset game_tick={game_tick} "
+            f"[{env_id}] agent={agent} profile={profile} reset game_tick={game_tick} "
             f"winner={info.get('winner')}",
             flush=True,
         )
@@ -189,7 +214,7 @@ def _run_episode(
                     return
                 fig.canvas.flush_events()
 
-            obs, reward, terminated, truncated, info = env.step_mcts(mcts_ms)
+            obs, reward, terminated, truncated, info = env.step_agent(agent_class, mcts_ms)
             done = terminated or truncated
             game_tick = int(info.get("game_tick", step_idx))
             frame = _upscale(_obs_rgb(obs), scale)
@@ -223,32 +248,50 @@ def _run_episode(
             if done:
                 if step_idx == 0:
                     print(
-                        f"[{env_id}] WARNING: game ended on the first MCTS step. "
+                        f"[{env_id}] WARNING: game ended on the first agent step. "
                         "Rebuild levels (build_world_model_games.py) or try another --level.",
                         flush=True,
                     )
                 break
 
         if show and plt is not None and fig is not None and not _figure_closed(plt, fig, window_closed):
-            print("Close the window to exit.", flush=True)
-            plt.ioff()
-            plt.show()
+            if block_on_close:
+                print("Close the window to exit.", flush=True)
+                plt.ioff()
+                plt.show()
+            else:
+                plt.pause(0.05)
 
         if video is not None:
             _save_video(frames, video, fps)
     finally:
+        if show:
+            import matplotlib.pyplot as plt
+
+            if fig is not None:
+                plt.close(fig)
+            elif plt is not None:
+                plt.close("all")
         env.close()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="sampleMCTS agent with visual playback")
+    parser = argparse.ArgumentParser(description="Java planning agent with visual playback")
     add_world_model_cli(parser)
     parser.add_argument("--steps", type=int, default=500, help="Max env steps")
+    parser.add_argument(
+        "--agent",
+        default="olets",
+        help=(
+            "Planning agent: mcts, olets (default), rhea, repeat_olets, ucb, "
+            "or a full Java class name"
+        ),
+    )
     parser.add_argument(
         "--mcts-ms",
         type=int,
         default=40,
-        help="Per-action MCTS CPU budget in milliseconds",
+        help="Per-action search CPU budget in milliseconds",
     )
     parser.add_argument(
         "--profile",
@@ -267,7 +310,7 @@ def main() -> None:
     show = args.show if args.show else not args.no_show
 
     _ensure_build()
-    rule_tags = parse_rules_arg(args.rules)
+    rule_tags = parse_rules_arg(args.rules, args.env)
     levels = parse_levels_arg([str(x) for x in args.level])
     configs = [
         build_env_id(args.env, tag, lvl, args.version)
@@ -278,22 +321,29 @@ def main() -> None:
     video_base = Path(args.video) if args.video else None
 
     if not show and not video_base and configs:
-        print("No --video and --no-show: nothing to display.", flush=True)
-        return
+        print("Running headless (no window, no video).", flush=True)
 
     for env_id in configs:
         out = _video_out_path(video_base, env_id, multi) if video_base else None
-        _run_episode(
-            env_id,
-            steps=args.steps,
-            mcts_ms=args.mcts_ms,
-            profile=args.profile,
-            scale=args.scale,
-            delay=delay,
-            show=show,
-            video=out,
-            fps=args.fps,
-        )
+        try:
+            _run_episode(
+                env_id,
+                steps=args.steps,
+                mcts_ms=args.mcts_ms,
+                agent=args.agent,
+                profile=args.profile,
+                scale=args.scale,
+                delay=delay,
+                show=show,
+                video=out,
+                fps=args.fps,
+                block_on_close=not multi,
+            )
+        except Exception as exc:
+            print(f"[{env_id}] ERROR: {exc}", flush=True)
+            if not multi:
+                raise
+            print(f"[{env_id}] skipping to next variant.", flush=True)
 
 
 if __name__ == "__main__":

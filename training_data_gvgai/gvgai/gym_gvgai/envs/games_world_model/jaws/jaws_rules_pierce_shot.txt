@@ -35,7 +35,7 @@ BasicGame square_size=8
 
         whale torpedo > killSprite scoreChange=1
         piranha torpedo > killSprite scoreChange=1
-        shark torpedo > killSprite scoreChange=1
+        torpedo shark > killSprite
 
 
         sharkFang avatar > collectResource scoreChange=1000

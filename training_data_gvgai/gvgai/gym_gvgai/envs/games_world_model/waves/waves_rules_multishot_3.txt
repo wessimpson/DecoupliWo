@@ -1,4 +1,6 @@
+# Waves: triple player shot per USE — center along +x, flanks at ±45° from that axis. Same layout and shield rules as waves.txt; requires ShootAvatar.fireAllWeapons and orientation x,y (VGDLFactory).
 BasicGame square_size=8
+
     SpriteSet
 
         background > Immovable img=oryx/space1 hidden=True
@@ -6,17 +8,18 @@ BasicGame square_size=8
 
         missile > Missile
             rock > orientation=LEFT speed=0.95 color=BLUE img=oryx/orb3
-            sam1 > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
-            sam2 > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
-            sam3 > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            samL > orientation=0.7071,-0.7071 color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            samC > orientation=RIGHT color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
+            samR > orientation=0.7071,0.7071 color=BLUE speed=1.0 img=oryx/orb1 shrinkfactor=0.5
             laser > orientation=LEFT speed=0.3 color=RED shrinkfactor=0.75 img=newset/laser2_1
+
         portal  >
             portalSlow  > SpawnPoint   stype=alien  cooldown=10 prob=0.05 img=newset/whirlpool2 portal=True
             rockPortal  > SpawnPoint   stype=rock  cooldown=10 prob=0.2 img=newset/whirlpool1 portal=True
 
         shield > Resource color=GOLD limit=4 img=oryx/shield2
 
-        avatar  > ShootAvatar color=YELLOW stype=sam1,sam2,sam3 speed=1.0 alignShotToOrientation=False fireAllWeapons=True spreadPixels=8 img=oryx/spaceship3 rotateInPlace=False
+        avatar  > ShootAvatar color=YELLOW stype=samL,samC,samR speed=1.0 alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False img=oryx/spaceship3
         alien > Bomber color=BROWN img=oryx/alien3 speed=0.2 orientation=LEFT stype=laser prob=0.05
 
     LevelMapping
@@ -35,9 +38,13 @@ BasicGame square_size=8
         alien   EOS  > killSprite
         missile EOS  > killSprite
 
-        alien sam1 sam2 sam3 > killBoth scoreChange=2
+        alien samL > killBoth scoreChange=2
+        alien samC > killBoth scoreChange=2
+        alien samR > killBoth scoreChange=2
 
-        sam laser > transformTo stype=shield killSecond=True
+        samL laser > transformTo stype=shield killSecond=True
+        samC laser > transformTo stype=shield killSecond=True
+        samR laser > transformTo stype=shield killSecond=True
 
         avatar shield > changeResource resource=shield value=1 killResource=True
 
@@ -50,7 +57,7 @@ BasicGame square_size=8
         avatar laser > killIfHasLess resource=shield limit=0
         avatar laser > changeResource resource=shield value=-1 killResource=True
 
-        asteroid sam1 sam2 sam3 laser > killSprite
+        asteroid samL samC samR laser > killSprite
         rock asteroid > killSprite
         alien asteroid > killSprite
         laser asteroid > killSprite

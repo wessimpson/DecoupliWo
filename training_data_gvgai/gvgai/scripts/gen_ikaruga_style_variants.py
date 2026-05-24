@@ -57,13 +57,11 @@ CHOPPER_BASE = """BasicGame square_size=8
 
 {tank_bomb_lines}
 {bomb_eos_line}
-
-        bomb sam > killBoth
-
+{bomb_sam_lines}
         tank wall EOS  > reverseDirection
         tank wall EOS  > stepBack
 
-        satellite sam > killBoth scoreChange=-1
+        {satellite_sam_line}
         satellite wall EOS > stepBack
 
         avatar supply > changeResource resource=bullet value=5  killResource=True
@@ -72,7 +70,7 @@ CHOPPER_BASE = """BasicGame square_size=8
         avatar portal thermosphere troposphere > stepBack
         satellite stratosphere > stepBack
 
-        cloud sam > killBoth
+        {cloud_sam_line}
         cloud EOS > wrapAround
 {extra_interactions}"""
 
@@ -187,6 +185,11 @@ def write_chopper(name: str, **kwargs) -> None:
         avatar_sam_lines=kwargs.get("avatar_sam_lines", "        avatar sam > killSprite"),
         tank_bomb_lines=kwargs["tank_bomb_lines"],
         bomb_eos_line=kwargs["bomb_eos_line"],
+        bomb_sam_lines=kwargs.get("bomb_sam_lines", "        bomb sam > killBoth\n"),
+        satellite_sam_line=kwargs.get(
+            "satellite_sam_line", "satellite sam > killBoth scoreChange=-1"
+        ),
+        cloud_sam_line=kwargs.get("cloud_sam_line", "cloud sam > killBoth"),
         extra_interactions=kwargs.get("extra_interactions", ""),
     )
     (ROOT / "chopper" / f"chopper_rules_{name}.txt").write_text(text, encoding="utf-8")
@@ -278,48 +281,56 @@ def gen_chopper() -> None:
     chopper_multishot_spread = (
         "alignShotToOrientation=False fireAllWeapons=True spreadPixels=0 rotateInPlace=False"
     )
+    chopper_multishot_bomb_base = chopper_bomb_line("0.5")
     chopper_multishot_specs = {
         "multishot_2": (
             "bombL,bombR",
             (
                 "            sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0\n"
-                "            bombL > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
+                + chopper_multishot_bomb_base
+                + "            bombL > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
                 "            bombR > orientation=0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
             ),
-            "bombL bombR",
+            ["bombL", "bombR"],
         ),
         "multishot_3": (
             "bombL,bombC,bombR",
             (
                 "            sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0\n"
-                "            bombL > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
+                + chopper_multishot_bomb_base
+                + "            bombL > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
                 "            bombC > orientation=DOWN color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
                 "            bombR > orientation=0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
             ),
-            "bombL bombC bombR",
+            ["bombL", "bombC", "bombR"],
         ),
         "multishot_5": (
             "bomb1,bomb2,bomb3,bomb4,bomb5",
             (
                 "            sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0\n"
-                "            bomb1 > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
+                + chopper_multishot_bomb_base
+                + "            bomb1 > orientation=-0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
                 "            bomb2 > orientation=-0.3827,0.9239 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
                 "            bomb3 > orientation=DOWN color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
                 "            bomb4 > orientation=0.3827,0.9239 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
                 "            bomb5 > orientation=0.7071,0.7071 color=RED speed=0.75 img=newset/bomb shrinkfactor=0.5\n"
             ),
-            "bomb1 bomb2 bomb3 bomb4 bomb5",
+            ["bomb1", "bomb2", "bomb3", "bomb4", "bomb5"],
         ),
     }
-    for tag, (stype, missile_lines, st) in chopper_multishot_specs.items():
+    for tag, (stype, missile_lines, bombs) in chopper_multishot_specs.items():
+        bomb_list = " ".join(bombs)
         write_chopper(
             tag,
             avatar_line=chopper_avatar(stype=stype, spread=chopper_multishot_spread),
             missile_lines=missile_lines,
-            tank_bomb_lines=chopper_tank_bomb(st, "killSprite scoreChange=1"),
-            bomb_eos_line="\n".join(
-                f"        {name} tank wall EOS > killSprite" for name in st.split()
+            tank_bomb_lines="\n".join(
+                f"        tank {b} > killSprite scoreChange=1" for b in bombs
             ),
+            bomb_eos_line="        missile EOS > killSprite",
+            bomb_sam_lines="\n".join(f"        {b} sam > killBoth" for b in bombs) + "\n",
+            satellite_sam_line=f"satellite sam {bomb_list} > killBoth scoreChange=-1",
+            cloud_sam_line=f"cloud sam {bomb_list} > killBoth",
         )
 
     write_chopper(
@@ -498,7 +509,7 @@ def gen_jaws() -> None:
         fish_torpedo_lines=(
             "        whale torpedo > killSprite scoreChange=1\n"
             "        piranha torpedo > killSprite scoreChange=1\n"
-            "        shark torpedo > killSprite scoreChange=1"
+            "        torpedo shark > killSprite"
         ),
         torpedo_fish_line="",
     )

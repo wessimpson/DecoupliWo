@@ -14,17 +14,17 @@ BasicGame square_size=8 obs=wall
 
 
             ghost >
-                red > singleton=True
-                    redOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost3 cons=4
+                red >
+                    redOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost3 cons=4 singleton=True
                     redSc > Fleeing stype=pacman maxDistance=500 cooldown=1 img=oryx/ghost1
-                blue > singleton=True
-                    blueOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost4 cons=4
+                blue >
+                    blueOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost4 cons=4 singleton=True
                     blueSc > Fleeing stype=pacman maxDistance=500 cooldown=1 img=oryx/ghost1
-                pink > singleton=True
-                    pinkOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost5 cons=4
+                pink >
+                    pinkOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost5 cons=4 singleton=True
                     pinkSc > Fleeing stype=pacman maxDistance=500 cooldown=1 img=oryx/ghost1
-                orange > singleton=True
-                    orangeOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost6 cons=4
+                orange >
+                    orangeOk > RandomPathAltChaser stype1=hungry stype2=powered cooldown=2 img=oryx/ghost6 cons=4 singleton=True
                     orangeSc > Fleeing stype=pacman maxDistance=500 cooldown=1 img=oryx/ghost1
 
 
@@ -49,16 +49,17 @@ BasicGame square_size=8 obs=wall
         hungry power > transformToAll stype=pinkOk stypeTo=pinkSc
         hungry power > transformToAll stype=blueOk stypeTo=blueSc
         hungry power > transformToAll stype=orangeOk stypeTo=orangeSc
-
-        hungry power > addTimer timer=200 ftype=transformToAll stype=redSc stypeTo=redOk killSecond=True
-        hungry power > addTimer timer=200 ftype=transformToAll stype=pinkSc stypeTo=pinkOk killSecond=True
-        hungry power > addTimer timer=200 ftype=transformToAll stype=blueSc stypeTo=blueOk killSecond=True
-        hungry power > addTimer timer=200 ftype=transformToAll stype=orangeSc stypeTo=orangeOk killSecond=True
-
-        hungry power > addTimer timer=200 ftype=transformToAll stype=powered stypeTo=hungry
+        hungry power > addTimer timer=120 ftype=transformToAll stype=redSc stypeTo=redOk killSecond=True
+        hungry power > addTimer timer=120 ftype=transformToAll stype=pinkSc stypeTo=pinkOk killSecond=True
+        hungry power > addTimer timer=120 ftype=transformToAll stype=blueSc stypeTo=blueOk killSecond=True
+        hungry power > addTimer timer=120 ftype=transformToAll stype=orangeSc stypeTo=orangeOk killSecond=True
+        hungry power > addTimer timer=120 ftype=transformToAll stype=powered stypeTo=hungry
         hungry power > transformTo stype=powered
 
-        ghost powered > killSprite scoreChange=40
+        redSc powered > transformTo stype=redOk scoreChange=40
+        pinkSc powered > transformTo stype=pinkOk scoreChange=40
+        blueSc powered > transformTo stype=blueOk scoreChange=40
+        orangeSc powered > transformTo stype=orangeOk scoreChange=40
 
 
         

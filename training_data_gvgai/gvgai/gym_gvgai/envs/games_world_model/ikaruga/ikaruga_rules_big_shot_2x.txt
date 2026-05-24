@@ -7,20 +7,20 @@ BasicGame square_size=8
             blackAvatar > stype=blackBullet img=oryx/spaceship2
         missile > Missile
             whiteBullet  > orientation=UP    color=BLUE singleton=True img=oryx/cspell1 shrinkfactor=2
-            blackBullet  > orientation=UP    color=BLUE singleton=True img=oryx/orb3 shrinkfactor=0.5
+            blackBullet  > orientation=UP    color=BLUE singleton=True img=oryx/orb3 shrinkfactor=1.0
             bomb         > orientation=DOWN  color=RED cooldown=4 speed=1 img=newset/bomb
         changer > Missile orientation=DOWN color=RED cooldown=2 speed=0.5
             whiteChanger > img=oryx/mineral1
             blackChanger > img=oryx/mineral3
-        alien   > Bomber stype=bomb prob=0.01  cooldown=6 speed=0.9 orientation=DOWN
+        alien   > Bomber stype=bomb prob=0.008  cooldown=8 speed=0.75 orientation=DOWN
             blackAlien > img=oryx/bird3
             whiteAlien > img=oryx/bird1
         portal  > SpawnPoint invisible=True hidden=True img=portal
-        	whitePortal1   > stype=whiteAlien   cooldown=28  total=10 
-        	blackPortal1   > stype=blackAlien   cooldown=28  total=10
-        	whitePortal2   > stype=whiteAlien   cooldown=56  total=5
-        	blackPortal2   > stype=blackAlien   cooldown=56  total=5
-        portal2 > SpawnPoint invisible=True hidden=True cooldown=100  total=40 img=portal
+        	whitePortal1   > stype=whiteAlien   cooldown=42  total=4 
+        	blackPortal1   > stype=blackAlien   cooldown=42  total=4
+        	whitePortal2   > stype=whiteAlien   cooldown=72  total=2
+        	blackPortal2   > stype=blackAlien   cooldown=72  total=2
+        portal2 > SpawnPoint invisible=True hidden=True cooldown=120  total=12 img=portal
         	wChangerPortal > stype=whiteChanger
         	bChangerPortal > stype=blackChanger
     

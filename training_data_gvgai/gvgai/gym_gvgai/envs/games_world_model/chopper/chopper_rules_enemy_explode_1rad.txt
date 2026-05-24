@@ -1,4 +1,4 @@
-# Variant: Enemy death blast, 1-tile radius (center + orthogonal)
+# Variant: Enemy death explosion, ~3-tile radius (fire blast sprite)
 BasicGame square_size=8
     SpriteSet
         layers > Immovable hidden=True
@@ -7,13 +7,10 @@ BasicGame square_size=8
             troposphere > img=oryx/backGrey
 
         satellite   > RandomNPC    color=WHITE img=newset/satellite cons=1
-        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb img=newset/helicopter rotateInPlace=False
+        avatar   > ShootAvatar orientation=DOWN color=YELLOW ammo=bullet stype=bomb speed=1.0 img=newset/helicopter rotateInPlace=False
         missile > Missile
             sam  > orientation=UP color=BLUE speed=0.25 img=oryx/bullet1 shrinkfactor=2.0
             bomb > orientation=DOWN color=RED speed=0.75 img=newset/bomb singleton=True shrinkfactor=0.5
-            blast > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
-            blastCenter > Missile orientation=UP speed=0 color=ORANGE img=oryx/fire1 timeToLive=6
-
         cloud  > Missile img=newset/cloud2
             leftCloud  > orientation=LEFT speed=0.2  color=WHITE
             fastLeftCloud  > orientation=LEFT speed=0.8  color=WHITE
@@ -27,7 +24,8 @@ BasicGame square_size=8
 
         supply > Missile orientation=LEFT speed=0.25 img=oryx/goldsack shrinkfactor=1.0
         bullet > Resource limit=20
-    
+        explosion > Flicker limit=6 singleton=True img=oryx/fire1 shrinkfactor=1
+
     LevelMapping
         g > avatar stratosphere
         h > satellite thermosphere
@@ -45,19 +43,14 @@ BasicGame square_size=8
         SpriteCounter      stype=avatar               limit=0 win=False
         SpriteCounter      stype=satellite               limit=0 win=False
         MultiSpriteCounter stype1=portalBase stype2=tank limit=0 win=True
-        
+
     InteractionSet
         avatar wall EOS > stepBack
-        avatar sam blast > killSprite
+        avatar sam explosion > killSprite
         sam avatar wall EOS > killSprite
 
-        tank bomb > killSprite scoreChange=1
-        bomb tank > spawn stype=blastCenter
-        bomb tank > spawnAbove stype=blast
-        bomb tank > spawnBelow stype=blast
-        bomb tank > spawnLeft stype=blast
-        bomb tank > spawnRight stype=blast
-        bomb tank wall EOS > killSprite
+        tank bomb > transformTo stype=explosion killSecond=True scoreChange=1
+        bomb wall EOS > killSprite
 
         bomb sam > killBoth
 
@@ -75,3 +68,5 @@ BasicGame square_size=8
 
         cloud sam > killBoth
         cloud EOS > wrapAround
+        tank explosion > killSprite
+        missile explosion > killSprite
