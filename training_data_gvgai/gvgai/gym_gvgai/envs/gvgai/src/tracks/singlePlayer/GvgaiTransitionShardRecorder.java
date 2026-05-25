@@ -26,9 +26,9 @@ import core.vgdl.SpriteGroup;
 import core.vgdl.VGDLSprite;
 
 /**
- * Buffers (obs, action, player_xy) per worker thread and writes shards with globally
- * unique indices.  Shard indices are allocated under a per-game-directory file lock so
- * multiple JVMs or threads can append to the same output folder without colliding.
+ * Buffers (obs, action, player_xy) per worker thread and writes chunk-sized shards.
+ * Shards flush when the in-memory buffer reaches {@code chunkSize}, or on {@link #close()}.
+ * Shard indices are allocated under a per-worker directory file lock.
  */
 final class GvgaiTransitionShardRecorder {
 	private static final int RGB_CHANNELS = 3;
@@ -59,14 +59,9 @@ final class GvgaiTransitionShardRecorder {
 	/** Reused final-size buffer when {@code scale < 1}; avoids allocating every frame. */
 	private BufferedImage scaled;
 
-	GvgaiTransitionShardRecorder(Path outputRoot, String envStem, int chunkSize,
-			Game game, double scale, AtomicLong globalFrames) {
-		this(outputRoot, envStem, chunkSize, game, scale, globalFrames, "{}");
-	}
-
-	GvgaiTransitionShardRecorder(Path outputRoot, String envStem, int chunkSize,
-			Game game, double scale, AtomicLong globalFrames, String metadataJson) {
-		this.envDir = outputRoot.resolve(envStem);
+	GvgaiTransitionShardRecorder(Path envDir, int chunkSize, Game game, double scale,
+			AtomicLong globalFrames, String metadataJson) {
+		this.envDir = envDir;
 		this.chunkSize = Math.max(1, chunkSize);
 		this.nActionsEnum = Types.ACTIONS.values().length;
 		this.game = game;
@@ -114,10 +109,6 @@ final class GvgaiTransitionShardRecorder {
 	}
 
 	void close() throws IOException {
-		flushShard();
-	}
-
-	void flushEpisode() throws IOException {
 		flushShard();
 	}
 

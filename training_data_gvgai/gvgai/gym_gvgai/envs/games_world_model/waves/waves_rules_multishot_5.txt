@@ -39,7 +39,11 @@ BasicGame square_size=8
 
         alien sam1 sam2 sam3 sam4 sam5 > killBoth scoreChange=2
 
-        sam laser > transformTo stype=shield killSecond=True
+        sam1 laser > transformTo stype=shield killSecond=True
+        sam2 laser > transformTo stype=shield killSecond=True
+        sam3 laser > transformTo stype=shield killSecond=True
+        sam4 laser > transformTo stype=shield killSecond=True
+        sam5 laser > transformTo stype=shield killSecond=True
 
         avatar shield > changeResource resource=shield value=1 killResource=True
 

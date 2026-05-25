@@ -19,7 +19,6 @@ when a base game has multiple variants.
 from __future__ import annotations
 
 import argparse
-import math
 from collections import defaultdict
 from datetime import datetime
 from functools import partial
@@ -48,6 +47,7 @@ from world_model.dataset import (
 )
 from world_model.model.error_buffer import ErrorBuffer
 from world_model.model.world_model import WorldModel
+from world_model.util.evaluation import psnr as psnr_neg1_to_01
 
 CONTEXT_LEN = 4
 CROSS_ATTENTION_DIM = 768
@@ -62,15 +62,6 @@ DEFAULT_PRETRAINED_DYNAMICS = str(
 )
 COUNTERFACTUAL_STEPS = 10
 COUNTERFACTUAL_SHOOT_ACTION = 5
-
-
-def psnr_neg1_to_01(pred: torch.Tensor, tgt: torch.Tensor) -> float:
-	p = ((pred.clamp(-1, 1) + 1) * 0.5).float()
-	t = ((tgt.clamp(-1, 1) + 1) * 0.5).float()
-	mse = (p - t).pow(2).mean().item()
-	if mse <= 0:
-		return float("inf")
-	return 10.0 * math.log10(1.0 / mse)
 
 
 def future_residuals_as_history_block(delta_bn: torch.Tensor, K: int) -> torch.Tensor:

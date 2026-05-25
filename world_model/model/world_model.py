@@ -42,7 +42,7 @@ class WorldModel(nn.Module):
 		if vc is not None and str(vc).strip() == "":
 			vc = None
 		pt = Path(DEFAULT_VAE_PT if vc is None else vc)
-		self.vae = VAE(checkpoint=pt)
+		self.vae = VAE(pt)
 		self.vae.freeze()
 		self.latent_channels = self.vae.latent_channels
 

@@ -23,10 +23,10 @@ SOURCE_ROOT="$GVGAI_ROOT/gym_gvgai/envs/games_world_model"
 SPRITE_ROOT="$GVGAI_ROOT/gym_gvgai/envs/gvgai/sprites"
 OUTPUT_BASE="$REPO_ROOT/data/transitions"
 OUTPUT_ROOT="$REPO_ROOT/data/transitions"
-TOTAL_TIMESTEPS=100000
-NUM_ENVS=1
+TOTAL_TIMESTEPS=250000
+NUM_ENVS=10
 SCALE=1.0
-CHUNK_SIZE=1000
+CHUNK_SIZE=10000
 SEED=""
 SKIP_BUILD=0
 DRY_RUN=0
@@ -34,6 +34,7 @@ RESUME=0
 BUDGET_SCOPE="stem"
 LEVELS="all"
 TRAIN_BASES="auto"
+STEMS=""
 TEST_BASES=""
 TEST_INCLUDE_VARIANTS=0
 
@@ -60,6 +61,7 @@ Options:
   --chunk-size N                    Rows per shard (default: 1000).
   --seed N                          Base RNG seed.
   --train-bases auto|a,b,c          Train base-game dirs. auto means every discovered base dir.
+  --stems a,b,c                     Collect only these rule stems (e.g. jaws_rules_pierce_shot). Default: all variants in each base dir.
   --test-bases a,b,c                Optional eval/holdout collection dirs (default: defender,jaws,zelda).
   --test-include-variants           Include *_rules_* files in test split too.
   --dry-run                         Print discovered jobs without running Java.
@@ -91,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --chunk-size) CHUNK_SIZE="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --train-bases) TRAIN_BASES="$2"; shift 2 ;;
+    --stems) STEMS="$2"; shift 2 ;;
     --test-bases) TEST_BASES="$2"; shift 2 ;;
     --test-include-variants) TEST_INCLUDE_VARIANTS=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -168,6 +171,46 @@ stems_for_base() {
     | sort
 }
 
+filter_stems_for_base() {
+  local base="$1"
+  shift
+  local stems=("$@")
+  if [[ -z "$STEMS" ]]; then
+    printf '%s\n' "${stems[@]}"
+    return
+  fi
+  local want stem matched=0
+  while IFS= read -r want; do
+    want="$(echo "$want" | xargs)"
+    [[ -n "$want" ]] || continue
+    if [[ "$want" == */* ]]; then
+      local want_base="${want%%/*}"
+      local want_stem="${want#*/}"
+      if [[ "$want_base" != "$base" ]]; then
+        continue
+      fi
+      want="$want_stem"
+    fi
+    for stem in "${stems[@]}"; do
+      if [[ "$stem" == "$want" ]]; then
+        printf '%s\n' "$stem"
+        matched=1
+      fi
+    done
+  done < <(split_csv "$STEMS")
+  if [[ "$matched" -eq 0 ]]; then
+    echo "Warning: no --stems matched any file under $base (wanted: $STEMS)" >&2
+  fi
+}
+
+collect_stems_for_base() {
+  local base="$1"
+  local include_variants="$2"
+  local discovered=()
+  while IFS= read -r stem; do discovered+=("$stem"); done < <(stems_for_base "$base" "$include_variants")
+  filter_stems_for_base "$base" "${discovered[@]}"
+}
+
 rule_tag_for_stem() {
   local base="$1"
   local stem="$2"
@@ -185,23 +228,11 @@ default_output_root() {
   echo "$OUTPUT_BASE/$split"
 }
 
-stem_frame_count() {
-  local env_dir="$1"
-  "$PYTHON" - "$env_dir" <<'PY'
-from pathlib import Path
-import sys
-import numpy as np
-
-root = Path(sys.argv[1])
-frames = 0
-if root.is_dir():
-    for obs in root.glob("shard_*/obs.npy"):
-        try:
-            frames += int(np.load(obs, mmap_mode="r").shape[0])
-        except Exception:
-            pass
-print(frames)
-PY
+job_output_dir() {
+  local split="$1"
+  local stem="$2"
+  local out_root="${OUTPUT_ROOT:-$(default_output_root "$split")}"
+  echo "$out_root/$stem"
 }
 
 job_frame_count() {
@@ -237,25 +268,16 @@ print(frames)
 PY
 }
 
-stem_is_complete() {
-  local split="$1"
-  local stem="$2"
-  local expected_frames="$3"
-  local out_root="${OUTPUT_ROOT:-$(default_output_root "$split")}"
-  local frames
-  frames="$(stem_frame_count "$out_root/$stem")"
-  [[ "$frames" -ge "$expected_frames" ]]
-}
-
 job_is_complete() {
   local split="$1"
   local stem="$2"
   local level="$3"
   local profile="$4"
   local expected_frames="$5"
-  local out_root="${OUTPUT_ROOT:-$(default_output_root "$split")}"
+  local env_dir
+  env_dir="$(job_output_dir "$split" "$stem")"
   local frames
-  frames="$(job_frame_count "$out_root/$stem" "$profile" "$level")"
+  frames="$(job_frame_count "$env_dir" "$profile" "$level")"
   [[ "$frames" -ge "$expected_frames" ]]
 }
 
@@ -303,7 +325,7 @@ run_one() {
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    printf '%s\t%s\t%s\tlvl%s\t%s\t%s frames\t%s\n' "$split" "$base" "$stem" "$level" "$profile" "$frames" "$out_root"
+    printf '%s\t%s\t%s\tlvl%s\t%s\t%s frames\t%s\n' "$split" "$base" "$stem" "$level" "$profile" "$frames" "$(job_output_dir "$split" "$stem")"
     return
   fi
 
@@ -333,7 +355,7 @@ run_one() {
   if [[ -n "$SEED" ]]; then
     args+=(--seed "$SEED")
   fi
-  echo "==> $split $stem lvl$level $profile $frames frames -> $out_root/$stem"
+  echo "==> $split $stem lvl$level $profile $frames frames -> $(job_output_dir "$split" "$stem")"
   (cd "$GVGAI_ROOT" && java -cp "$BUILD_DIR" "${args[@]}")
 }
 
@@ -342,7 +364,7 @@ collect_base_train() {
   local levels=()
   while IFS= read -r level; do levels+=("$level"); done < <(level_indices_for_base "$base")
   local stems=()
-  while IFS= read -r stem; do stems+=("$stem"); done < <(stems_for_base "$base" 1)
+  while IFS= read -r stem; do stems+=("$stem"); done < <(collect_stems_for_base "$base" 1)
   if [[ "${#levels[@]}" -eq 0 || "${#stems[@]}" -eq 0 ]]; then
     echo "Skipping $base: no levels or game files discovered." >&2
     return
@@ -369,7 +391,7 @@ collect_base_test() {
   local levels=()
   while IFS= read -r level; do levels+=("$level"); done < <(level_indices_for_base "$base")
   local stems=()
-  while IFS= read -r stem; do stems+=("$stem"); done < <(stems_for_base "$base" "$TEST_INCLUDE_VARIANTS")
+  while IFS= read -r stem; do stems+=("$stem"); done < <(collect_stems_for_base "$base" "$TEST_INCLUDE_VARIANTS")
   if [[ "${#levels[@]}" -eq 0 || "${#stems[@]}" -eq 0 ]]; then
     echo "Skipping $base: no levels or game files discovered." >&2
     return

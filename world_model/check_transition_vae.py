@@ -86,7 +86,7 @@ def main() -> None:
 		raise RuntimeError("Empty latent.npy across shards")
 
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	vae = VAE(checkpoint=Path(args.vae_checkpoint))
+	vae = VAE(Path(args.vae_checkpoint))
 	vae.freeze()
 	vae.to(device)
 

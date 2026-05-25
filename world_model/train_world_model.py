@@ -12,7 +12,6 @@ are logged per horizon under ``val/psnr_ar/hNN`` and ``val/ar_rollout/hNN/{gener
 from __future__ import annotations
 
 import argparse
-import math
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -27,23 +26,14 @@ from tqdm.auto import tqdm
 
 from world_model.dataset import RolloutVideoDataset, preprocess
 from world_model.model.error_buffer import ErrorBuffer
-from world_model.model.net.vae import vae_pixel_hw
+from world_model.model.net.vae import VAE
 from world_model.model.world_model import WorldModel
+from world_model.util.evaluation import psnr as psnr_neg1_to_01
 
 CONTEXT_LEN = 2
 CROSS_ATTENTION_DIM = 768
 PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
-
-
-def psnr_neg1_to_01(pred: torch.Tensor, tgt: torch.Tensor) -> float:
-	"""Mean PSNR (dB) in [0,1] space; pred/tgt in [-1,1]."""
-	p = ((pred.clamp(-1, 1) + 1) * 0.5).float()
-	t = ((tgt.clamp(-1, 1) + 1) * 0.5).float()
-	mse = (p - t).pow(2).mean().item()
-	if mse <= 0:
-		return float("inf")
-	return 10.0 * math.log10(1.0 / mse)
 
 
 def future_residuals_as_history_block(delta_bn: torch.Tensor, K: int) -> torch.Tensor:
@@ -66,7 +56,7 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--vae_checkpoint", type=str, default=str(Path("world_model") / "checkpoints" / "vae" / "vae.pt"), help="Path to vae.pt (scratch KL-VAE state dict)")
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN, help="History frames K (fixed window).")
-	ph, pw = vae_pixel_hw()
+	ph, pw = VAE.pixel_hw
 	p.add_argument(
 		"--resize",
 		type=int,

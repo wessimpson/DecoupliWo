@@ -98,7 +98,7 @@ def main() -> None:
 	if not encoded_root.is_dir():
 		raise FileNotFoundError(f"Encoded root not found: {encoded_root}")
 
-	vae = VAE(checkpoint=Path(args.vae_checkpoint))
+	vae = VAE(Path(args.vae_checkpoint))
 	vae.freeze()
 	vae.to(device)
 

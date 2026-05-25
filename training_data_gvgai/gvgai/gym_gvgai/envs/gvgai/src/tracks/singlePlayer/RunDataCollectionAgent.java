@@ -156,35 +156,42 @@ public class RunDataCollectionAgent {
 			agent = "random".equalsIgnoreCase(profile) ? DEFAULT_RANDOM_AGENT : DEFAULT_MCTS_AGENT;
 
 		String gameStem = gameStem(game);
-		Path[] transitionRoots;
+		String resolvedLevelIndex = levelIndex != null ? levelIndex : inferLevelIndex(level);
+		if (resolvedLevelIndex == null)
+			resolvedLevelIndex = "0";
+		String resolvedBaseGame = sourceBaseGame != null ? sourceBaseGame : inferBaseGame(game);
+		String resolvedRuleTag = sourceRuleTag != null ? sourceRuleTag : inferRuleTag(game, resolvedBaseGame);
+		Path outputDir;
 		if (outputRoot != null) {
-			transitionRoots = new Path[] { outputRoot };
+			outputDir = outputRoot;
 		} else {
-			transitionRoots = new Path[] { defaultTransitionRoot(split) };
+			outputDir = defaultTransitionRoot(split);
 		}
-		String metadataJson = buildMetadataJson(profile, mctsProfile, agent, game, level, gameStem,
-				split, scale, chunkSize, seed, numEnvs, totalTimesteps,
-				levelIndex, sourceRoot, sourceBaseGame, sourceRuleTag);
+		Path envDir = outputDir.resolve(gameStem);
 
 		System.out.println("Game:  " + game);
 		System.out.println("Level: " + level);
 			System.out.println("Agent: " + agent);
 			System.out.println("Profile: " + profile);
 			System.out.println("Sprites: " + CompetitionParameters.IMG_PATH);
-			System.out.println("Output: " + transitionRoots[0].resolve(gameStem));
+			System.out.println("Output: " + envDir);
 
 		try {
 			if (totalTimesteps > 0) {
 				System.out.printf("Target: %d frames, %d parallel env(s), chunk_size=%d%n",
 						totalTimesteps, numEnvs, chunkSize);
-				collectParallel(game, level, visuals, agent, seed, transitionRoots,
-						gameStem, chunkSize, scale, totalTimesteps, numEnvs, metadataJson);
+				collectParallel(game, level, visuals, agent, seed, envDir, gameStem,
+						resolvedLevelIndex, chunkSize, scale, totalTimesteps, numEnvs,
+						profile, agent, split, sourceRoot, resolvedBaseGame, resolvedRuleTag, mctsProfile);
 			} else {
 				System.out.println("Mode: single episode");
 				int randomSeed = seed != null ? seed : new Random().nextInt();
 				AtomicLong gf = new AtomicLong();
-				runOneEpisode(game, level, visuals, agent, randomSeed, transitionRoots,
-						gameStem, chunkSize, scale, null, gf, true, metadataJson, -1);
+				String metadataJson = buildMetadataJson(profile, mctsProfile, agent, game, level, gameStem,
+						split, scale, chunkSize, seed, numEnvs, -1,
+						resolvedLevelIndex, sourceRoot, resolvedBaseGame, resolvedRuleTag, 0);
+				runOneEpisode(game, level, visuals, agent, randomSeed, envDir,
+						chunkSize, scale, null, gf, true, metadataJson, -1);
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -197,8 +204,10 @@ public class RunDataCollectionAgent {
 	// -----------------------------------------------------------------------
 
 	static void collectParallel(String gameFile, String levelFile, boolean visuals, String agentName,
-			Integer baseSeed, Path[] transitionRoots, String envStem, int chunkSize, double scale,
-			long totalTimesteps, int numEnvs, String metadataJson) throws InterruptedException, IOException {
+			Integer baseSeed, Path envDir, String envStem, String levelIndex, int chunkSize, double scale,
+			long totalTimesteps, int numEnvs, String profile, String agent, String split,
+			String sourceRoot, String baseGame, String ruleTag, MctsProfile mctsProfile)
+			throws InterruptedException, IOException {
 
 		// Init singletons once on the main thread before spawning workers.
 		VGDLFactory.GetInstance().init();
@@ -211,8 +220,11 @@ public class RunDataCollectionAgent {
 		{
 			Game probe = new VGDLParser().parseGame(gameFile);
 			probe.buildLevel(levelFile, 0);
+			String probeMetadata = buildMetadataJson(profile, mctsProfile, agent, gameFile, levelFile, envStem,
+					split, scale, chunkSize, baseSeed, numEnvs, totalTimesteps,
+					levelIndex, sourceRoot, baseGame, ruleTag, 0);
 			GvgaiTransitionShardRecorder tmp = new GvgaiTransitionShardRecorder(
-					transitionRoots[0], envStem, chunkSize, probe, scale, globalFrames, metadataJson);
+					envDir, chunkSize, probe, scale, globalFrames, probeMetadata);
 			System.out.println("Obs: " + tmp.getNativeWidth() + "x" + tmp.getNativeHeight()
 					+ " -> " + tmp.getImageWidth() + "x" + tmp.getImageHeight()
 					+ " (scale=" + scale + ")");
@@ -225,24 +237,25 @@ public class RunDataCollectionAgent {
 		for (int w = 0; w < numEnvs; w++) {
 			final int workerId = w;
 			final long workerSeed = (baseSeed != null ? baseSeed : System.nanoTime()) + workerId * 999983L;
+			final String workerMetadata = buildMetadataJson(profile, mctsProfile, agent, gameFile, levelFile, envStem,
+					split, scale, chunkSize, baseSeed, numEnvs, totalTimesteps,
+					levelIndex, sourceRoot, baseGame, ruleTag, workerId);
 			futures.add(pool.submit(() -> {
 				Random seedRng = new Random(workerSeed);
 				try {
-					GvgaiTransitionShardRecorder[] recorders = new GvgaiTransitionShardRecorder[transitionRoots.length];
-					for (int i = 0; i < transitionRoots.length; i++)
-						recorders[i] = new GvgaiTransitionShardRecorder(
-								transitionRoots[i], envStem, chunkSize, null, scale, globalFrames, metadataJson);
+					GvgaiTransitionShardRecorder recorder = new GvgaiTransitionShardRecorder(
+							envDir, chunkSize, null, scale, globalFrames, workerMetadata);
+					GvgaiTransitionShardRecorder[] recorders = new GvgaiTransitionShardRecorder[] { recorder };
 
 					while (globalFrames.get() < totalTimesteps) {
 						int epSeed = seedRng.nextInt();
 						runOneEpisode(gameFile, levelFile, false, agentName, epSeed,
-								transitionRoots, envStem, chunkSize, scale, recorders, globalFrames, false, metadataJson,
+								envDir, chunkSize, scale, recorders, globalFrames, false, workerMetadata,
 								totalTimesteps);
 						episodeCounter.incrementAndGet();
 					}
 
-					for (GvgaiTransitionShardRecorder r : recorders)
-						r.close();
+					recorder.close();
 				} catch (IOException e) {
 					throw new RuntimeException("Worker " + workerId + " failed", e);
 				}
@@ -277,7 +290,7 @@ public class RunDataCollectionAgent {
 	// -----------------------------------------------------------------------
 
 	static void runOneEpisode(String game_file, String level_file, boolean visuals, String agentName,
-			int randomSeed, Path[] transitionRoots, String envStem, int chunkSize, double scale,
+			int randomSeed, Path envDir, int chunkSize, double scale,
 			GvgaiTransitionShardRecorder[] sharedRecorders,
 			AtomicLong globalFrames,
 			boolean verbose, String metadataJson, long maxGlobalFrames) throws IOException {
@@ -313,10 +326,9 @@ public class RunDataCollectionAgent {
 		boolean ownRecorders = (sharedRecorders == null);
 		GvgaiTransitionShardRecorder[] recorders;
 		if (ownRecorders) {
-			recorders = new GvgaiTransitionShardRecorder[transitionRoots.length];
-			for (int i = 0; i < transitionRoots.length; i++)
-				recorders[i] = new GvgaiTransitionShardRecorder(
-						transitionRoots[i], envStem, chunkSize, toPlay, scale, globalFrames, metadataJson);
+			recorders = new GvgaiTransitionShardRecorder[] {
+					new GvgaiTransitionShardRecorder(envDir, chunkSize, toPlay, scale, globalFrames, metadataJson)
+			};
 		} else {
 			recorders = sharedRecorders;
 			for (GvgaiTransitionShardRecorder r : recorders)
@@ -342,9 +354,6 @@ public class RunDataCollectionAgent {
 		} catch (TransitionRecordingPlayer.FrameBudgetReachedException done) {
 			// Expected in fixed-frame collection mode.
 		} finally {
-			for (GvgaiTransitionShardRecorder r : recorders)
-				r.flushEpisode();
-
 			ArcadeMachine.tearPlayerDown(toPlay, players, null, randomSeed, true);
 			if (verbose) { toPlay.handleResult(); toPlay.printResult(); }
 		}
@@ -414,6 +423,23 @@ public class RunDataCollectionAgent {
 		if (name.toLowerCase().endsWith(".txt"))
 			return name.substring(0, name.length() - 4);
 		return name;
+	}
+
+	static String inferBaseGame(String gamePath) {
+		Path parent = Paths.get(gamePath).getParent();
+		if (parent != null && parent.getFileName() != null)
+			return parent.getFileName().toString();
+		return gameStem(gamePath);
+	}
+
+	static String inferRuleTag(String gamePath, String baseGame) {
+		String stem = gameStem(gamePath);
+		if (stem.equals(baseGame))
+			return "base";
+		String prefix = baseGame + "_rules_";
+		if (stem.startsWith(prefix))
+			return stem.substring(prefix.length());
+		return "unknown";
 	}
 
 	static String normalizeGamePath(String raw) {
@@ -542,7 +568,7 @@ public class RunDataCollectionAgent {
 	static String buildMetadataJson(String profile, MctsProfile cfg, String agent, String game,
 			String level, String envStem, String split, double scale, int chunkSize, Integer seed,
 			int numEnvs, long totalTimesteps, String levelIndex, String sourceRoot,
-			String sourceBaseGame, String sourceRuleTag) {
+			String sourceBaseGame, String sourceRuleTag, int workerId) {
 		StringBuilder sb = new StringBuilder();
 		sb.append("{\n");
 		appendJson(sb, "profile", profile).append(",\n");
@@ -558,6 +584,7 @@ public class RunDataCollectionAgent {
 		appendJson(sb, "source_base_game", sourceBaseGame).append(",\n");
 		appendJson(sb, "source_rule_tag", sourceRuleTag).append(",\n");
 		appendJson(sb, "split", split).append(",\n");
+		sb.append("  \"worker_id\": ").append(workerId).append(",\n");
 		sb.append("  \"scale\": ").append(scale).append(",\n");
 		sb.append("  \"chunk_size\": ").append(chunkSize).append(",\n");
 		sb.append("  \"base_seed\": ").append(seed == null ? "null" : seed.toString()).append(",\n");
@@ -607,7 +634,7 @@ public class RunDataCollectionAgent {
 
 	static void printUsage() {
 		System.out.println("Collect pixel transition data from GVGAI games using parallel environments.");
-		System.out.println("Writes to /hdd2/soyuj/transition_data/<split>/<game>/ by default when available.");
+		System.out.println("Writes chunk-sized shards under <output-root>/<rule-variant-stem>/shard_XXXXX/.");
 		System.out.println();
 		System.out.println("Agent: " + DEFAULT_MCTS_AGENT);
 		System.out.println();

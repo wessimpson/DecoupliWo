@@ -20,7 +20,7 @@ from world_model.dataset import (
 	RULE_TAGS,
 	obs_array_to_pixels,
 )
-from world_model.model.net.vae import vae_pixel_hw
+from world_model.model.net.vae import VAE
 from world_model.model.world_model import WorldModel
 
 
@@ -305,7 +305,7 @@ def run_autoregressive(
 	wm.eval()
 
 	def tx(frame: np.ndarray) -> torch.Tensor:
-		return obs_array_to_pixels(np.asarray(frame)[np.newaxis], resize_to=vae_pixel_hw())[0]
+		return obs_array_to_pixels(np.asarray(frame)[np.newaxis], resize_to=VAE.pixel_hw)[0]
 
 	boot_shard = _resolve_bootstrap_shard_dir(env, shard_dir)
 	print(f"Bootstrap shard: {boot_shard}")

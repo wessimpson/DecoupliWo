@@ -10,7 +10,7 @@ Writes mirrored layout under:
   latent.npy  float16 [N, C, h, w]  (scaled latents, same as training)
   action.npy, n_actions.npy  copied from source when present.
 
-Preprocessing: bilinear resize to ``vae_pixel_hw()`` → latents ``[4, 11, 30]``.
+Native 120×120 frames → latents ``[4, 15, 15]``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import torch
 from tqdm.auto import tqdm
 
 from world_model.dataset import obs_array_to_pixels
-from world_model.model.net.vae import DEFAULT_VAE_PT, VAE, vae_latent_hw, vae_pixel_hw
+from world_model.model.net.vae import DEFAULT_VAE_PT, VAE
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,7 +56,7 @@ def _encode_one_split(
 		raise FileNotFoundError(f"No shard_* with obs.npy+action.npy under {src_env_dir}")
 
 	dst_env_dir.mkdir(parents=True, exist_ok=True)
-	resize_to = vae_pixel_hw()
+	resize_to = VAE.pixel_hw
 	shard_desc = f"{src_env_dir.parent.name}/{src_env_dir.name}/shards"
 	for shard in tqdm(shards, desc=shard_desc, dynamic_ncols=True):
 		out_dir = dst_env_dir / shard.name
@@ -90,11 +90,11 @@ def main() -> None:
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	root = Path(args.transitions_root)
 	encoded_base = root / args.encoded_subdir
-	lh, lw = vae_latent_hw()
-	ph, pw = vae_pixel_hw()
+	lh, lw = VAE.latent_hw
+	ph, pw = VAE.pixel_hw
 	print(f"VAE encode: pixel={ph}x{pw} → latent Cx{lh}x{lw}")
 
-	vae = VAE(checkpoint=Path(args.vae_checkpoint))
+	vae = VAE(Path(args.vae_checkpoint))
 	vae.freeze()
 	vae.to(device)
 
