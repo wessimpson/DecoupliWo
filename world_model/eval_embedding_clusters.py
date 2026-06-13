@@ -1,10 +1,10 @@
 """
-Embedding cluster analysis: VAE latent ``z_t`` vs simple history-side latent features.
+Embedding cluster analysis: VAE latents ``z_t`` vs frame/state encoder outputs.
 
 Samples windows from encoded transition shards across games/rules, computes:
   - ``z_t``: target-frame VAE latent (flattened)
-  - ``h_frame``: last frame of history latents ``z_hist[:, -1]`` (flattened), same shape family as ``z_t``
-  - ``h_state``: per-timestep spatial mean of ``z_hist`` then flattened (``K * C`` dims)
+  - ``h_frame``: ``frame_state_encoder(z_t)`` (flattened)
+  - ``h_state``: ``state_token_from_history(z_hist)`` (history pooled state token)
 
 Writes PCA and UMAP 2-D scatter plots. **Game** and **rule** each get a dedicated
 subfolder with a **two-panel** figure (``z`` left, ``h`` right) per reducer (PCA, UMAP).
@@ -296,20 +296,26 @@ def _attach_row_metadata(
 
 @torch.no_grad()
 def _encode_batches(
-	_wm: torch.nn.Module,
+	wm: torch.nn.Module,
 	loader: DataLoader,
 	device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	z_list: list[np.ndarray] = []
 	hf_list: list[np.ndarray] = []
 	hs_list: list[np.ndarray] = []
+	enc = wm.diffuser.frame_state_encoder
 	for batch in tqdm(loader, desc="encode"):
 		z_hist = batch["history_latents"].to(device)
 		z_tgt = batch["target_latent"].to(device)
+		dt = enc[0].weight.dtype
+		z_hist_d = z_hist.to(dtype=dt)
+		z_tgt_d = z_tgt.to(dtype=dt).unsqueeze(1)
+		h_tgt = enc(z_tgt_d.reshape(-1, *z_tgt_d.shape[-3:])).reshape(z_tgt_d.shape).squeeze(1)
+		h_state = wm.diffuser.state_token_from_history(z_hist_d)
+
 		z_list.append(z_tgt.float().cpu().numpy().reshape(z_tgt.shape[0], -1))
-		hf_list.append(z_hist[:, -1].float().cpu().numpy().reshape(z_hist.shape[0], -1))
-		hm = z_hist.mean(dim=(3, 4)).float().cpu().numpy()
-		hs_list.append(hm.reshape(hm.shape[0], -1))
+		hf_list.append(h_tgt.float().cpu().numpy().reshape(h_tgt.shape[0], -1))
+		hs_list.append(h_state.float().cpu().numpy())
 	return np.concatenate(z_list, axis=0), np.concatenate(hf_list, axis=0), np.concatenate(hs_list, axis=0)
 
 
@@ -541,12 +547,6 @@ def _print_plot_summary(out_dir: Path) -> None:
 		print("  (no PNG files found — plotting may have failed silently)")
 
 
-_BLOCK_H_LABEL = {
-	"h_frame": "last history z",
-	"h_state": "spatially pooled history z",
-}
-
-
 def _run_embedding_block(
 	name: str,
 	X_z: np.ndarray,
@@ -560,7 +560,6 @@ def _run_embedding_block(
 	skip_umap: bool,
 	dpi: int,
 ) -> dict[str, Any]:
-	h_label = _BLOCK_H_LABEL.get(name, name)
 	block_dir = out_dir / name
 	block_dir.mkdir(parents=True, exist_ok=True)
 	reducers: dict[str, np.ndarray] = {"pca_z": _fit_pca(X_z, seed=seed), "pca_h": _fit_pca(X_h, seed=seed)}
@@ -593,7 +592,7 @@ def _run_embedding_block(
 				y_viz,
 				method=method,
 				label_title=label_title,
-				encoder_name=h_label,
+				encoder_name=name,
 				dpi=dpi,
 			)
 
@@ -606,7 +605,7 @@ def _run_embedding_block(
 			scores[method][label_key]["z"] = sz
 			scores[method][label_key]["h"] = sh
 
-			for emb_tag, xy, emb_name in (("z", xy_z, "VAE latent z"), ("h", xy_h, h_label)):
+			for emb_tag, xy, emb_name in (("z", xy_z, "VAE latent z"), ("h", xy_h, f"encoder {name}")):
 				sub = f"{method}_{emb_tag}"
 				cat = not is_cont
 				title = f"{emb_name} — {method.upper()} — colored by {label_title}"
@@ -701,8 +700,8 @@ def main() -> None:
 		args.dpi,
 	)
 
-	# Compact console report: rule silhouette z vs history-side features
-	print("\nSilhouette (rule_id) — z vs history-derived h panels:")
+	# Compact console report: rule silhouette z vs h (main hypothesis)
+	print("\nSilhouette (rule_id) — higher on z, lower on h is desired:")
 	for block_name, block_scores in (("frame_encoder", summary["frame_encoder"]), ("state_token", summary["state_token"])):
 		for method, per_label in block_scores.items():
 			r = per_label.get("rule_id", {})

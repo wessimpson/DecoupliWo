@@ -385,8 +385,10 @@ class EncodedRolloutVideoDataset(Dataset):
 		return preprocess_contiguous_latent_ar(sample, history_len, num_future_frames)
 
 
-# Multi-hot rule vector: ``RULE_TAGS[i]`` is the folder suffix after ``_rules_`` (e.g. ``aliens_rules_multishot`` → ``multishot``).
+# Multi-hot rule vector: ``RULE_TAGS[i]`` is the folder suffix after ``_rules_`` (e.g. ``aliens_rules_multishot_3`` → ``multishot_3``).
 # Folders **without** ``_rules_*`` map to ``NULL``: all-zero vector (baseline / classifier-free ``rule`` dropout target).
+# Inference UI uses :func:`active_rule_tags` (tags present in ``data/transitions/test``). Slots below that are not
+# in train/test data remain in this tuple for checkpoint index stability (always zero at runtime).
 RULE_TAGS: tuple[str, ...] = (
 	"enemy_explode",
 	"enemy_explode_1rad",
@@ -467,6 +469,31 @@ def _dir_has_encoded_shards(p: Path) -> bool:
 		sp.is_dir() and (sp / "latent.npy").is_file() and (sp / "action.npy").is_file()
 		for sp in p.glob("shard_*")
 	)
+
+
+def collect_rule_tags_from_split(transitions_split_dir: str | Path) -> tuple[str, ...]:
+	"""Sorted ``_rules_<tag>`` suffixes under ``data/transitions/{train,test}/`` (raw or encoded)."""
+	split_dir = Path(transitions_split_dir)
+	if not split_dir.is_dir():
+		return ()
+	tags: set[str] = set()
+	for p in split_dir.iterdir():
+		if not p.is_dir() or "_rules_" not in p.name:
+			continue
+		if not any(p.glob("shard_*")) and not _dir_has_encoded_shards(p):
+			continue
+		tags.add(p.name.split("_rules_", 1)[1])
+	return tuple(sorted(tags))
+
+
+def active_rule_tags(transitions_split_dir: str | Path | None = None) -> tuple[str, ...]:
+	"""``RULE_TAGS`` slots that appear in a transitions split (default: ``data/transitions/test``)."""
+	if transitions_split_dir is None:
+		transitions_split_dir = Path(__file__).resolve().parent.parent / "data" / "transitions" / "test"
+	present = frozenset(collect_rule_tags_from_split(transitions_split_dir))
+	if not present:
+		return RULE_TAGS
+	return tuple(t for t in RULE_TAGS if t in present)
 
 
 def collect_unknown_rule_tags_under_split(encoded_split_dir: str | Path) -> list[str]:

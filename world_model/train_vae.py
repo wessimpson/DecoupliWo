@@ -28,6 +28,12 @@ def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser()
 	p.add_argument("--train_dir", type=str, default=str(Path("data") / "transitions" / "train"))
 	p.add_argument("--val_dir", type=str, default=str(Path("data") / "transitions" / "test"))
+	p.add_argument(
+		"--max_shards_per_env",
+		type=int,
+		default=10,
+		help="Train: first N shard_* folders per env (sorted). 0 = use all shards.",
+	)
 	p.add_argument("--init_checkpoint", type=str, default="", help="Optional vae.pt; empty = scratch.")
 	p.add_argument("--output_dir", type=str, default=str(Path("world_model") / "checkpoints" / "vae"))
 	p.add_argument("--batch_size", type=int, default=32)
@@ -56,7 +62,8 @@ def main() -> None:
 	torch.manual_seed(args.seed)
 	np.random.seed(args.seed)
 
-	train_ds = FrameDataset(Path(args.train_dir))
+	max_shards = args.max_shards_per_env if args.max_shards_per_env > 0 else None
+	train_ds = FrameDataset(Path(args.train_dir), max_shards_per_env=max_shards)
 	val_ds = FrameDataset(Path(args.val_dir))
 	loader = DataLoader(
 		train_ds,
@@ -87,7 +94,8 @@ def main() -> None:
 	scaler = torch.amp.GradScaler("cuda", enabled=mp == "fp16")
 	ph, pw = vae.pixel_hw
 	lh, lw = vae.latent_hw
-	print(f"train={len(train_ds):,} val={len(val_ds):,} pixel={ph}x{pw} latent={lh}x{lw}")
+	shard_note = f"max {max_shards} shards/env" if max_shards else "all shards"
+	print(f"train={len(train_ds):,} ({shard_note}) val={len(val_ds):,} pixel={ph}x{pw} latent={lh}x{lw}")
 
 	step = 0
 	eval_vae(ae, val_x, DEVICE, lpips_fn, args.kl_weight, mp, writer, step, lpips_w=LPIPS_W)

@@ -1,10 +1,8 @@
 """
 Next-frame temporal world model.
 
-Architecture: frozen scratch KL-VAE + SD 1.4 UNet2D (stacked history + noisy next in channel dim).
-Training:    denoise the next latent frame from history; cross-attn conditioned on transition action a_t
-             and rule multi-hot only (no separate state encoder / state token).
-Inference:   pass the action that leaves the last history state (one step control).
+Architecture: frozen VAE + base-scale UNet2D (stacked history + noisy next in channel dim).
+Cross-attn: action + null-rule slot + one token per atomic RULE_TAGS slot.
 """
 
 from __future__ import annotations
@@ -42,7 +40,7 @@ class WorldModel(nn.Module):
 		if vc is not None and str(vc).strip() == "":
 			vc = None
 		pt = Path(DEFAULT_VAE_PT if vc is None else vc)
-		self.vae = VAE(pt)
+		self.vae = VAE(checkpoint=pt)
 		self.vae.freeze()
 		self.latent_channels = self.vae.latent_channels
 
@@ -70,25 +68,17 @@ class WorldModel(nn.Module):
 	def enable_gradient_checkpointing(self) -> None:
 		self.diffuser.unet.enable_gradient_checkpointing()
 
-	# ── VAE helpers ───────────────────────────────────────────────
-
 	def encode_video(self, pixels: torch.Tensor) -> torch.Tensor:
-		"""[B,T,3,H,W] → [B,T,C,h,w] scaled latents (no grad)."""
 		return self.vae.encode_video(pixels.to(next(self.vae.parameters()).device))
 
 	def decode_video(self, latents: torch.Tensor) -> torch.Tensor:
-		"""[B,T,C,h,w] → [B,T,3,H,W] (no grad)."""
 		return self.vae.decode_video(latents.to(next(self.vae.parameters()).device))
 
 	def encode_frames(self, pixels: torch.Tensor) -> torch.Tensor:
-		"""[B,3,H,W] → [B,C,h,w] scaled latents (no grad)."""
 		return self.vae.encode_pixels(pixels.to(next(self.vae.parameters()).device))
 
 	def decode_frames(self, latents: torch.Tensor) -> torch.Tensor:
-		"""[B,C,h,w] → [B,3,H,W] (no grad)."""
 		return self.vae.decode_latents(latents.to(next(self.vae.parameters()).device))
-
-	# ── Training forward ─────────────────────────────────────────
 
 	def diffusion_forward(
 		self,
@@ -101,19 +91,6 @@ class WorldModel(nn.Module):
 		gamma: float = 0.0,
 		rule_onehot: torch.Tensor | None = None,
 	) -> tuple[torch.Tensor, torch.Tensor]:
-		"""
-		z_hist:           [B, K, C, h, w] clean history latents (frames …, t-1)
-		z_tgt:            [B, C, h, w] clean frame at t (from a[t-1]: obs[t-1]→obs[t])
-		history_actions:  [B, K]  a[i] paired with obs[i] in data; only a[K-1] (last col) is used as a_t
-		timesteps:        [B]
-		noise:            [B, C, h, w]
-		delta_hist:       [B, K, C, h, w] | None
-		gamma:            corruption scale
-		rule_onehot:      [B, R] float multi-hot (`RULE_TAGS`); None uses NULL (all-zero rule embedding).
-
-		Returns (model_pred, target) both [B, C, h, w]. Target matches scheduler's prediction_type
-		(epsilon → noise, v_prediction → velocity, sample → z_tgt).
-		"""
 		B, K, C, h, w = z_hist.shape
 		device = z_tgt.device
 
@@ -125,9 +102,11 @@ class WorldModel(nn.Module):
 		sched = self.diffuser.noise_scheduler
 		noisy_tgt = sched.add_noise(z_tgt, noise, timesteps)
 
-		x = torch.cat([z_hist, noisy_tgt.unsqueeze(1)], dim=1)  # [B, K+1, C, h, w]
+		x = torch.cat([z_hist, noisy_tgt.unsqueeze(1)], dim=1)
 		a_t = history_actions[:, -1].to(device)
-		roh = None if rule_onehot is None else rule_onehot.to(device=device, dtype=self.diffuser.action_embedding.weight.dtype)
+		roh = None if rule_onehot is None else rule_onehot.to(
+			device=device, dtype=self.diffuser.action_embedding.weight.dtype,
+		)
 
 		model_pred = self.diffuser(x, timesteps, a_t, roh)
 
@@ -140,8 +119,6 @@ class WorldModel(nn.Module):
 			target = noise
 		return model_pred, target
 
-	# ── Inference ─────────────────────────────────────────────────
-
 	@torch.no_grad()
 	def generate_next_frame(
 		self,
@@ -153,16 +130,6 @@ class WorldModel(nn.Module):
 		gamma: float = 0.0,
 		rule_onehot: torch.Tensor | None = None,
 	) -> torch.Tensor:
-		"""Generate next latent frame [B, 1, C, h, w].
-
-		``transition_action`` [B] is the env action from the last history frame (a[t-1] for target t).
-		``rule_onehot`` [B, R] optional; ``None`` → NULL (all-zero), same as dataset base folders.
-
-		Classifier-free guidance is **additive**: unconditional ``pred_00`` + ``cfg_scale_action * (pred_aa - pred_0a)``
-		(action guidance) + ``cfg_scale_rule * (pred_aa - pred_a0)`` (rule guidance), with ``pred_aa`` full cond,
-		``pred_0a`` null action / rule on, ``pred_a0`` rule off / action on. If both scales are 0, only ``pred_00``;
-		if both are 1, a single ``pred_aa`` forward is used so sampling matches full joint conditioning.
-		"""
 		B, K, C, h, w = z_hist.shape
 		device = z_hist.device
 		dtype = self.diffuser.unet.dtype
@@ -179,7 +146,6 @@ class WorldModel(nn.Module):
 			roh = torch.zeros(B, self.diffuser.num_rules, device=device, dtype=dt_rule)
 		else:
 			roh = rule_onehot.to(device=device, dtype=dt_rule)
-		roh_u = torch.zeros(B, self.diffuser.num_rules, device=device, dtype=dt_rule)
 
 		latents = torch.randn(B, C, h, w, device=device, dtype=dtype)
 		sched = self.diffuser.noise_scheduler
@@ -196,42 +162,31 @@ class WorldModel(nn.Module):
 			t_batch = t.unsqueeze(0).expand(B).contiguous()
 			null_a = torch.full_like(a_t, self.diffuser.null_action_index)
 			if math.isclose(sc_a, 0.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 0.0, rel_tol=0.0, abs_tol=1e-6):
-				pred = self.diffuser(x, t_batch, null_a, roh_u)
+				pred = self.diffuser(x, t_batch, null_a, roh, rule_uncond=True)
 			elif math.isclose(sc_a, 1.0, rel_tol=0.0, abs_tol=1e-6) and math.isclose(sc_r, 1.0, rel_tol=0.0, abs_tol=1e-6):
 				pred = self.diffuser(x, t_batch, a_t, roh)
 			else:
 				pred_aa = self.diffuser(x, t_batch, a_t, roh)
 				pred_0a = self.diffuser(x, t_batch, null_a, roh)
-				pred_a0 = self.diffuser(x, t_batch, a_t, roh_u)
-				pred_00 = self.diffuser(x, t_batch, null_a, roh_u)
+				pred_a0 = self.diffuser(x, t_batch, a_t, roh, rule_uncond=True)
+				pred_00 = self.diffuser(x, t_batch, null_a, roh, rule_uncond=True)
 				pred = pred_00 + sc_a * (pred_aa - pred_0a) + sc_r * (pred_aa - pred_a0)
-			latents = sched.step(
-				pred,
-				t,
-				latents,
-				return_dict=False,
-			)[0]
+			latents = sched.step(pred, t, latents, return_dict=False)[0]
 
 		return latents.unsqueeze(1)
 
-	# ── Save / load ──────────────────────────────────────────────
-
 	def save_diffuser(self, out_dir: Path) -> None:
-		"""Persist dynamics weights and DDIM scheduler config."""
 		out_dir = Path(out_dir)
 		out_dir.mkdir(parents=True, exist_ok=True)
 		torch.save(self.diffuser.unet.state_dict(), out_dir / "unet.pt")
 		torch.save(self.diffuser.action_embedding.state_dict(), out_dir / "action_embedding.pt")
-		torch.save(self.diffuser.rule_projection.state_dict(), out_dir / "rule_projection.pt")
+		torch.save(self.diffuser.rule_embedding.state_dict(), out_dir / "rule_embedding.pt")
+		torch.save(self.diffuser.null_rule_embedding.detach().cpu(), out_dir / "null_rule_embedding.pt")
 		sched_dir = out_dir / "noise_scheduler"
 		sched_dir.mkdir(parents=True, exist_ok=True)
 		self.diffuser.noise_scheduler.save_pretrained(str(sched_dir))
 
 	def load_diffuser_checkpoint(self, ckpt_dir: Path | str, device: torch.device) -> None:
-		"""Load weights written by :meth:`save_diffuser` (same layout as inference).
-
-		If ``noise_scheduler/`` exists under ``ckpt_dir``, replaces the DDIM scheduler config.
-		"""
 		from diffusers import DDIMScheduler
 
 		ckpt_dir = Path(ckpt_dir)
@@ -247,29 +202,27 @@ class WorldModel(nn.Module):
 		except RuntimeError as e:
 			raise RuntimeError(
 				f"UNet load failed from {unet_path}. "
-				f"Ensure unet.pt matches this architecture (full SD1.4 UNet2D + widened conv_in)."
+				f"Ensure unet.pt matches this architecture (base UNet2D + widened conv_in)."
 			) from e
 		emb_path = ckpt_dir / "action_embedding.pt"
 		if not emb_path.exists():
 			emb_path = ckpt_dir / "future_action_embedding.pt"
 		if emb_path.is_file():
 			self.diffuser.action_embedding.load_state_dict(_sd(emb_path))
-		rule_path = ckpt_dir / "rule_projection.pt"
-		if rule_path.is_file():
-			self.diffuser.rule_projection.load_state_dict(_sd(rule_path))
+		rule_emb_path = ckpt_dir / "rule_embedding.pt"
+		if rule_emb_path.is_file():
+			self.diffuser.rule_embedding.load_state_dict(_sd(rule_emb_path))
 		else:
+			rule_proj_path = ckpt_dir / "rule_projection.pt"
+			if rule_proj_path.is_file():
+				w = _sd(rule_proj_path)["weight"]
+				with torch.no_grad():
+					self.diffuser.rule_embedding.weight.copy_(w.T.to(self.diffuser.rule_embedding.weight))
+		null_rule_path = ckpt_dir / "null_rule_embedding.pt"
+		if null_rule_path.is_file():
+			null_t = torch.load(null_rule_path, map_location=device, weights_only=True)
 			with torch.no_grad():
-				self.diffuser.rule_projection.weight.zero_()
-		legacy_state = any(
-			(ckpt_dir / n).is_file()
-			for n in ("frame_state_encoder.pt", "state_token_projection.pt", "state_encoder.pt", "rule_adversary.pt")
-		)
-		if legacy_state:
-			print(
-				f"Note: checkpoint {ckpt_dir} has legacy state-encoder/adversary files; "
-				"this architecture ignores them — retrain dynamics for best results.",
-				flush=True,
-			)
+				self.diffuser.null_rule_embedding.copy_(null_t.to(self.diffuser.null_rule_embedding))
 		for legacy_name in ("action_mlp.pt", "future_action_mlp.pt"):
 			legacy = ckpt_dir / legacy_name
 			if legacy.is_file():
@@ -282,73 +235,3 @@ class WorldModel(nn.Module):
 			pt = self.diffuser.noise_scheduler.config.prediction_type
 			self.diffuser.noise_scheduler.register_to_config(prediction_type=pt)
 		self.num_train_timesteps = int(self.diffuser.noise_scheduler.config.num_train_timesteps)
-
-
-"""test"""
-
-if __name__ == "__main__":
-	import numpy as np
-	from torchvision import transforms
-
-	K = 2
-	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-	# ── Load a few frames from first test shard ──────────────────
-	test_root = Path("data") / "transitions" / "test"
-	shard = None
-	for env_dir in sorted(test_root.iterdir()):
-		for s in sorted(env_dir.glob("shard_*")):
-			if (s / "obs.npy").exists():
-				shard = s
-				break
-		if shard:
-			break
-	assert shard is not None, f"no shard under {test_root}"
-	print(f"shard: {shard}")
-
-	obs = np.load(shard / "obs.npy", mmap_mode="r")
-	act = np.load(shard / "action.npy", mmap_mode="r")
-	seq = K + 1
-	assert obs.shape[0] >= seq, f"need >= {seq} frames, got {obs.shape[0]}"
-
-	tx = transforms.Compose([
-		transforms.ToTensor(),
-		transforms.Lambda(lambda x: x * 2.0 - 1.0),
-		transforms.Resize((208, 160), antialias=True),
-	])
-	frames = torch.stack([tx(np.asarray(obs[i])[..., -3:]) for i in range(seq)])  # [K+1, 3, H, W]
-	actions = torch.from_numpy(act[:seq].astype(np.int64))
-
-	history = frames[:K].unsqueeze(0).to(device)          # [1, K, 3, H, W]
-	target = frames[K].unsqueeze(0).to(device)            # [1, 3, H, W]
-	hist_act = actions[:K].unsqueeze(0).to(device)        # [1, K]
-
-	# ── Build model ──────────────────────────────────────────────
-	print("loading WorldModel ...")
-	wm = WorldModel(
-		num_actions=18,
-		cross_attention_dim=768,
-		vae_checkpoint=DEFAULT_VAE_PT,
-		prediction_type="v_prediction",
-		history_len=K,
-		pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4",
-	).to(device)
-	print(f"  latent_channels={wm.latent_channels}  num_train_timesteps={wm.num_train_timesteps}")
-
-	# ── VAE encode ───────────────────────────────────────────────
-	with torch.no_grad():
-		z_hist = wm.encode_video(history)   # [1, K, C, h, w]
-		z_tgt = wm.encode_frames(target)   # [1, C, h, w]
-	print(f"  z_hist={tuple(z_hist.shape)}  z_tgt={tuple(z_tgt.shape)}")
-
-	# ── Diffusion forward ────────────────────────────────────────
-	B = 1
-	t = torch.randint(0, wm.num_train_timesteps, (B,), device=device)
-	noise = torch.randn_like(z_tgt)
-
-	print("running diffusion_forward ...")
-	pred, target = wm.diffusion_forward(z_hist, z_tgt, hist_act, t, noise)
-	print(f"  model_pred={tuple(pred.shape)}  target={tuple(target.shape)}")
-	loss = torch.nn.functional.mse_loss(pred.float(), target.float())
-	print(f"  mse_loss={loss.item():.4f}")
-	print("OK")

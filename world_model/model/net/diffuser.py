@@ -1,4 +1,4 @@
-"""Compact UNet2D denoiser: stacked history + noisy next frame; cross-attn on action + rule tokens (seq len 2)."""
+"""UNet2D denoiser (base scale): stacked history + noisy next frame; cross-attn on action + rule tokens."""
 
 from __future__ import annotations
 
@@ -10,9 +10,26 @@ from diffusers import DDIMScheduler, UNet2DConditionModel
 
 from world_model.dataset import NUM_RULE_TYPES
 
+BASE_UNET_KWARGS: dict = {
+	"layers_per_block": 1,
+	"block_out_channels": (160, 320, 320),
+	"down_block_types": (
+		"CrossAttnDownBlock2D",
+		"CrossAttnDownBlock2D",
+		"DownBlock2D",
+	),
+	"up_block_types": (
+		"UpBlock2D",
+		"CrossAttnUpBlock2D",
+		"CrossAttnUpBlock2D",
+	),
+	"attention_head_dim": (8, 8, 8),
+	"norm_num_groups": 32,
+}
+
 
 class Diffuser(nn.Module):
-	"""UNet2DConditionModel (compact): latents ``[B, K+1, C, H, W]`` folded to ``[B, (K+1)*C, H, W]``."""
+	"""UNet2DConditionModel (base scale): latents ``[B, K+1, C, H, W]`` → ``[B, (K+1)*C, H, W]``."""
 
 	def __init__(
 		self,
@@ -43,28 +60,13 @@ class Diffuser(nn.Module):
 		self.num_latent_frames = self.history_len + 1
 		stacked_in = self.num_latent_frames * latent_channels
 
-		unet = UNet2DConditionModel(
+		self.unet = UNet2DConditionModel(
 			sample_size=None,
 			in_channels=stacked_in,
 			out_channels=latent_channels,
 			cross_attention_dim=cross_attention_dim,
-			layers_per_block=1,
-			block_out_channels=(160, 320, 320),
-			down_block_types=(
-				"CrossAttnDownBlock2D",
-				"CrossAttnDownBlock2D",
-				"DownBlock2D",
-			),
-			up_block_types=(
-				"UpBlock2D",
-				"CrossAttnUpBlock2D",
-				"CrossAttnUpBlock2D",
-			),
-			attention_head_dim=(8, 8, 8),
-			norm_num_groups=32,
+			**BASE_UNET_KWARGS,
 		)
-
-		self.unet = unet
 
 		self.num_actions = int(num_actions)
 		self.null_action_index = self.num_actions
@@ -74,13 +76,26 @@ class Diffuser(nn.Module):
 			self.action_embedding.weight[self.null_action_index].zero_()
 
 		self.num_rules = int(NUM_RULE_TYPES)
-		self.rule_projection = nn.Linear(self.num_rules, cross_attention_dim, bias=False)
-		nn.init.normal_(self.rule_projection.weight, std=0.02)
+		self.rule_embedding = nn.Embedding(self.num_rules, cross_attention_dim)
+		nn.init.normal_(self.rule_embedding.weight, std=0.02)
+		self.null_rule_embedding = nn.Parameter(torch.zeros(cross_attention_dim))
+		nn.init.normal_(self.null_rule_embedding, std=0.02)
 
 		self.noise_scheduler = DDIMScheduler.from_pretrained(
 			pretrained_model_name_or_path, subfolder="scheduler",
 		)
 		self.noise_scheduler.register_to_config(prediction_type=prediction_type)
+
+	def _rule_condition(self, roh: torch.Tensor, rule_uc: torch.Tensor) -> torch.Tensor:
+		"""``[B, 1+R, D]``: null-rule slot + atomic rule slots (zeros when inactive or CFG-dropped)."""
+		B, D = roh.shape[0], self.cross_attention_dim
+		dev, dt = roh.device, self.rule_embedding.weight.dtype
+		uc = rule_uc.view(B, 1, 1)
+		null_slot = self.null_rule_embedding.view(1, 1, -1).expand(B, 1, -1)
+		null_slot = torch.where(uc, null_slot, torch.zeros(B, 1, D, device=dev, dtype=dt))
+		atomic = self.rule_embedding.weight.unsqueeze(0) * roh.unsqueeze(-1)
+		atomic = torch.where(uc, torch.zeros_like(atomic), atomic)
+		return torch.cat([null_slot, atomic], dim=1)
 
 	def forward(
 		self,
@@ -88,21 +103,11 @@ class Diffuser(nn.Module):
 		timesteps: torch.Tensor,
 		action: torch.Tensor,
 		rule_onehot: torch.Tensor | None = None,
+		rule_uncond: bool = False,
 	) -> torch.Tensor:
-		"""Stacked-frame denoise: predict noise / v for the next frame (4-channel UNet output).
+		"""Predict noise / v for the next frame.
 
-		``action`` indices are env actions ``0 .. num_actions-1``, or ``null_action_index`` (= ``num_actions``)
-		for unconditional / CFG.
-
-		Training: one ``u ~ U(0,1)`` per row sets dropout mode (non-overlapping intervals):
-		``cfg_both_drop_prob`` → null action + zero rule; ``cfg_action_drop_prob`` → null action, keep rule;
-		``cfg_rule_drop_prob`` → zero rule, keep action.
-
-		``rule_onehot`` [B, R] float multi-hot (``world_model.dataset.RULE_TAGS``, length R).
-		If ``None``, uses **NULL**: all-zero vector.
-
-		Cross-attention sees two tokens: ``[..., 0, :]`` = action embedding, ``[..., 1, :]`` = rule projection.
-		History and noisy next are only in the UNet conv input (stacked channels).
+		Cross-attention: ``[action, null_rule, atomic_1, …, atomic_R]`` (length ``2 + R``).
 		"""
 		B, F, C, H, W = noisy_latents.shape
 		assert F == self.num_latent_frames, f"Expected F={self.num_latent_frames}, got {F}"
@@ -118,6 +123,7 @@ class Diffuser(nn.Module):
 			if roh.shape != (B, self.num_rules):
 				raise ValueError(f"rule_onehot expected [B,{self.num_rules}], got {tuple(roh.shape)}")
 
+		rule_uc = torch.full((B,), rule_uncond, device=dev, dtype=torch.bool)
 		p0 = self.cfg_both_drop_prob
 		p1 = p0 + self.cfg_action_drop_prob
 		p2 = p1 + self.cfg_rule_drop_prob
@@ -128,10 +134,10 @@ class Diffuser(nn.Module):
 			drop_rule_only = (u >= p1) & (u < p2)
 			null_a = torch.full_like(a, self.null_action_index)
 			a = torch.where(drop_both | drop_action_only, null_a, a)
-			roh = torch.where((drop_both | drop_rule_only).unsqueeze(1), torch.zeros_like(roh), roh)
+			rule_uc = rule_uc | drop_both | drop_rule_only
+
 		action_enc = self.action_embedding(a)
-		rule_enc = self.rule_projection(roh)
-		enc = torch.stack([action_enc, rule_enc], dim=1)
+		enc = torch.cat([action_enc.unsqueeze(1), self._rule_condition(roh, rule_uc)], dim=1)
 
 		out = self.unet(
 			x, timesteps, encoder_hidden_states=enc, return_dict=False,

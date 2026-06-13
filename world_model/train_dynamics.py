@@ -19,6 +19,7 @@ when a base game has multiple variants.
 from __future__ import annotations
 
 import argparse
+import math
 from collections import defaultdict
 from datetime import datetime
 from functools import partial
@@ -47,21 +48,29 @@ from world_model.dataset import (
 )
 from world_model.model.error_buffer import ErrorBuffer
 from world_model.model.world_model import WorldModel
-from world_model.util.evaluation import psnr as psnr_neg1_to_01
 
 CONTEXT_LEN = 4
 CROSS_ATTENTION_DIM = 768
 PREDICTION_TYPE = "v_prediction"
 PRETRAINED_MODEL_NAME_OR_PATH = "CompVis/stable-diffusion-v1-4"
-DEFAULT_CHECKPOINT_DIR_RULES = Path("world_model") / "checkpoints" / "dit_encoded_rules"
-DEFAULT_CHECKPOINT_DIR_ALL_ENV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env"
-DEFAULT_CHECKPOINT_DIR_RULES_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_adv"
-DEFAULT_CHECKPOINT_DIR_ALL_ENV_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv"
+DEFAULT_CHECKPOINT_DIR_RULES = Path("world_model") / "checkpoints" / "dit_encoded_rules_final"
+DEFAULT_CHECKPOINT_DIR_ALL_ENV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_final"
+DEFAULT_CHECKPOINT_DIR_RULES_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_adv_final"
+DEFAULT_CHECKPOINT_DIR_ALL_ENV_ADV = Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv_final"
 DEFAULT_PRETRAINED_DYNAMICS = str(
-	Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv" / "20260511_011018" / "step_0330000"
+	Path("world_model") / "checkpoints" / "dit_encoded_rules_all_env_adv_final" / "20260511_011018" / "step_0330000"
 )
 COUNTERFACTUAL_STEPS = 10
 COUNTERFACTUAL_SHOOT_ACTION = 5
+
+
+def psnr_neg1_to_01(pred: torch.Tensor, tgt: torch.Tensor) -> float:
+	p = ((pred.clamp(-1, 1) + 1) * 0.5).float()
+	t = ((tgt.clamp(-1, 1) + 1) * 0.5).float()
+	mse = (p - t).pow(2).mean().item()
+	if mse <= 0:
+		return float("inf")
+	return 10.0 * math.log10(1.0 / mse)
 
 
 def future_residuals_as_history_block(delta_bn: torch.Tensor, K: int) -> torch.Tensor:
@@ -92,17 +101,17 @@ def parse_args() -> argparse.Namespace:
 		"--vae_checkpoint",
 		type=str,
 		default="",
-		help="Path to frozen VAE weights (vae.pt). Empty uses ``world_model.model.net.vae.DEFAULT_VAE_PT``.",
+		help="Path to frozen SD VAE weights (vae.pt). Empty uses ``world_model.model.net.vae.DEFAULT_VAE_PT``.",
 	)
 	p.add_argument("--num_actions", type=int, default=7)
 	p.add_argument("--context_len", type=int, default=CONTEXT_LEN)
 	p.add_argument(
 		"--batch_size",
 		type=int,
-		default=4,
+		default=256,
 		help="Training batch size; also chunks validation (diffusion MSE, generate_next_frame, VAE decode, AR decode).",
 	)
-	p.add_argument("--num_train_epochs", type=int, default=3)
+	p.add_argument("--num_train_epochs", type=int, default=10)
 	p.add_argument("--max_train_steps", type=int, default=50000_000)
 	p.add_argument("--lr", type=float, default=5e-5)
 	p.add_argument("--lr_scheduler", type=str, default="constant_with_warmup")
@@ -802,6 +811,7 @@ def main() -> None:
 			Wg = args.gamma_warmup_steps
 			gamma_eff = float(args.gamma) if Wg <= 0 else float(args.gamma) * min(1.0, global_step / float(Wg))
 			last_gamma_eff = gamma_eff
+
 			delta_hist = error_buffer.sample_like(z_hist) if error_buffer.ready() else None
 			timesteps = torch.randint(0, world_model.num_train_timesteps, (B,), device=device).long()
 			noise = torch.randn_like(z_tgt, dtype=world_model.diffuser.unet.dtype)
